@@ -10,13 +10,89 @@ It provides five focused building blocks:
 - `StepScheduler`: scheduler for iterative item processing
 - `DoubleBufferCallback`: callback base that publishes only completed values
 
-## Installation
+## Install From GitHub
+
+Clone the repository:
+
+```bash
+git clone https://github.com/februa/spflow.git
+cd spflow
+```
+
+Install it into your current Python environment:
 
 ```bash
 pip install .
 ```
 
+If you want to modify `spflow` while developing another project, use editable install instead:
+
+```bash
+pip install -e .
+```
+
+## Use From Another Project
+
+After installation, you can import `spflow` from any other project in the same environment.
+
+```python
+from spflow import Flow, FrameBuffer, Option
+```
+
+Example project layout:
+
+```text
+my_project/
+├── main.py
+└── venv/  # optional
+```
+
+Example `main.py`:
+
+```python
+import numpy as np
+
+from spflow import Flow, FrameBuffer, Option
+
+
+opt = Option(
+    {
+        "stft": {
+            "nfft": 4,
+            "hop": 2,
+        }
+    }
+)
+
+buffer = FrameBuffer(
+    frame_size=opt.stft.nfft,
+    hop_size=opt.stft.hop,
+)
+
+x = np.arange(8, dtype=float)
+frames = Flow.from_value(x).map(buffer.process).to_list()
+
+print(len(frames))
+print(frames[0])
+```
+
 ## Example
+
+A runnable example is included in [examples/basic_pipeline.py](examples/basic_pipeline.py).
+
+Run it after installation:
+
+```bash
+python -m examples.basic_pipeline
+```
+
+It demonstrates:
+
+- `Option` for nested configuration
+- `FrameBuffer` for overlapped framing
+- `Flow` for propagating zero, one, or many outputs
+
+Core example:
 
 ```python
 from types import SimpleNamespace
@@ -54,3 +130,4 @@ def process_frame(x, env):
         .to_list()
     )
 ```
+
