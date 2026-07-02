@@ -1,3 +1,5 @@
+"""FrameBuffer と Flow を使った最小パイプライン例。"""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -8,6 +10,7 @@ from spflow import Flow, FrameBuffer, Option
 
 
 def make_env(opt: Option) -> SimpleNamespace:
+    """basic pipeline 用の共有状態とフレームバッファを初期化する。"""
     env = SimpleNamespace()
     env.opt = opt
     env.input_buffer = FrameBuffer(
@@ -19,14 +22,17 @@ def make_env(opt: Option) -> SimpleNamespace:
 
 
 def calc_fft(frame: np.ndarray, env: SimpleNamespace) -> np.ndarray:
+    """入力フレームの FFT を計算する。"""
     return np.fft.fft(frame, n=env.opt.stft.nfft, axis=-1)
 
 
 def calc_power(x: np.ndarray) -> np.ndarray:
+    """複素スペクトルからパワーを計算する。"""
     return np.abs(x) ** 2
 
 
 def process_frame(x: np.ndarray, env: SimpleNamespace) -> list[np.ndarray]:
+    """入力チャンクをフレーム化し、FFT とパワー計算を順に適用する。"""
     return (
         Flow.from_value(x)
         .map(env.input_buffer.process)
@@ -37,6 +43,7 @@ def process_frame(x: np.ndarray, env: SimpleNamespace) -> list[np.ndarray]:
 
 
 def main() -> None:
+    """最小パイプラインを実行し、各チャンクのパワースペクトルを表示する。"""
     opt = Option(
         {
             "stft": {

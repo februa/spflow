@@ -1,3 +1,5 @@
+"""spflow.option を実装するモジュール。"""
+
 from __future__ import annotations
 
 from collections.abc import Iterator, ItemsView, KeysView, Mapping, ValuesView

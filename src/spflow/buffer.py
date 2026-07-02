@@ -1,3 +1,5 @@
+"""spflow.buffer を実装するモジュール。"""
+
 from __future__ import annotations
 
 from typing import Any
