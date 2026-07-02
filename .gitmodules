@@ -1,0 +1,3 @@
+[submodule "vendor/scene_renderer"]
+	path = vendor/scene_renderer
+	url = https://github.com/februa/scene_renderer.git
