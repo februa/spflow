@@ -1,5 +1,7 @@
 """src/spflow パッケージの公開 API をまとめるモジュール。"""
 
+# 上位パッケージから `spflow.*` として参照する利用者向け導線を固定するため、
+# サブパッケージ内部の実装詳細ではなく公開契約として残す型と関数だけを再公開する。
 from .beamforming import (
     BandwiseArrayDesign,
     CBFBeamformer,
@@ -29,6 +31,8 @@ from .beamforming import (
 )
 from .buffer import FrameBuffer
 from .callback import DoubleBufferCallback
+# フィルタバンク群は解析・合成器の組み合わせが多いため、利用者がトップレベル import だけで
+# 実験コードを組めるように代表的な構成要素を一箇所に集約する。
 from .filterbank import (
     CausalAnalyticFrontend,
     CausalAnalyticFrontendStreamer,
@@ -71,6 +75,8 @@ from .frequency import OverlapSaveBuffer, ValidRegionExtractor, make_filter_fft
 from .option import Option
 from .scheduler import StepScheduler
 
+# `__all__` はワイルドカード import の制御だけでなく、公開 API の棚卸しとしても使う。
+# ここに含めない識別子は将来的に互換性なく変更し得る内部実装として扱う。
 __all__ = [
     'Option',
     'Flow',

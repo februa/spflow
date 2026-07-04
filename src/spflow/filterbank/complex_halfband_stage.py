@@ -9,7 +9,7 @@ import numpy as np
 
 @dataclass(frozen=True)
 class ComplexFIRHalfbandStageFilters:
-    """Explicit 2-channel complex FIR stage filters."""
+    """明示的な 2 分岐複素 FIR halfband 段の係数群。"""
 
     analysis_low: np.ndarray
     analysis_high: np.ndarray
@@ -47,6 +47,7 @@ class ComplexFIRHalfbandStageFilters:
 
     @classmethod
     def haar_paraunitary(cls) -> "ComplexFIRHalfbandStageFilters":
+        """最小構成の Haar paraunitary 段係数を返す。"""
         analysis_low = np.array([1.0, 1.0], dtype=np.float32) / np.sqrt(2.0)
         analysis_high = np.array([-1.0, 1.0], dtype=np.float32) / np.sqrt(2.0)
         synthesis_low = np.array([1.0, 1.0], dtype=np.float32) / np.sqrt(2.0)
@@ -63,30 +64,52 @@ class ComplexFIRHalfbandStageFilters:
 
 
 class ComplexFIRHalfbandStage:
-    """Trial implementation for candidate-A style complex FIR halfband stages.
+    """候補 A 系の複素 FIR halfband 段を検証する試作実装。
 
-    This class is intended for stage-level design validation. It does not yet implement
-    the finalized lower-edge packet frequency metadata contract. Instead, it validates that
-    a critically sampled FIR 2-channel stage can satisfy PR and streaming/offline agreement
-    under an explicit filter convention.
+    明示 FIR 係数・位相規約・遅延補償を固定し、2 分岐の critically sampled 段が
+    完全再構成と streaming/offline 一致を満たすかを検証する。
+    packet の最終契約や木全体の周波数メタデータ管理は責務に含めない。
     """
 
     def __init__(self, filters: ComplexFIRHalfbandStageFilters) -> None:
         self.filters = filters
 
     def analysis(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """入力複素信号を low/high 2 分岐へ解析する。
+
+        Args:
+            x: 入力信号。shape は `[..., n_sample]`。末尾軸が時間軸。
+
+        Returns:
+            `(low, high)`。両者の shape は `[..., n_out]` で、
+            `analysis_phase` に従って 2 サンプルおきに抽出した子系列を返す。
+        """
         arr = np.asarray(x, dtype=np.complex64)
         low_full = self._convolve_last_axis(arr, self.filters.analysis_low)
         high_full = self._convolve_last_axis(arr, self.filters.analysis_high)
         phase = self.filters.analysis_phase
+        # full 畳み込み後の系列から phase を起点に 2 サンプルおきへ間引き、
+        # critically sampled な low/high 子系列を取り出す。
         return low_full[..., phase::2], high_full[..., phase::2]
 
     def synthesis(self, low: np.ndarray, high: np.ndarray, *, length: int | None = None) -> np.ndarray:
+        """low/high 2 分岐から複素時間列を再合成する。
+
+        Args:
+            low: 低域子系列。shape は `[..., n_sub]`。
+            high: 高域子系列。shape は `[..., n_sub]`。
+            length: 必要な出力長。省略時は full 畳み込み長を返す。
+
+        Returns:
+            再合成複素時間列。shape は `[..., n_sample]`。
+        """
         low_arr = np.asarray(low, dtype=np.complex64)
         high_arr = np.asarray(high, dtype=np.complex64)
         if low_arr.shape != high_arr.shape:
             raise ValueError("low and high branches must have identical shapes.")
 
+        # upsample 後の shape はいずれも [..., 2 * n_sub]。
+        # synthesis_phase に従って偶数側または奇数側へ零挿入する。
         up_low = self._upsample_by_two(low_arr, phase=self.filters.synthesis_phase)
         up_high = self._upsample_by_two(high_arr, phase=self.filters.synthesis_phase)
         recon = (
@@ -100,12 +123,14 @@ class ComplexFIRHalfbandStage:
         return recon
 
     def stable_analysis_length(self, input_length: int) -> int:
+        """flush 前に確定できる解析出力長を返す。"""
         phase = self.filters.analysis_phase
         if input_length <= phase:
             return 0
         return ((input_length - 1 - phase) // 2) + 1
 
     def full_analysis_length(self, input_length: int) -> int:
+        """末尾ゼロ詰めまで含めた full 解析出力長を返す。"""
         full_length = input_length + self.filters.analysis_low.size - 1
         phase = self.filters.analysis_phase
         if full_length <= phase:
@@ -113,10 +138,12 @@ class ComplexFIRHalfbandStage:
         return ((full_length - 1 - phase) // 2) + 1
 
     def stable_synthesis_length(self, subband_length: int) -> int:
+        """flush 前に確定できる再合成出力長を返す。"""
         stable = 2 * subband_length + self.filters.synthesis_phase - self.filters.delay_compensation
         return max(0, stable)
 
     def full_synthesis_length(self, subband_length: int) -> int:
+        """末尾過渡まで含めた full 再合成出力長を返す。"""
         full = (
             2 * subband_length
             + self.filters.synthesis_phase
@@ -140,6 +167,8 @@ class ComplexFIRHalfbandStage:
             raise ValueError("input must have at least one dimension.")
 
         rows = int(np.prod(arr.shape[:-1])) if arr.ndim > 1 else 1
+        # reshape 後の shape は [n_row, n_sample]。
+        # 末尾時間軸への FIR 畳み込みを全 prefix 行へ同じ規約で適用する。
         reshaped = arr.reshape(rows, arr.shape[-1])
         out = np.zeros((rows, arr.shape[-1] + filt.size - 1), dtype=np.complex64)
         for row_idx in range(rows):
@@ -148,7 +177,7 @@ class ComplexFIRHalfbandStage:
 
 
 class ComplexFIRHalfbandStageStreamingAnalyzer:
-    """Stateful streaming analyzer with O(L) work per emitted child sample."""
+    """出力サンプルごとに O(L) で動く逐次解析器。"""
 
     def __init__(self, stage: ComplexFIRHalfbandStage) -> None:
         self.stage = stage
@@ -173,6 +202,7 @@ class ComplexFIRHalfbandStageStreamingAnalyzer:
         self._flushed = False
 
     def process(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """入力チャンクから新たに確定した low/high 子系列だけを返す。"""
         arr = np.asarray(x, dtype=np.complex64)
         if arr.ndim == 0:
             raise ValueError("input chunk must have at least one dimension.")
@@ -192,6 +222,9 @@ class ComplexFIRHalfbandStageStreamingAnalyzer:
             if current_full_index != self._next_output_full_index:
                 continue
 
+            # ordered_history shape: [n_row, n_tap]。
+            # 巡回バッファの書き込み位置に応じて時間順へ並べ替え、
+            # reversed taps との内積で FIR 出力 1 サンプルを得る。
             ordered_history = self._history[:, self._history_orders[self._history_write_pos]]
             low_frames.append(ordered_history @ self._analysis_low_reversed)
             high_frames.append(ordered_history @ self._analysis_high_reversed)
@@ -200,6 +233,7 @@ class ComplexFIRHalfbandStageStreamingAnalyzer:
         return self._stack_outputs(low_frames), self._stack_outputs(high_frames)
 
     def flush(self) -> tuple[np.ndarray, np.ndarray]:
+        """末尾ゼロ詰めにより解析 FIR の残留過渡を回収する。"""
         if self._flushed:
             prefix_shape = () if self._prefix_shape is None else self._prefix_shape
             return self._empty_pair(prefix_shape)
@@ -250,7 +284,7 @@ class ComplexFIRHalfbandStageStreamingAnalyzer:
 
 
 class ComplexFIRHalfbandStageStreamingSynthesizer:
-    """Stateful streaming synthesizer with sparse overlap-add interpolation."""
+    """疎な overlap-add 補間で動く逐次再合成器。"""
 
     def __init__(self, stage: ComplexFIRHalfbandStage) -> None:
         self.stage = stage
@@ -262,6 +296,7 @@ class ComplexFIRHalfbandStageStreamingSynthesizer:
         self._flushed = False
 
     def process(self, low: np.ndarray, high: np.ndarray) -> np.ndarray:
+        """low/high 子チャンクから新たに確定した親系列だけを返す。"""
         low_arr = np.asarray(low, dtype=np.complex64)
         high_arr = np.asarray(high, dtype=np.complex64)
         if low_arr.shape != high_arr.shape:
@@ -278,6 +313,8 @@ class ComplexFIRHalfbandStageStreamingSynthesizer:
             inserted_index = 2 * (self._subband_count + sample_idx) + self.stage.filters.synthesis_phase
             relative_index = inserted_index - self._next_uncropped_index
             self._ensure_pending_length(relative_index + taps_len)
+            # pending shape: [n_row, n_pending_sample]。
+            # 1 個の子サンプルが親系列上で寄与する FIR 区間だけへ加算する。
             self._pending[:, relative_index : relative_index + taps_len] += (
                 low_flat[:, sample_idx][:, np.newaxis] * self.stage.filters.synthesis_low[np.newaxis, :]
             )
@@ -290,6 +327,7 @@ class ComplexFIRHalfbandStageStreamingSynthesizer:
         return self._drain_until(stable_end)
 
     def flush(self) -> np.ndarray:
+        """再合成 FIR の残留過渡をすべて排出する。"""
         if self._flushed:
             prefix_shape = () if self._prefix_shape is None else self._prefix_shape
             return np.zeros(prefix_shape + (0,), dtype=np.complex64)
@@ -338,7 +376,7 @@ class ComplexFIRHalfbandStageStreamingSynthesizer:
 
 
 class OracleComplexFIRHalfbandStageStreamingAnalyzer:
-    """Inefficient but exact-by-construction streaming analyzer for oracle comparisons."""
+    """oracle 比較用の逐次解析参照実装。"""
 
     def __init__(self, stage: ComplexFIRHalfbandStage) -> None:
         self.stage = stage
@@ -346,6 +384,7 @@ class OracleComplexFIRHalfbandStageStreamingAnalyzer:
         self._emitted = 0
 
     def process(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """オフライン解析を再計算し、新規確定分だけを返す。"""
         arr = np.asarray(x, dtype=np.complex64)
         if arr.ndim == 0:
             raise ValueError("input chunk must have at least one dimension.")
@@ -365,6 +404,7 @@ class OracleComplexFIRHalfbandStageStreamingAnalyzer:
         return new_low, new_high
 
     def flush(self) -> tuple[np.ndarray, np.ndarray]:
+        """オフライン解析の full 長まで末尾過渡を回収する。"""
         if self._input is None:
             return self._empty_pair(())
         low_all, high_all = self.stage.analysis(self._input)
@@ -381,7 +421,7 @@ class OracleComplexFIRHalfbandStageStreamingAnalyzer:
 
 
 class OracleComplexFIRHalfbandStageStreamingSynthesizer:
-    """Inefficient but exact-by-construction streaming synthesizer for oracle comparisons."""
+    """oracle 比較用の逐次再合成参照実装。"""
 
     def __init__(self, stage: ComplexFIRHalfbandStage) -> None:
         self.stage = stage
@@ -390,6 +430,7 @@ class OracleComplexFIRHalfbandStageStreamingSynthesizer:
         self._emitted = 0
 
     def process(self, low: np.ndarray, high: np.ndarray) -> np.ndarray:
+        """オフライン再合成を再計算し、新規確定分だけを返す。"""
         low_arr = np.asarray(low, dtype=np.complex64)
         high_arr = np.asarray(high, dtype=np.complex64)
         if low_arr.shape != high_arr.shape:
@@ -412,6 +453,7 @@ class OracleComplexFIRHalfbandStageStreamingSynthesizer:
         return new
 
     def flush(self) -> np.ndarray:
+        """オフライン再合成の full 長まで末尾過渡を回収する。"""
         if self._low is None or self._high is None:
             return np.zeros((0,), dtype=np.complex64)
         recon = self.stage.synthesis(self._low, self._high)

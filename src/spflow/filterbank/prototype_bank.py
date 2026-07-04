@@ -9,7 +9,7 @@ import numpy as np
 
 @dataclass(frozen=True)
 class PrototypeFilter:
-    """Prototype FIR definition for the prototype-based DFT filter banks."""
+    """プロトタイプベース DFT フィルタバンク用の FIR 定義。"""
 
     coefficients: np.ndarray
     n_band: int
@@ -33,10 +33,12 @@ class PrototypeFilter:
 
     @property
     def prototype_length(self) -> int:
+        """プロトタイプ tap 長を返す。"""
         return int(self.coefficients.size)
 
     @property
     def n_phase(self) -> int:
+        """ポリフェーズ分解後の相数を返す。"""
         return self.prototype_length // self.decimation
 
     @classmethod
@@ -47,6 +49,7 @@ class PrototypeFilter:
         decimation: int,
         prototype_length: int,
     ) -> "PrototypeFilter":
+        """先頭 1 block だけ 1 の block-DFT 基準プロトタイプを作る。"""
         if prototype_length % decimation != 0:
             raise ValueError("prototype_length must be a multiple of decimation.")
         coeffs = np.zeros(prototype_length, dtype=np.complex64)
@@ -62,6 +65,7 @@ class PrototypeFilter:
         prototype_length: int,
         cutoff: float | None = None,
     ) -> "PrototypeFilter":
+        """窓付き sinc 低域原型を作る。"""
         if prototype_length % decimation != 0:
             raise ValueError("prototype_length must be a multiple of decimation.")
         if cutoff is None:
@@ -78,7 +82,7 @@ class PrototypeFilter:
 
 
 class PolyphaseDecomposition:
-    """Reshape prototype taps into a polyphase matrix."""
+    """プロトタイプ係数をポリフェーズ行列へ並べ替える。"""
 
     def __init__(self, decimation: int) -> None:
         if decimation <= 0:
@@ -86,12 +90,14 @@ class PolyphaseDecomposition:
         self.decimation = decimation
 
     def decompose(self, prototype: PrototypeFilter | np.ndarray) -> np.ndarray:
+        """1 次元係数列を `[n_phase, decimation]` のポリフェーズ行列へ変換する。"""
         coeffs = prototype.coefficients if isinstance(prototype, PrototypeFilter) else np.asarray(prototype)
         coeffs = np.asarray(coeffs, dtype=np.complex64)
         if coeffs.ndim != 1:
             raise ValueError("prototype must be one-dimensional.")
         if coeffs.size % self.decimation != 0:
             raise ValueError("prototype length must be a multiple of decimation.")
+        # reshape 後の axis=0 は polyphase 相、axis=1 は decimation 内サンプル位置を表す。
         return coeffs.reshape(coeffs.size // self.decimation, self.decimation)
 
 
@@ -131,12 +137,13 @@ class _PrototypeBankBase:
 
 
 class PrototypeAnalysisDFTFilterBank(_PrototypeBankBase):
-    """Prototype-based complex DFT analysis bank with FFT-order bands."""
+    """FFT 順帯域を持つプロトタイプベース複素 DFT 解析バンク。"""
 
     def __init__(self, *, prototype: PrototypeFilter, band_order: str = "fft", axis: int = -1) -> None:
         super().__init__(prototype=prototype, band_order=band_order, axis=axis)
 
     def analysis(self, x: np.ndarray) -> np.ndarray:
+        """入力複素時間列をプロトタイプベース DFT サブバンドへ解析する。"""
         arr = np.asarray(x, dtype=np.complex64)
         signal_axis = self._normalize_axis(self.axis, arr.ndim)
         moved = np.moveaxis(arr, signal_axis, -1)
@@ -144,6 +151,8 @@ class PrototypeAnalysisDFTFilterBank(_PrototypeBankBase):
 
         prefix_shape = frames.shape[:-2]
         n_frame = frames.shape[-1]
+        # reshaped shape: [..., n_phase, decimation, n_frame]
+        # 1 フレームをポリフェーズ相と相内サンプルへ明示分解する。
         reshaped = frames.reshape(prefix_shape + (self._polyphase.shape[0], self.decimation, n_frame))
         weights = self._polyphase.reshape((1,) * len(prefix_shape) + self._polyphase.shape + (1,))
         weighted = reshaped * weights
@@ -153,7 +162,7 @@ class PrototypeAnalysisDFTFilterBank(_PrototypeBankBase):
 
 
 class PrototypeSynthesisDFTFilterBank(_PrototypeBankBase):
-    """Prototype-based complex DFT synthesis bank with manual delay compensation."""
+    """手動遅延補償付きプロトタイプベース複素 DFT 合成バンク。"""
 
     def __init__(
         self,
@@ -167,6 +176,7 @@ class PrototypeSynthesisDFTFilterBank(_PrototypeBankBase):
         self.delay_compensation = delay_compensation
 
     def synthesis(self, subbands: np.ndarray, length: int | None = None) -> np.ndarray:
+        """複素サブバンド列から時間波形を再合成する。"""
         arr = np.asarray(subbands, dtype=np.complex64)
         band_axis = self._normalize_axis(self.axis, arr.ndim - 1)
         if arr.shape[band_axis] != self.n_band:
@@ -178,6 +188,8 @@ class PrototypeSynthesisDFTFilterBank(_PrototypeBankBase):
         n_frame = polyphase_samples.shape[-1]
         weights = self._polyphase.reshape((1,) * len(prefix_shape) + self._polyphase.shape + (1,))
         expanded = polyphase_samples[..., np.newaxis, :, :] * weights
+        # expanded shape: [..., n_phase, decimation, n_frame]。
+        # 相ごとの重み付き出力を prototype_length 軸へ戻して overlap-add する。
         frames = expanded.reshape(prefix_shape + (self.prototype_length, n_frame))
         reconstructed = self._sum_overlap(frames)
         compensated = self._apply_delay_compensation(reconstructed)
@@ -209,13 +221,14 @@ class PrototypeSynthesisDFTFilterBank(_PrototypeBankBase):
 
 
 class PRChecker:
-    """Evaluate reconstruction and prototype response metrics."""
+    """再構成誤差とプロトタイプ応答指標を評価する。"""
 
     def __init__(self, analysis_bank: PrototypeAnalysisDFTFilterBank, synthesis_bank: PrototypeSynthesisDFTFilterBank) -> None:
         self.analysis_bank = analysis_bank
         self.synthesis_bank = synthesis_bank
 
     def check_perfect_reconstruction(self, x: np.ndarray, length: int | None = None) -> dict[str, float]:
+        """解析後に再合成したときの PR 誤差を返す。"""
         target = np.asarray(x, dtype=np.complex64)
         subbands = self.analysis_bank.analysis(target)
         reconstructed = self.synthesis_bank.synthesis(
@@ -229,6 +242,7 @@ class PRChecker:
         }
 
     def check_subband_closure(self, y: np.ndarray) -> dict[str, float]:
+        """任意サブバンド列が合成後の再解析でどれだけ閉じているか評価する。"""
         target = np.asarray(y, dtype=np.complex64)
         time_signal = self.synthesis_bank.synthesis(target, length=target.shape[-1] * self.synthesis_bank.decimation)
         reanalyzed = self.analysis_bank.analysis(time_signal)
@@ -240,6 +254,7 @@ class PRChecker:
 
     @staticmethod
     def evaluate_prototype_response(prototype: PrototypeFilter, fft_size: int = 16384) -> dict[str, float]:
+        """プロトタイプ FIR 単体の通過域・阻止域指標を返す。"""
         response = np.fft.fft(prototype.coefficients, n=fft_size)
         magnitude = np.abs(response[: fft_size // 2 + 1])
         passband_edge = max(1, int(np.floor(fft_size / (2 * prototype.decimation))))

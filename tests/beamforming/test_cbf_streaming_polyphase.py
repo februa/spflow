@@ -1,5 +1,8 @@
 """cbf streaming polyphase に関する回帰試験。"""
 
+# ここでは steering の向き、共分散推定、重み適用後の再構成が噛み合うことを
+# 決定論的な入力で固定し、ビームフォーミング変更時の退行を早期に検知する。
+
 from __future__ import annotations
 
 import sys

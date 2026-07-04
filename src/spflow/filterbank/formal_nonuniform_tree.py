@@ -7,14 +7,14 @@ import math
 
 import numpy as np
 
-from .causal_analytic_frontend import CausalAnalyticFrontend, CausalAnalyticResult
+from .causal_analytic_frontend import CausalAnalyticFrontend
 from .formal_complex_pr_stage import FormalBandPacket, FormalComplexPRHalfbandStage
 from .nonuniform_tree import NonuniformBandSpec, NonuniformTreeFilterBank
 
 
 @dataclass(frozen=True)
 class FormalNonuniformAnalysisResult:
-    """Formal nonuniform tree analysis result with metadata required for synthesis."""
+    """formal 非一様木の解析結果と再合成メタデータを保持する。"""
 
     packets: tuple[FormalBandPacket, ...]
     node_sample_lengths: dict[str, int]
@@ -40,7 +40,11 @@ class _FormalTreeNode:
 
 
 class FormalNonuniformTreeFilterBank:
-    """Formal nonuniform tree using the packet-contract FIR halfband stage."""
+    """formal packet 契約を使う非一様 FIR 木フィルタバンク。
+
+    packet ごとに周波数帯域・root-rate 時刻原点・遅延を運ぶことで、
+    木の各段を明示 FIR 実装へ落としても接続関係を失わないようにする。
+    """
 
     def __init__(
         self,
@@ -75,6 +79,7 @@ class FormalNonuniformTreeFilterBank:
         candidate_name: str = "daubechies_qmf_order4_taps8",
         frontend: CausalAnalyticFrontend | None = None,
     ) -> "FormalNonuniformTreeFilterBank":
+        """既定周波数向けの formal 非一様木を構築する。"""
         reference = NonuniformTreeFilterBank.default_for_fs(fs_hz)
         return cls(
             list(reference.band_specs),
@@ -84,6 +89,7 @@ class FormalNonuniformTreeFilterBank:
         )
 
     def analyze_analytic(self, x: np.ndarray) -> FormalNonuniformAnalysisResult:
+        """複素 analytic 入力を formal packet 木へ解析する。"""
         arr = np.asarray(x, dtype=np.complex64)
         root_packet = FormalBandPacket(
             band_id=self._node_band_id(self.root),
@@ -104,6 +110,7 @@ class FormalNonuniformTreeFilterBank:
         )
 
     def analyze_real(self, x: np.ndarray) -> FormalNonuniformAnalysisResult:
+        """実数入力を causal analytic front-end 後に formal 木へ解析する。"""
         arr = np.asarray(x, dtype=np.float32)
         frontend_result = self.frontend.analyze(arr, pad_tail=True)
         root_packet = FormalBandPacket(
@@ -130,9 +137,11 @@ class FormalNonuniformTreeFilterBank:
         *,
         analytic_output: bool = False,
     ) -> np.ndarray:
+        """formal 解析結果から root-rate 波形を再合成する。"""
         if not isinstance(result, FormalNonuniformAnalysisResult):
             raise TypeError("result must be a FormalNonuniformAnalysisResult.")
 
+        # 葉 packet を band_id で引けるようにし、木構造に従って bottom-up で再合成する。
         packet_map = {
             packet.band_id: packet
             for packet in result.packets

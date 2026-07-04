@@ -1,5 +1,8 @@
 """非均一 example 用の受波器位置・シェーディング ndarray を生成する。"""
 
+# 非均一木構造では分割仕様と streaming 状態の組み合わせで挙動が大きく変わるため、
+# 実運用に近い入出力条件を一式そろえて可視化・書き出しできる例として管理する。
+
 from __future__ import annotations
 
 import argparse

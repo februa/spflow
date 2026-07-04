@@ -1,5 +1,8 @@
 """Complex halfband stage 候補を評価して最良係数を保存するサンプル。"""
 
+# フィルタ設計式の妥当性を stopband・リップル・完全再構成誤差の観点で比較し、
+# どの設計パラメータが実用上のトレードオフを支配するかを観察するための評価例である。
+
 from __future__ import annotations
 
 import argparse

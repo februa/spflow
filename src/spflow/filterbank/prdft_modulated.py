@@ -11,7 +11,7 @@ from .prototype_bank import PrototypeFilter
 
 @dataclass(frozen=True)
 class DFTModulatedFilterDesigner:
-    """Create explicitly modulated analysis/synthesis filter banks from prototypes."""
+    """原型 FIR から明示変調型の解析・合成フィルタ群を作る。"""
 
     n_band: int
     decimation: int
@@ -25,13 +25,16 @@ class DFTModulatedFilterDesigner:
             raise ValueError("This initial implementation requires n_band == decimation.")
 
     def analysis_filters(self, prototype: PrototypeFilter) -> np.ndarray:
+        """解析側の DFT 変調 FIR 群を返す。"""
         self._validate_prototype(prototype)
         n = np.arange(prototype.prototype_length, dtype=np.float32)
         k = np.arange(self.n_band, dtype=np.float32)[:, np.newaxis]
+        # exp(-j 2π k n / K) により、原型低域 FIR を各帯域中心へ複素変調する。
         modulation = np.exp(-1j * 2.0 * np.pi * k * n[np.newaxis, :] / self.n_band)
         return prototype.coefficients[np.newaxis, :] * modulation
 
     def synthesis_filters(self, prototype: PrototypeFilter) -> np.ndarray:
+        """合成側の DFT 変調 FIR 群を返す。"""
         self._validate_prototype(prototype)
         n = np.arange(prototype.prototype_length, dtype=np.float32)
         k = np.arange(self.n_band, dtype=np.float32)[:, np.newaxis]
@@ -83,23 +86,27 @@ class _ModulatedBankBase:
 
 
 class PRDFTAnalysisBank(_ModulatedBankBase):
-    """Analysis bank using explicitly modulated FIR filters and decimation."""
+    """明示変調 FIR と間引きを使う解析バンク。"""
 
     def __init__(self, *, prototype: PrototypeFilter, band_order: str = "fft", axis: int = -1) -> None:
         super().__init__(prototype=prototype, band_order=band_order, axis=axis)
         self.filters = self.designer.analysis_filters(prototype)
 
     def analysis(self, x: np.ndarray) -> np.ndarray:
+        """明示変調 FIR 解析バンクでサブバンド列を得る。"""
         arr = np.asarray(x, dtype=np.complex64)
         signal_axis = self._normalize_axis(self.axis, arr.ndim)
         moved = np.moveaxis(arr, signal_axis, -1)
         frames = self._frame_signal(moved)
+        # frames shape: [..., n_tap, n_frame]
+        # filters shape: [n_band, n_tap]
+        # einsum により各フレームと各帯域 FIR の内積を一括計算する。
         subbands = np.einsum('...nf,kn->...kf', frames, self.filters, optimize=True)
         return np.moveaxis(subbands, -2, signal_axis)
 
 
 class PRDFTSynthesisBank(_ModulatedBankBase):
-    """Synthesis bank using explicitly modulated FIR filters and interpolation."""
+    """明示変調 FIR と補間を使う合成バンク。"""
 
     def __init__(
         self,
@@ -114,12 +121,16 @@ class PRDFTSynthesisBank(_ModulatedBankBase):
         self.filters = self.designer.synthesis_filters(prototype)
 
     def synthesis(self, subbands: np.ndarray, length: int | None = None) -> np.ndarray:
+        """明示変調 FIR 合成バンクで時間列を再構成する。"""
         arr = np.asarray(subbands, dtype=np.complex64)
         band_axis = self._normalize_axis(self.axis, arr.ndim - 1)
         if arr.shape[band_axis] != self.n_band:
             raise ValueError("subbands shape does not match the configured number of bands.")
 
         moved = np.moveaxis(arr, band_axis, -2)
+        # moved shape: [..., n_band, n_frame]
+        # filters shape: [n_band, n_tap]
+        # 帯域ごとの合成 FIR 出力を足し合わせ、各フレームの時間波形を得る。
         frames = np.einsum('...kf,kn->...nf', moved, self.filters, optimize=True)
         reconstructed = self._overlap_add(frames)
         compensated = self._apply_delay_compensation(reconstructed)
@@ -151,7 +162,7 @@ class PRDFTSynthesisBank(_ModulatedBankBase):
 
 
 class FiniteLengthPRChecker:
-    """Evaluate finite-length PR with explicit padding, cropping, and valid-region metrics."""
+    """明示 padding/crop/valid-region 規約で有限長 PR を評価する。"""
 
     def __init__(self, analysis_bank: object, synthesis_bank: object) -> None:
         self.analysis_bank = analysis_bank
@@ -164,6 +175,7 @@ class FiniteLengthPRChecker:
         pad_front: int | None = None,
         pad_back: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray, dict[str, int]]:
+        """有限長入力へ明示 padding を加えた full 再構成結果を返す。"""
         arr = np.asarray(x, dtype=np.complex64)
         front = self.analysis_bank.transient_length if pad_front is None else pad_front
         back = self.synthesis_bank.transient_length if pad_back is None else pad_back
@@ -187,6 +199,7 @@ class FiniteLengthPRChecker:
         crop_front: int | None = None,
         crop_length: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
+        """full 再構成結果から指定 crop 規約の区間だけを返す。"""
         arr = np.asarray(x, dtype=np.complex64)
         reconstructed, subbands, metadata = self.reconstruct_full(arr, pad_front=pad_front, pad_back=pad_back)
         start, stop = self._resolve_crop_bounds(
@@ -209,6 +222,7 @@ class FiniteLengthPRChecker:
         valid_region_mode: str = "transient",
         valid_margin: int | None = None,
     ) -> dict[str, float]:
+        """有限長 PR 誤差と valid region 誤差を返す。"""
         arr = np.asarray(x, dtype=np.complex64)
         reconstructed, _ = self.reconstruct(
             arr,
@@ -327,7 +341,7 @@ class FiniteLengthPRChecker:
 
 
 class PrototypePairDesigner:
-    """Design a synthesis prototype paired with an analysis prototype for PR."""
+    """PR を満たすよう解析原型に対する合成原型を設計する。"""
 
     def __init__(self, n_band: int, decimation: int) -> None:
         self.n_band = n_band
@@ -341,6 +355,7 @@ class PrototypePairDesigner:
         impulse_length: int | None = None,
         n_phase_inputs: int | None = None,
     ) -> tuple[np.ndarray, int, int]:
+        """解析バンクと基底合成 FIR の cascade 行列を構築する。"""
         self._validate_prototype(analysis_prototype)
         impulse_length = analysis_prototype.prototype_length if impulse_length is None else impulse_length
         n_phase_inputs = self.decimation if n_phase_inputs is None else n_phase_inputs
@@ -387,6 +402,7 @@ class PrototypePairDesigner:
         cascade_matrix: tuple[np.ndarray, int, int] | None = None,
         regularization: float = 0.0,
     ) -> PrototypeFilter:
+        """cascade 行列に対する最小二乗で合成原型を設計する。"""
         self._validate_prototype(analysis_prototype)
         matrix, output_length, n_phase_inputs = (
             self.build_cascade_matrix(analysis_prototype, impulse_length=impulse_length)
@@ -404,6 +420,7 @@ class PrototypePairDesigner:
         if regularization == 0.0:
             coeffs, *_ = np.linalg.lstsq(matrix, target, rcond=None)
         else:
+            # 正則化は cascade 行列が悪条件な場合に係数発散を抑えるために加える。
             lhs = matrix.conj().T @ matrix + regularization * np.eye(matrix.shape[1], dtype=np.complex64)
             rhs = matrix.conj().T @ target
             coeffs = np.linalg.solve(lhs, rhs)
@@ -422,6 +439,7 @@ class PrototypePairDesigner:
         impulse_length: int | None = None,
         cascade_matrix: tuple[np.ndarray, int, int] | None = None,
     ) -> dict[str, float]:
+        """設計済み解析・合成原型の cascade 残差を評価する。"""
         self._validate_prototype(analysis_prototype)
         self._validate_prototype(synthesis_prototype)
         matrix, output_length, n_phase_inputs = (

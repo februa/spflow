@@ -1,5 +1,8 @@
 """step scheduler に関する回帰試験。"""
 
+# コア部品は境界条件の取り扱いが不具合源になりやすいため、
+# バッファ残量やスケジューリング順序が崩れないことを小さな入力で固定する。
+
 from spflow import StepScheduler
 
 

@@ -33,8 +33,20 @@ def _validate_bandwise_inputs(covariance: np.ndarray, steering_array: np.ndarray
 
 
 def design_mvdr_weights(Rxx: np.ndarray, steering: np.ndarray, diag_load: float = 1e-3) -> np.ndarray:
-    """Design MVDR weights for a single band."""
+    """単一帯域の MVDR 重みを設計する。
 
+    Args:
+        Rxx: 空間共分散。shape は `[n_ch, n_ch]`。
+        steering: 目標方向ステアリング。shape は `[n_ch]` または `[n_ch, n_beam]`。
+        diag_load: 対角ローディング係数。無次元。
+
+    Returns:
+        MVDR 重み。shape は `[n_ch, n_beam]`。
+
+    Notes:
+        MVDR は `w = R^{-1} a / (a^H R^{-1} a)` により、
+        目標方向に対する無歪条件を満たしつつ出力電力を最小化する。
+    """
     covariance = np.asarray(Rxx, dtype=np.complex64)
     steering_matrix = _as_steering_matrix(steering)
 
@@ -47,18 +59,22 @@ def design_mvdr_weights(Rxx: np.ndarray, steering: np.ndarray, diag_load: float 
 
     loaded = covariance.copy()
     if diag_load > 0.0:
+        # trace(R)/n_ch を各チャネル平均電力の代表値とみなし、
+        # その diag_load 倍を対角へ加える。1e-3 は完全ゼロでは不安定になりやすい
+        # 少数スナップショット条件で、重み発散を避けるための弱い正則化である。
         base = np.real(np.trace(loaded)) / loaded.shape[0]
         load = diag_load * (base if base > 0.0 else 1.0)
         loaded = loaded + load * np.eye(loaded.shape[0], dtype=np.complex64)
 
+    # solve(R, A) は各ビーム steering a に対する R^{-1} a をまとめて解く。
     response = np.linalg.solve(loaded, steering_matrix)
+    # denom[beam] = a^H R^{-1} a。これで正規化すると w^H a = 1 になる。
     denom = np.sum(steering_matrix.conj() * response, axis=0)
     return response / denom[np.newaxis, :]
 
 
 def design_mvdr_weights_bands(Rxx: np.ndarray, steering: np.ndarray, diag_load: float = 1e-3) -> np.ndarray:
-    """Design MVDR weights for many bands with stacked linear solves."""
-
+    """帯域ごとの MVDR 重みを一括設計する。"""
     covariance = np.asarray(Rxx, dtype=np.complex64)
     steering_array = np.asarray(steering, dtype=np.complex64)
     if diag_load < 0.0:
@@ -67,10 +83,13 @@ def design_mvdr_weights_bands(Rxx: np.ndarray, steering: np.ndarray, diag_load: 
     n_band, n_ch, _ = _validate_bandwise_inputs(covariance, steering_array)
     loaded = covariance.copy()
     if diag_load > 0.0:
+        # 各帯域ごとに平均電力スケールを求め、その帯域の条件数悪化だけを補償する。
         base = np.real(np.trace(loaded, axis1=1, axis2=2)) / n_ch
         load = diag_load * np.where(base > 0.0, base, 1.0)
         loaded = loaded + load[:, np.newaxis, np.newaxis] * np.eye(n_ch, dtype=np.complex64)[np.newaxis, :, :]
 
+    # steering_batch shape: [n_band, n_ch, n_beam]
+    # moveaxis により solve が要求する先頭バッチ軸へ帯域軸を移す。
     steering_batch = np.moveaxis(steering_array, -1, 0)
     response = np.linalg.solve(loaded, steering_batch)
     denom = np.sum(steering_batch.conj() * response, axis=1)
@@ -84,12 +103,11 @@ def design_mvdr_weights_with_channel_window(
     channel_window: np.ndarray,
     diag_load: float = 1e-3,
 ) -> np.ndarray:
-    """Design MVDR weights using only channels whose shading coefficient is non-zero.
+    """チャネル選択テーブルを考慮した MVDR 重みを設計する。
 
-    For practical MVDR use, the shading table is treated as a rectangular selector:
-    `used = (channel_window != 0)`.
+    実運用では shading を連続重みではなくチャネル有効/無効の選択器として解釈し、
+    `channel_window != 0` のチャネルだけで縮退共分散を作って MVDR を解く。
     """
-
     covariance = np.asarray(Rxx, dtype=np.complex64)
     steering_array = np.asarray(steering, dtype=np.complex64)
     window = np.asarray(channel_window, dtype=np.float32)
@@ -105,6 +123,8 @@ def design_mvdr_weights_with_channel_window(
         used = window != 0.0
         if not np.any(used):
             raise ValueError('channel_window must select at least one channel.')
+        # 非選択チャネルまで含めて MVDR を解くと、ゼロ開口なのに数値的に寄与してしまう。
+        # そのため選択チャネルだけで縮退問題を解き、最後に元 shape へ戻す。
         reduced = design_mvdr_weights(covariance[np.ix_(used, used)], steering_matrix[used], diag_load=diag_load)
         full = np.zeros_like(steering_matrix)
         full[used] = reduced
@@ -136,6 +156,7 @@ def design_mvdr_weights_with_channel_window(
         used = window[:, band_idx] != 0.0
         if not np.any(used):
             raise ValueError('Each band must select at least one channel.')
+        # 帯域ごとに有効開口が異なるため、MVDR は各 band の部分行列で独立に解く。
         reduced = design_mvdr_weights(
             covariance[band_idx][np.ix_(used, used)],
             steering_array[used, :, band_idx],
@@ -146,7 +167,11 @@ def design_mvdr_weights_with_channel_window(
 
 
 class MVDRWeightDesigner:
-    """Design MVDR weights for one or many subbands."""
+    """単一帯域または多帯域の MVDR 重みを設計する薄いラッパー。
+
+    このクラスは共分散 shape に応じて単一帯域版と多帯域版を切り替える。
+    共分散推定やスケジューリングは責務に含めない。
+    """
 
     def __init__(self, diag_load: float = 1e-3) -> None:
         if diag_load < 0.0:
@@ -154,6 +179,7 @@ class MVDRWeightDesigner:
         self.diag_load = diag_load
 
     def process(self, Rxx: np.ndarray, steering: np.ndarray) -> np.ndarray:
+        """共分散とステアリングから MVDR 重みを計算する。"""
         covariance = np.asarray(Rxx, dtype=np.complex64)
         steering_array = np.asarray(steering, dtype=np.complex64)
 
@@ -164,33 +190,51 @@ class MVDRWeightDesigner:
 
 
 class MVDRWeightCallback(DoubleBufferCallback):
-    """StepScheduler callback for bandwise MVDR weight updates."""
+    """StepScheduler 用の帯域別 MVDR 重み更新コールバック。
+
+    1 ステップで 1 帯域ずつ重みを更新し、全帯域完了後に publish する。
+    重い行列演算を時間分散するための補助クラスである。
+    """
 
     def __init__(self, diag_load: float = 1e-3) -> None:
         super().__init__()
         self.designer = MVDRWeightDesigner(diag_load=diag_load)
 
     def signature(self, inputs: Any) -> Any:
+        """入力更新サイクルを識別するシグネチャを返す。"""
         if "signature" in inputs:
             return inputs["signature"]
         return (id(inputs["Rxx"]), id(inputs["steering"]))
 
     def make_initial_output(self, inputs: Any) -> np.ndarray:
+        """出力バッファの初期値を作る。
+
+        `steering` と同じ `[n_ch, n_beam, n_band]` shape を確保し、
+        未計算帯域はゼロ重みで初期化する。
+        """
         steering = np.asarray(inputs["steering"], dtype=np.complex64)
         if steering.ndim != 3:
             raise ValueError("steering must have shape (n_ch, n_beam, n_band).")
         return np.zeros_like(steering)
 
     def make_work_buffer(self, inputs: Any) -> np.ndarray:
+        """現在出力と同じ shape の作業バッファを確保する。"""
         return np.zeros_like(self.prev)
 
     def make_items(self, inputs: Any):
+        """更新対象帯域インデックス列を返す。"""
         covariance = np.asarray(inputs["Rxx"], dtype=np.complex64)
         if covariance.ndim != 3:
             raise ValueError("Rxx must have shape (n_band, n_ch, n_ch).")
         return range(covariance.shape[0])
 
     def update_item(self, item: Any, inputs: Any) -> None:
+        """指定帯域の MVDR 重みだけを更新する。
+
+        Args:
+            item: 帯域インデックス。
+            inputs: `Rxx` と `steering` を含む辞書。
+        """
         band_idx = int(item)
         covariance = np.asarray(inputs["Rxx"], dtype=np.complex64)
         steering = np.asarray(inputs["steering"], dtype=np.complex64)

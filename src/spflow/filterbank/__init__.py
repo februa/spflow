@@ -1,5 +1,7 @@
 """src/spflow/filterbank パッケージの公開 API をまとめるモジュール。"""
 
+# 解析器・合成器・完全再構成検証器は組み合わせて使うことが前提なので、
+# 利用者がサブモジュール名ではなく処理系の概念名で import できるよう再公開する。
 from .causal_analytic_frontend import (
     CausalAnalyticFrontend,
     CausalAnalyticFrontendStreamer,
@@ -36,6 +38,8 @@ from .prototype_bank import (
     PrototypeSynthesisDFTFilterBank,
 )
 
+# ワイルドカード import の結果を安定させることで、ノートブックや実験スクリプト側の
+# 依存面を明示しつつ、内部補助関数の露出を避ける。
 __all__ = [
     'design_hilbert_fir',
     'CausalAnalyticResult',

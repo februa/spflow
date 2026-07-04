@@ -15,17 +15,16 @@ from .nonuniform_tree import (
 
 @dataclass(frozen=True)
 class NonuniformPacketBlock:
-    """One root-block worth of leaf-band packets."""
+    """root block 1 個ぶんの leaf-band packet 群を保持する。"""
 
     packets: tuple[NonuniformBandPacket, ...]
 
 
 class NonuniformTreeStreamingAnalyzer:
-    """Streaming analyzer for the exact complex PR tree.
+    """厳密 PR な非一様複素木の逐次解析器。
 
-    This first implementation validates streaming on the internal complex tree only.
-    Real-input streaming is intentionally deferred because the current analytic front-end
-    used by `NonuniformTreeFilterBank.analyze_real()` is an offline FFT-based helper.
+    現段階では内部複素木の streaming 整合性確認が責務であり、
+    実数入力 front-end の streaming 化までは責務に含めない。
     """
 
     def __init__(self, filterbank: NonuniformTreeFilterBank) -> None:
@@ -38,6 +37,7 @@ class NonuniformTreeStreamingAnalyzer:
         }
 
     def process_analytic(self, x: np.ndarray) -> list[NonuniformPacketBlock]:
+        """複素 analytic 入力チャンクを root block 単位で解析する。"""
         arr = np.asarray(x, dtype=np.complex64)
         if arr.ndim == 0:
             raise ValueError("input chunk must have at least one dimension.")
@@ -60,6 +60,7 @@ class NonuniformTreeStreamingAnalyzer:
         return outputs
 
     def flush(self) -> list[NonuniformPacketBlock]:
+        """末尾端数を root block 長までゼロ詰めして最終 packet 群を返す。"""
         if self._buffer is None or self._buffer.shape[-1] == 0:
             self._buffer = None
             return []
@@ -68,20 +69,21 @@ class NonuniformTreeStreamingAnalyzer:
         pad_width = self.filterbank.root_block_size - remainder
         pad_spec = [(0, 0)] * self._buffer.ndim
         pad_spec[-1] = (0, pad_width)
+        # root block 未満の端数では木を 1 段も下れないため、最後はゼロ詰めして完全 block 化する。
         block = np.pad(self._buffer, pad_spec)
         self._buffer = None
         self._padded_length += self.filterbank.root_block_size
         return [self._analyze_full_block(block)]
 
     def result(self) -> NonuniformAnalysisResult:
+        """これまでに蓄積した全 packet をオフライン形式へ再構成する。"""
         packets = []
         for spec in self.filterbank.band_specs:
             chunks = self._packet_chunks[spec.band_id]
             if chunks:
                 samples = np.concatenate(chunks, axis=-1)
             else:
-                empty_shape = (0,)
-                samples = np.zeros(empty_shape, dtype=np.complex64)
+                samples = np.zeros((0,), dtype=np.complex64)
             packets.append(NonuniformBandPacket(spec, samples))
         return NonuniformAnalysisResult(
             packets=tuple(packets),
@@ -100,12 +102,13 @@ class NonuniformTreeStreamingAnalyzer:
 
 
 class NonuniformTreeStreamingSynthesizer:
-    """Streaming synthesizer for root-block packet groups."""
+    """root block ごとの packet 群を逐次再合成するシンプル実装。"""
 
     def __init__(self, filterbank: NonuniformTreeFilterBank) -> None:
         self.filterbank = filterbank
 
     def process_block(self, block: NonuniformPacketBlock) -> np.ndarray:
+        """1 個の packet block を root-rate 複素時間列へ戻す。"""
         packet_map = {
             packet.spec.band_id: np.asarray(packet.samples, dtype=np.complex64)
             for packet in block.packets

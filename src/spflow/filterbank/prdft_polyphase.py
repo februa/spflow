@@ -49,9 +49,10 @@ class _PolyphasePRBase:
 
 
 class PolyphasePRDFTAnalysisBank(_PolyphasePRBase):
-    """Critically sampled polyphase DFT analysis bank with explicit edge padding."""
+    """明示端点 padding を持つ critically sampled ポリフェーズ DFT 解析バンク。"""
 
     def analysis(self, x: np.ndarray) -> np.ndarray:
+        """ポリフェーズ PR 解析バンクで複素時間列をサブバンド化する。"""
         arr = np.asarray(x, dtype=np.complex64)
         signal_axis = self._normalize_axis(self.axis, arr.ndim)
         moved = np.moveaxis(arr, signal_axis, -1)
@@ -61,6 +62,7 @@ class PolyphasePRDFTAnalysisBank(_PolyphasePRBase):
             return np.moveaxis(empty, -2, signal_axis)
 
         phase_samples = np.zeros(moved.shape[:-1] + (self.decimation, n_frames), dtype=np.complex64)
+        # 解析では最新 block から順に各 polyphase 相を畳み込むため、相順を反転して使う。
         polyphase_reversed = self._polyphase[::-1]
         for frame_idx in range(n_frames):
             window = blocks[..., frame_idx : frame_idx + self.n_phase, :]
@@ -71,7 +73,7 @@ class PolyphasePRDFTAnalysisBank(_PolyphasePRBase):
 
 
 class PolyphasePRDFTSynthesisBank(_PolyphasePRBase):
-    """Critically sampled polyphase DFT synthesis bank with overlap-add in block domain."""
+    """block 領域 overlap-add を行う critically sampled ポリフェーズ DFT 合成バンク。"""
 
     def __init__(
         self,
@@ -85,6 +87,7 @@ class PolyphasePRDFTSynthesisBank(_PolyphasePRBase):
         self.delay_compensation = delay_compensation
 
     def synthesis(self, subbands: np.ndarray, length: int | None = None) -> np.ndarray:
+        """ポリフェーズ PR 合成バンクでサブバンド列から時間列を再構成する。"""
         arr = np.asarray(subbands, dtype=np.complex64)
         band_axis = self._normalize_axis(self.axis, arr.ndim - 1)
         if arr.shape[band_axis] != self.n_band:
@@ -95,6 +98,7 @@ class PolyphasePRDFTSynthesisBank(_PolyphasePRBase):
             empty = np.zeros(moved.shape[:-2] + (0,), dtype=np.complex64)
             return np.moveaxis(empty, -1, band_axis)
 
+        # IFFT により各フレームの polyphase branch サンプルへ戻す。
         phase_samples = np.fft.ifft(moved, axis=-2)
         out_blocks = np.zeros(
             moved.shape[:-2] + (moved.shape[-1] + self.n_phase - 1, self.decimation),
@@ -131,7 +135,7 @@ class PolyphasePRDFTSynthesisBank(_PolyphasePRBase):
 
 
 class PolyphasePRPairDesigner:
-    """Design synthesis prototypes from branch-wise polyphase PR constraints."""
+    """branch ごとのポリフェーズ PR 制約から合成原型を設計する。"""
 
     def __init__(self, n_band: int, decimation: int) -> None:
         if n_band <= 0:
@@ -150,6 +154,7 @@ class PolyphasePRPairDesigner:
         *,
         synthesis_prototype_length: int | None = None,
     ) -> np.ndarray:
+        """各 polyphase branch の畳み込み行列を構築する。"""
         self._validate_prototype(analysis_prototype)
         synthesis_prototype_length = (
             analysis_prototype.prototype_length if synthesis_prototype_length is None else synthesis_prototype_length
@@ -178,6 +183,7 @@ class PolyphasePRPairDesigner:
         regularization: float = 0.0,
         branch_matrices: np.ndarray | None = None,
     ) -> PrototypeFilter:
+        """branch ごとの PR 条件を最小二乗で満たす合成原型を設計する。"""
         self._validate_prototype(analysis_prototype)
         matrices = (
             self.build_branch_matrices(
@@ -202,6 +208,7 @@ class PolyphasePRPairDesigner:
             if regularization == 0.0:
                 solution, *_ = np.linalg.lstsq(matrix, target, rcond=None)
             else:
+                # 正則化項は少数位相長や悪条件 branch での数値発散を抑えるために加える。
                 lhs = matrix.conj().T @ matrix + regularization * np.eye(synthesis_n_phase, dtype=np.complex64)
                 rhs = matrix.conj().T @ target
                 solution = np.linalg.solve(lhs, rhs)
@@ -217,6 +224,7 @@ class PolyphasePRPairDesigner:
         delay_blocks: int,
         branch_matrices: np.ndarray | None = None,
     ) -> dict[str, float]:
+        """解析・合成原型の branch-wise PR 残差を評価する。"""
         self._validate_prototype(analysis_prototype)
         self._validate_prototype(synthesis_prototype)
         matrices = (

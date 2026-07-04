@@ -1,5 +1,7 @@
 """src/spflow/beamforming パッケージの公開 API をまとめるモジュール。"""
 
+# ビームフォーミング利用者は配列設計・重み設計・実適用をまとめて import することが多いため、
+# 個別実装のファイル構成を意識しなくても使える公開入口をここで固定する。
 from .array_design import BandwiseArrayDesign
 from .cbf import (
     CBFBeamformer,
@@ -34,6 +36,7 @@ from .mvdr_weight_designer import (
     design_mvdr_weights_with_channel_window,
 )
 
+# ここに列挙した識別子だけを公開 API と見なし、探索補助用の内部関数は外部契約に含めない。
 __all__ = [
     "BandwiseArrayDesign",
     "apply_channel_window_to_steering",

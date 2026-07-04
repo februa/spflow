@@ -6,7 +6,7 @@ import numpy as np
 
 
 def make_pr_prototype(fft_size: int, kind: str = "sine") -> np.ndarray:
-    """Create a prototype window that supports perfect reconstruction."""
+    """完全再構成を満たす解析合成用プロトタイプ窓を返す。"""
 
     if fft_size <= 0:
         raise ValueError("fft_size must be positive.")
@@ -15,6 +15,7 @@ def make_pr_prototype(fft_size: int, kind: str = "sine") -> np.ndarray:
 
     if kind == "sine":
         n = np.arange(fft_size, dtype=np.float32)
+        # sine 窓は 50% overlap 条件で COLA を満たし、WOLA の PR 基準として使いやすい。
         return np.sin(np.pi * (n + 0.5) / fft_size)
 
     if kind == "sqrt_hann":

@@ -67,6 +67,8 @@ def make_constrained_sinc_qmf_candidate(
         config=config,
     )
 
+    # 半帯域電力応答 P(ω) = 1 + Σ_k a_k 2cos((2k+1)ω) を再構成し、
+    # その自己相関列から最小位相側のスペクトル因子を取り出して解析ローパス係数に戻す。
     power_response = _build_halfband_power_response(odd_lag_coefficients, basis)
     analysis_low = _spectral_factorize_halfband_power(odd_lag_coefficients, config.num_taps)
     params = resolve_qmf_stage_parameters(analysis_low, tolerance=1e-6)
@@ -97,10 +99,15 @@ def _build_odd_lag_power_basis(
         fft_size=config.fft_size,
     )
     order = config.num_taps // 2
+    # basis shape: [fft_size, order]。
+    # 線形位相 halfband FIR の電力応答は奇数ラグの余弦級数で書けるため、
+    # 係数最適化を FIR 係数そのものではなく odd-lag の自己相関係数に落として凸に近い形で扱う。
     basis = np.stack([2.0 * np.cos((2 * idx + 1) * omega) for idx in range(order)], axis=1)
 
     weights = np.ones_like(omega)
     transition = (omega >= config.passband_edge_scale * np.pi) & (omega <= config.stopband_edge_scale * np.pi)
+    # 遷移帯域は理想 sinc と有限長 FIR の食い違いが最も大きく、そこを厳密一致させると
+    # 通過域リップルや阻止域減衰が悪化しやすいため、重みを下げて両側帯域の品質を優先する。
     weights[transition] = config.transition_weight
     return omega, target, basis, weights
 
@@ -111,11 +118,15 @@ def _initialize_odd_lag_coefficients(
     weights: np.ndarray,
     positivity_floor: float,
 ) -> np.ndarray:
+    # weighted_basis shape: [n_freq, order]、weighted_target shape: [n_freq]。
+    # P(ω) - 1 を odd-lag 基底へ最小二乗射影し、制約付き探索の初期値を sinc 目標に近づける。
     weighted_basis = basis * weights[:, np.newaxis]
     weighted_target = (target - 1.0) * weights
     coeffs, *_ = np.linalg.lstsq(weighted_basis, weighted_target, rcond=None)
 
     scale = 1.0
+    # P(ω) が 0 以下になるとスペクトル因子が実 FIR として存在しなくなるため、
+    # 自己相関列が正値を保つ範囲まで係数全体を縮めて安全な初期点に戻す。
     while np.min(_build_halfband_power_response(scale * coeffs, basis)) <= positivity_floor and scale > 1e-8:
         scale *= 0.95
     return scale * coeffs
@@ -145,6 +156,8 @@ def _coordinate_descent_optimize(
             baseline = coeffs[idx]
             local_best = best
             local_value = baseline
+            # 1 係数ずつ座標降下し、粗い刻みから細かい刻みへ順に試す。
+            # 電力応答は非線形制約付きなので勾配法よりも失敗時の巻き戻しが明確な探索を優先する。
             for delta in (step, -step, 0.5 * step, -0.5 * step, 0.25 * step, -0.25 * step):
                 trial = coeffs.copy()
                 trial[idx] = baseline + delta
@@ -163,6 +176,8 @@ def _coordinate_descent_optimize(
                 best = local_best
                 improved = True
 
+        # 改善した周回では探索半径を少しだけ縮め、停滞した周回では大きく縮めることで、
+        # 早い段階では広く探索し、終盤では positivity 制約を壊さない微調整へ移る。
         step *= config.reduction_if_improved if improved else config.reduction_if_stalled
     return coeffs
 
@@ -177,12 +192,16 @@ def _weighted_power_objective(
 ) -> float:
     power_response = _build_halfband_power_response(coeffs, basis)
     if np.min(power_response) <= positivity_floor:
+        # 数値誤差で 0 に接近した自己相関列はスペクトル因子化で不安定になるため、
+        # ここでは候補を即座に棄却して実装を安全側へ倒す。
         return np.inf
     residual = (power_response - target) * weights
     return float(np.sqrt(np.mean(residual**2)))
 
 
 def _build_halfband_power_response(coeffs: np.ndarray, basis: np.ndarray) -> np.ndarray:
+    # basis shape: [n_freq, order]、coeffs shape: [order]。
+    # 各周波数点で odd-lag 余弦基底を線形結合し、半帯域フィルタの電力応答 P(ω) を評価する。
     return 1.0 + basis @ np.asarray(coeffs, dtype=np.float32)
 
 
@@ -192,10 +211,15 @@ def _spectral_factorize_halfband_power(coeffs: np.ndarray, num_taps: int) -> np.
     autocorr[max_lag] = 1.0
     for idx, value in enumerate(np.asarray(coeffs, dtype=np.float32)):
         lag = 2 * idx + 1
+        # autocorr shape: [2 * max_lag + 1]。中心が 0 ラグで、左右へ奇数ラグ係数を対称配置する。
+        # halfband 電力応答のフーリエ級数係数を自己相関列へ戻すことで、
+        # 実係数 FIR のスペクトル因子化問題へ変換する。
         autocorr[max_lag + lag] = value
         autocorr[max_lag - lag] = value
 
     roots = np.roots(autocorr)
+    # 単位円内の根だけを採用すると最小位相側のスペクトル因子になり、
+    # 有限長の解析ローパスを安定に一意決定しやすい。
     inside_or_smallest = sorted(roots, key=lambda root: abs(root))[:max_lag]
     poly = np.real_if_close(np.poly(inside_or_smallest), tol=1000)
     if np.iscomplexobj(poly):
@@ -204,6 +228,8 @@ def _spectral_factorize_halfband_power(coeffs: np.ndarray, num_taps: int) -> np.
             raise RuntimeError(f"Spectral factorization left a residual imaginary part: {imag_peak}")
         poly = np.real(poly)
     taps = np.asarray(poly, dtype=np.float32)
+    # QMF 正規化ではローパス DC 利得を √2 に合わせる必要があるため、
+    # 係数和が √2 になるようにスケーリングしてエネルギ整合を取る。
     taps *= np.sqrt(2.0) / np.sum(taps)
     return taps
 
@@ -220,6 +246,8 @@ def _evaluate_candidate(
     metrics = candidate.response_metrics()
 
     rng = np.random.default_rng(0)
+    # 複素白色雑音を使うことで全帯域をほぼ一様に励振し、
+    # 特定周波数だけでは見落としやすい PR 誤差や位相ずれを時間領域でまとめて観測する。
     signal = rng.standard_normal(4096) + 1j * rng.standard_normal(4096)
     low, high = stage.analysis(signal)
     reconstructed = stage.synthesis(low, high, length=signal.shape[-1])

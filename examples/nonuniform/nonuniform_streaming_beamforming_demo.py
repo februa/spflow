@@ -1,5 +1,8 @@
 """非均一フィルタバンクの streaming / 完全再構成 / ビームフォーミング結果を可視化する。"""
 
+# 非均一木構造では分割仕様と streaming 状態の組み合わせで挙動が大きく変わるため、
+# 実運用に近い入出力条件を一式そろえて可視化・書き出しできる例として管理する。
+
 from __future__ import annotations
 
 import argparse
@@ -36,6 +39,7 @@ class NumpyEncoder(json.JSONEncoder):
     """numpy 型を summary JSON へ落とす encoder。"""
 
     def default(self, obj):
+        """numpy 配列と numpy scalar を JSON 化可能な Python 型へ変換する。"""
         if isinstance(obj, np.ndarray):
             return obj.tolist()
         if isinstance(obj, np.floating):

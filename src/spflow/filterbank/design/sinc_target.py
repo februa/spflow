@@ -28,7 +28,7 @@ def design_windowed_sinc_halfband_target(
     cutoff: float = 0.25,
     window: str = "blackman",
 ) -> np.ndarray:
-    """Design a real lowpass target used as the desired halfband response."""
+    """halfband 目標応答として使う実数低域 windowed-sinc を設計する。"""
 
     if num_taps <= 0:
         raise ValueError("num_taps must be positive.")
@@ -37,6 +37,7 @@ def design_windowed_sinc_halfband_target(
 
     n = np.arange(num_taps, dtype=np.float32)
     midpoint = 0.5 * (num_taps - 1)
+    # 理想低域 h[n] = 2 fc sinc(2 fc (n-n0)) を窓で有限長化し、候補応答の目標とする。
     taps = 2.0 * cutoff * np.sinc(2.0 * cutoff * (n - midpoint))
     taps *= _select_window(window, num_taps)
     taps *= np.sqrt(2.0) / np.sum(taps)
@@ -50,7 +51,7 @@ def build_halfband_power_target(
     window: str = "blackman",
     fft_size: int = 65536,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Return a complemented power target derived from a windowed-sinc lowpass."""
+    """windowed-sinc 低域から相補 halfband 電力目標を構成する。"""
 
     omega, magnitude = compute_frequency_magnitude(
         design_windowed_sinc_halfband_target(num_taps, cutoff=cutoff, window=window),
@@ -58,6 +59,7 @@ def build_halfband_power_target(
     )
     power = magnitude**2
     mirrored = power[::-1]
+    # H0^2(ω) + H1^2(ω) = 2 を満たす halfband 相補条件へ正規化する。
     target = 2.0 * power / np.maximum(power + mirrored, np.finfo(np.float32).tiny)
     return omega, target
 

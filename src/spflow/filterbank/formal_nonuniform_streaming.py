@@ -21,7 +21,7 @@ from .formal_nonuniform_tree import (
 
 @dataclass(frozen=True)
 class FormalPacketBlock:
-    """One streaming update worth of formal leaf packets."""
+    """1 回の streaming 更新で得られた formal leaf packet 群。"""
 
     packets: tuple[FormalBandPacket, ...]
     final: bool = False
@@ -59,6 +59,8 @@ class _FormalStreamingAnalysisNodeState:
             )
 
         scale = filterbank.stage._root_scale(sample_rate_hz)
+        # 親 1 サンプルは root-rate 上で scale サンプル間隔を持つ。
+        # 2 分岐後の子 sample_rate は 1/2 になるため、時刻原点と遅延も root-rate へ換算して継承する。
         child_rate_hz = 0.5 * sample_rate_hz
         child_time_origin = time_origin_at_root_rate + filterbank.stage.stage.filters.analysis_phase * scale
         child_delay = delay_samples_at_root_rate + filterbank.stage.analysis_delay_parent_samples * scale
@@ -134,6 +136,8 @@ class _FormalStreamingAnalysisNodeState:
         outputs.extend(self.low_child.process(low))
 
         if high.shape[-1] > 0:
+            # 高域子系列は stage 内部で低域基底へ戻されていないため、
+            # child packet 契約へ合わせて -Fs_parent/4 だけ周波数シフトする。
             high = self.filterbank.stage._frequency_shift_packet(
                 high,
                 shift_hz=-0.25 * self.sample_rate_hz,
@@ -158,7 +162,7 @@ class _FormalStreamingAnalysisNodeState:
 
 
 class FormalNonuniformTreeStreamingAnalyzer:
-    """Exact-by-construction streaming analyzer for the formal FIR tree."""
+    """formal FIR 木の逐次解析参照実装。"""
 
     def __init__(self, filterbank: FormalNonuniformTreeFilterBank) -> None:
         self.filterbank = filterbank
@@ -175,6 +179,7 @@ class FormalNonuniformTreeStreamingAnalyzer:
         }
 
     def process_analytic(self, x: np.ndarray) -> list[FormalPacketBlock]:
+        """複素 analytic 入力チャンクから新規 formal packet block を生成する。"""
         arr = np.asarray(x, dtype=np.complex64)
         if arr.ndim == 0:
             raise ValueError("input chunk must have at least one dimension.")
@@ -192,10 +197,12 @@ class FormalNonuniformTreeStreamingAnalyzer:
         return self._make_blocks(packets, final=False)
 
     def flush(self) -> list[FormalPacketBlock]:
+        """末尾ゼロ詰めで各段の FIR 過渡を流し切り、最終 packet block を返す。"""
         packets = self._root_state.flush()
         return self._make_blocks(packets, final=True)
 
     def result(self) -> FormalNonuniformAnalysisResult:
+        """これまでの入力全体に対応するオフライン形式の解析結果を返す。"""
         if self._analytic_input is None:
             packets = []
             for spec in self.filterbank.band_specs:
@@ -231,7 +238,7 @@ class FormalNonuniformTreeStreamingAnalyzer:
 
 
 class OracleFormalNonuniformTreeStreamingSynthesizer:
-    """Reference synthesizer that rebuilds the full root prefix on every update."""
+    """更新のたびに root prefix 全体を再構成する参照合成器。"""
 
     def __init__(self, filterbank: FormalNonuniformTreeFilterBank) -> None:
         self.filterbank = filterbank
@@ -242,6 +249,7 @@ class OracleFormalNonuniformTreeStreamingSynthesizer:
         self._sample_prefix_shape: tuple[int, ...] | None = None
 
     def process_block(self, block: FormalPacketBlock) -> np.ndarray:
+        """packet block を取り込み、前回以降に増えた root-rate サンプルだけ返す。"""
         if not isinstance(block, FormalPacketBlock):
             raise TypeError("block must be a FormalPacketBlock.")
         for packet in block.packets:
@@ -264,6 +272,8 @@ class OracleFormalNonuniformTreeStreamingSynthesizer:
             scale = self.filterbank.stage._root_scale(packet.sample_rate_hz)
             prior_len = sum(int(chunk.complex_samples.shape[-1]) for chunk in chunks)
             expected_origin = first.time_origin_at_root_rate + prior_len * scale
+            # 同一 leaf 帯域では packet が時間的に連続していないと、
+            # 後段で prefix 再構成したときに時刻原点が破綻するためここで弾く。
             if packet.time_origin_at_root_rate != expected_origin:
                 raise ValueError("packet time_origin_at_root_rate is not contiguous.")
             if packet.delay_samples_at_root_rate != first.delay_samples_at_root_rate:
@@ -426,6 +436,7 @@ class _FormalStreamingSynthesisNodeState:
             high_chunk = self.high_child.consume_output_prefix(common)
             self._initialize_output_cursor(low_chunk, high_chunk)
 
+            # 高域 child packet は low child と同じ基底帯域へ戻してから stage 合成へ渡す。
             high_unshifted = self.filterbank.stage._frequency_shift_packet(
                 high_chunk.complex_samples,
                 shift_hz=high_chunk.f_low_hz - low_chunk.f_low_hz,
@@ -521,11 +532,12 @@ class _FormalStreamingSynthesisNodeState:
             complex_samples=arr.copy(),
         )
         self.output_queue.append(packet)
+        # emission 後は root-rate 基準で time_origin を進め、次 packet の開始時刻を保つ。
         self._next_output_time_origin_at_root_rate += int(arr.shape[-1]) * self.filterbank.stage._root_scale(self.sample_rate_hz)
 
 
 class FormalNonuniformTreeStreamingSynthesizer:
-    """Incremental streaming synthesizer for the formal FIR tree."""
+    """formal FIR 木の逐次合成器。"""
 
     def __init__(self, filterbank: FormalNonuniformTreeFilterBank) -> None:
         self.filterbank = filterbank
@@ -537,6 +549,7 @@ class FormalNonuniformTreeStreamingSynthesizer:
         self._input_final = False
 
     def process_block(self, block: FormalPacketBlock) -> np.ndarray:
+        """formal packet block を取り込み、確定した root 出力だけを返す。"""
         if not isinstance(block, FormalPacketBlock):
             raise TypeError("block must be a FormalPacketBlock.")
         if block.final:
@@ -568,6 +581,7 @@ def _split_formal_packet(
     prefix_length: int,
     root_scale: int,
 ) -> tuple[FormalBandPacket, FormalBandPacket | None]:
+    """packet を prefix と残りへ分割し、残りの time_origin を進める。"""
     packet_len = int(packet.complex_samples.shape[-1])
     if prefix_length <= 0 or prefix_length > packet_len:
         raise ValueError("prefix_length must be in [1, packet_len].")

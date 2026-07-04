@@ -1,5 +1,8 @@
 """complex halfband stage に関する回帰試験。"""
 
+# フィルタバンク試験では完全再構成誤差、群遅延、設計制約の維持を同時に見たいので、
+# 数値安定性を崩しやすい代表条件を回帰ケースとして明示的に残す。
+
 import numpy as np
 
 from spflow.filterbank.complex_halfband_stage import (

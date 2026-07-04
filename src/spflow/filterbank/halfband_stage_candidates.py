@@ -21,18 +21,23 @@ class OrthonormalQMFStageCandidate:
 
     @property
     def analysis_high(self) -> np.ndarray:
+        """低域係数から直交 QMF の高域解析係数を生成する。"""
         n = np.arange(self.analysis_low.size)
+        # h1[n] = (-1)^n h0[L-1-n] により、低域から高域鏡像を作る。
         return ((-1.0) ** n) * self.analysis_low[::-1]
 
     @property
     def synthesis_low(self) -> np.ndarray:
+        """低域合成係数を返す。直交 QMF では解析低域の時間反転になる。"""
         return self.analysis_low[::-1]
 
     @property
     def synthesis_high(self) -> np.ndarray:
+        """高域合成係数を返す。直交 QMF では解析高域の時間反転になる。"""
         return self.analysis_high[::-1]
 
     def make_stage_filters(self) -> ComplexFIRHalfbandStageFilters:
+        """候補係数を `ComplexFIRHalfbandStageFilters` へ変換する。"""
         return ComplexFIRHalfbandStageFilters(
             analysis_low=self.analysis_low,
             analysis_high=self.analysis_high,
@@ -44,14 +49,18 @@ class OrthonormalQMFStageCandidate:
         )
 
     def make_stage(self) -> ComplexFIRHalfbandStage:
+        """候補係数から複素 halfband stage 実装を構築する。"""
         return ComplexFIRHalfbandStage(self.make_stage_filters())
 
     def response_metrics(self, fft_size: int = 65536) -> dict[str, float]:
+        """候補係数の周波数応答指標を返す。"""
         if fft_size <= 0:
             raise ValueError("fft_size must be positive.")
 
         n = np.arange(self.analysis_low.size, dtype=np.float32)
         omega = np.linspace(0.0, np.pi, fft_size // 2 + 1)
+        # low/high とも shape は [n_freq]。
+        # exp(-j ω n) による離散時間周波数応答 H(ω) を直接和で評価する。
         low = np.abs(np.sum(self.analysis_low[np.newaxis, :] * np.exp(-1j * omega[:, np.newaxis] * n[np.newaxis, :]), axis=1))
         high = np.abs(np.sum(self.analysis_high[np.newaxis, :] * np.exp(-1j * omega[:, np.newaxis] * n[np.newaxis, :]), axis=1))
 
@@ -84,7 +93,6 @@ KNOWN_QMF_CANDIDATE_ALIASES = {
 
 def make_known_qmf_candidates() -> dict[str, OrthonormalQMFStageCandidate]:
     """既知の QMF 候補一覧を返す。"""
-
     return {
         "haar_qmf_taps2": OrthonormalQMFStageCandidate(
             name="haar_qmf_taps2",
@@ -149,7 +157,6 @@ def make_known_qmf_candidates() -> dict[str, OrthonormalQMFStageCandidate]:
 
 def resolve_known_qmf_candidate_name(name: str) -> str:
     """別名を含めて既知候補の正式名へ正規化する。"""
-
     candidates = make_known_qmf_candidates()
     if name in candidates:
         return name
@@ -160,7 +167,6 @@ def resolve_known_qmf_candidate_name(name: str) -> str:
 
 def get_known_qmf_candidate(name: str) -> OrthonormalQMFStageCandidate:
     """候補名から QMF stage 候補を返す。"""
-
     candidates = make_known_qmf_candidates()
     return candidates[resolve_known_qmf_candidate_name(name)]
 

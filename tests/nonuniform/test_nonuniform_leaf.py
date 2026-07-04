@@ -1,5 +1,8 @@
 """nonuniform leaf に関する回帰試験。"""
 
+# 非均一分割は葉ごとのレート差と内部状態の持ち越しが複雑なため、
+# 木構造・streaming・ビームフォーミング統合時の安全側挙動を回帰試験で固定する。
+
 import numpy as np
 import pytest
 

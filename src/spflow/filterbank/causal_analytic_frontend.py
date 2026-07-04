@@ -9,7 +9,7 @@ import numpy as np
 
 @dataclass(frozen=True)
 class CausalAnalyticResult:
-    """Analytic frontend output plus explicit root-rate delay metadata."""
+    """因果 analytic front-end の出力と遅延メタデータを保持する。"""
 
     samples: np.ndarray
     delay_samples_at_root_rate: int
@@ -17,14 +17,14 @@ class CausalAnalyticResult:
 
 
 def design_hilbert_fir(num_taps: int, window: str = "hamming") -> np.ndarray:
-    """Design a causal FIR Hilbert transformer using a windowed ideal impulse response."""
-
+    """窓付き理想応答から因果 FIR ヒルベルト変換器を設計する。"""
     if num_taps <= 1 or num_taps % 2 == 0:
         raise ValueError("num_taps must be an odd integer greater than 1.")
 
     center = num_taps // 2
     n = np.arange(num_taps, dtype=np.float32) - center
     taps = np.zeros(num_taps, dtype=np.float32)
+    # 理想ヒルベルト変換器 h[n] = 2 / (π n) の奇数サンプルだけを採用する。
     odd = (np.abs(n) > 0.0) & (np.mod(np.abs(n), 2.0) == 1.0)
     taps[odd] = 2.0 / (np.pi * n[odd])
 
@@ -41,7 +41,11 @@ def design_hilbert_fir(num_taps: int, window: str = "hamming") -> np.ndarray:
 
 
 class CausalAnalyticFrontend:
-    """Causal FIR Hilbert-transformer-based analytic frontend."""
+    """FIR ヒルベルト変換器ベースの因果 analytic front-end。
+
+    実数入力から遅延付きの複素 analytic 信号を生成し、後段の複素フィルタバンクへ
+    渡す。非因果な FFT ベース解析や帯域分割自体は責務に含めない。
+    """
 
     def __init__(self, hilbert_taps: np.ndarray) -> None:
         taps = np.asarray(hilbert_taps, dtype=np.float32)
@@ -52,9 +56,21 @@ class CausalAnalyticFrontend:
 
     @classmethod
     def default(cls, num_taps: int = 63, window: str = "hamming") -> "CausalAnalyticFrontend":
+        """既定 tap 数と窓で front-end を構築する。"""
         return cls(design_hilbert_fir(num_taps=num_taps, window=window))
 
     def analyze(self, x: np.ndarray, *, pad_tail: bool = False) -> CausalAnalyticResult:
+        """実数入力を因果 analytic 信号へ変換する。
+
+        Args:
+            x: 実数入力。shape は `[..., n_sample]`。
+            pad_tail: `True` の場合、ヒルベルト FIR の群遅延ぶんだけ末尾をゼロ詰めし、
+                最終サンプルの虚部応答も回収する。
+
+        Returns:
+            `samples` shape が `[..., n_sample]` または `[..., n_sample + delay]` の
+            `CausalAnalyticResult`。
+        """
         arr = np.asarray(x, dtype=np.float32)
         if arr.ndim == 0:
             raise ValueError("input must have at least one dimension.")
@@ -68,6 +84,8 @@ class CausalAnalyticFrontend:
 
         delayed_real = self._delay_signal(work)
         imag = self._convolve_last_axis(work, self.hilbert_taps)
+        # 実部は群遅延ぶんだけ遅らせた原信号、虚部はヒルベルト変換出力とすることで、
+        # causal な analytic 近似 x_d[n] + j h{x}[n] を構成する。
         samples = delayed_real + 1j * imag
         return CausalAnalyticResult(
             samples=samples,
@@ -76,6 +94,7 @@ class CausalAnalyticFrontend:
         )
 
     def recover_real(self, result: CausalAnalyticResult | np.ndarray, *, length: int | None = None) -> np.ndarray:
+        """analytic 出力から遅延補償済み実数波形を回復する。"""
         samples = result.samples if isinstance(result, CausalAnalyticResult) else np.asarray(result, dtype=np.complex64)
         start = self.delay_samples
         stop = None if length is None else start + length
@@ -94,6 +113,8 @@ class CausalAnalyticFrontend:
         arr = np.asarray(x, dtype=np.float32)
         filt = np.asarray(taps, dtype=np.float32)
         rows = int(np.prod(arr.shape[:-1])) if arr.ndim > 1 else 1
+        # reshape 後の shape は [n_row, n_sample]。
+        # 先頭軸をまとめることで、末尾時間軸への FIR を全行へ同じ規約で適用する。
         reshaped = arr.reshape(rows, arr.shape[-1])
         out = np.zeros((rows, arr.shape[-1]), dtype=np.float32)
         for row_idx in range(rows):
@@ -103,7 +124,11 @@ class CausalAnalyticFrontend:
 
 
 class CausalAnalyticFrontendStreamer:
-    """Exact-by-construction streaming wrapper for CausalAnalyticFrontend."""
+    """`CausalAnalyticFrontend` の逐次処理ラッパー。
+
+    厳密には毎回オフライン結果を再計算して新規出力だけを切り出す参照実装であり、
+    計算量最適化は責務に含めない。まずはオフライン一致性を優先する。
+    """
 
     def __init__(self, frontend: CausalAnalyticFrontend) -> None:
         self.frontend = frontend
@@ -111,6 +136,7 @@ class CausalAnalyticFrontendStreamer:
         self._emitted = 0
 
     def process(self, x: np.ndarray) -> CausalAnalyticResult:
+        """入力チャンクを蓄積し、新たに確定した analytic サンプルだけ返す。"""
         arr = np.asarray(x, dtype=np.float32)
         if arr.ndim == 0:
             raise ValueError("input chunk must have at least one dimension.")
@@ -138,6 +164,7 @@ class CausalAnalyticFrontendStreamer:
         )
 
     def flush(self) -> CausalAnalyticResult:
+        """末尾をゼロ詰めして FIR 過渡の残りを回収する。"""
         if self._input is None:
             return CausalAnalyticResult(
                 samples=np.zeros((0,), dtype=np.complex64),

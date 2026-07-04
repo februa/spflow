@@ -22,12 +22,13 @@ class ResolvedHalfbandStageParameters:
 
 
 def design_daubechies_qmf_lowpass(order: int) -> np.ndarray:
-    """Return orthonormal Daubechies lowpass taps of length ``2 * order``."""
+    """長さ `2 * order` の直交 Daubechies 低域係数を返す。"""
 
     if order <= 0:
         raise ValueError("order must be positive.")
 
     polynomial = np.array([comb(order - 1 + k, k) for k in range(order)], dtype=float)
+    # Daubechies 多項式の根から最小位相半分を選び、直交 QMF の低域係数を構成する。
     y_roots = np.roots(polynomial[::-1])
 
     z_roots = []

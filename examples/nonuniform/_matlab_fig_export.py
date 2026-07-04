@@ -1,5 +1,8 @@
 """MATLAB 表示可能な .fig を一括生成するための補助関数。"""
 
+# 非均一木構造では分割仕様と streaming 状態の組み合わせで挙動が大きく変わるため、
+# 実運用に近い入出力条件を一式そろえて可視化・書き出しできる例として管理する。
+
 from __future__ import annotations
 
 import json

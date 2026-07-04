@@ -6,7 +6,7 @@ import numpy as np
 
 
 def frame_signal(x: np.ndarray, frame_size: int, hop_size: int) -> tuple[np.ndarray, int]:
-    """Slice the last axis into overlapped frames, padding the tail as needed."""
+    """末尾軸を重複フレームへ切り出し、必要なら末尾をゼロ詰めする。"""
 
     if frame_size <= 0:
         raise ValueError("frame_size must be positive.")
@@ -18,6 +18,7 @@ def frame_signal(x: np.ndarray, frame_size: int, hop_size: int) -> tuple[np.ndar
         return np.zeros(x.shape[:-1] + (frame_size, 0), dtype=x.dtype), 0
 
     n_frames = max(1, int(np.ceil((n_samples - frame_size) / hop_size)) + 1)
+    # 最終フレームも frame_size を満たすよう末尾を補い、解析窓の長さを揃える。
     padded_length = frame_size + max(0, n_frames - 1) * hop_size
     pad_width = padded_length - n_samples
 
@@ -41,7 +42,7 @@ def overlap_add(
     hop_size: int,
     length: int | None = None,
 ) -> np.ndarray:
-    """Overlap-add frames along the last axis and normalize by window power."""
+    """フレーム列を overlap-add し、窓電力で正規化して時間列へ戻す。"""
 
     if frames.ndim < 2:
         raise ValueError("frames must have frame and frame-index axes.")
@@ -62,6 +63,7 @@ def overlap_add(
         output[..., start:stop] += frames[..., :, frame_idx] * window
         weight[start:stop] += window_sq
 
+    # 重複窓和が 0 に近い端点だけは除外し、WOLA の窓電力で割って振幅を戻す。
     nonzero = weight > np.finfo(np.float32).eps
     output[..., nonzero] /= weight[nonzero]
 

@@ -10,7 +10,7 @@ import numpy as np
 
 @dataclass(frozen=True)
 class NonuniformBandSpec:
-    """Leaf-band metadata for the nonuniform complex PR tree."""
+    """非一様複素 PR 木の leaf 帯域メタデータ。"""
 
     band_id: str
     f_low_hz: float
@@ -21,16 +21,18 @@ class NonuniformBandSpec:
 
     @property
     def bandwidth_hz(self) -> float:
+        """帯域幅 `f_high_hz - f_low_hz` を返す。"""
         return float(self.f_high_hz - self.f_low_hz)
 
     @property
     def center_frequency_hz(self) -> float:
+        """帯域中心周波数 `(f_low_hz + f_high_hz) / 2` を返す。"""
         return 0.5 * (self.f_low_hz + self.f_high_hz)
 
 
 @dataclass(frozen=True)
 class NonuniformBandPacket:
-    """Complex subband samples emitted for one leaf band."""
+    """leaf 帯域 1 本ぶんの複素サブバンド列を保持する。"""
 
     spec: NonuniformBandSpec
     samples: np.ndarray
@@ -38,7 +40,7 @@ class NonuniformBandPacket:
 
 @dataclass(frozen=True)
 class NonuniformAnalysisResult:
-    """Analysis output plus metadata required for exact synthesis."""
+    """非一様木解析結果と再合成に必要なメタデータを保持する。"""
 
     packets: tuple[NonuniformBandPacket, ...]
     original_length: int
@@ -60,22 +62,26 @@ class _TreeNode:
 
 
 class ComplexHalfbandPRBlockStage:
-    """Exact 2-channel complex PR stage based on a 2-point DFT on sample pairs.
+    """2 点 DFT に基づく厳密 PR の 2 分岐複素段。
 
-    This is the minimal exact stage used for the first nonuniform-tree PR validation.
-    It is intentionally a baseline splitter, not the final high-selectivity prototype.
+    非一様木の最初の exact-PR 検証用ベースラインであり、
+    高選択度 FIR 段の代わりに最小構成の可逆分割器として使う。
     """
 
     def analysis(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """時間列を low/high 2 分岐へ解析する。"""
         arr = np.asarray(x, dtype=np.complex64)
         if arr.shape[-1] % 2 != 0:
             raise ValueError("analysis input length must be even.")
 
+        # reshape 後の shape は [..., n_block, 2]。
+        # 各 2 サンプル block に 2 点 FFT を掛け、低域・高域分岐へ写像する。
         blocks = arr.reshape(arr.shape[:-1] + (-1, 2))
         spectra = np.fft.fft(blocks, axis=-1)
         return spectra[..., 0], spectra[..., 1]
 
     def synthesis(self, low: np.ndarray, high: np.ndarray) -> np.ndarray:
+        """low/high 2 分岐を元の複素時間列へ再合成する。"""
         low_arr = np.asarray(low, dtype=np.complex64)
         high_arr = np.asarray(high, dtype=np.complex64)
         if low_arr.shape != high_arr.shape:
@@ -87,7 +93,11 @@ class ComplexHalfbandPRBlockStage:
 
 
 class NonuniformTreeFilterBank:
-    """Complex PR tree filter bank for the first nonuniform exact-PR validation step."""
+    """非一様複素 PR 木のベースライン実装。
+
+    まずは厳密再構成と木構造の整合性確認を責務とし、実数 front-end の streaming 最適化や
+    実用 FIR 選択度の実装は責務に含めない。
+    """
 
     def __init__(self, band_specs: list[NonuniformBandSpec], *, fs_hz: float) -> None:
         if fs_hz <= 0.0:
@@ -105,6 +115,7 @@ class NonuniformTreeFilterBank:
 
     @classmethod
     def default_for_fs(cls, fs_hz: float = 32768.0) -> "NonuniformTreeFilterBank":
+        """既定サンプリング周波数向けの dyadic 帯域割り当てを返す。"""
         if fs_hz <= 0.0:
             raise ValueError("fs_hz must be positive.")
         nyquist = 0.5 * fs_hz
@@ -140,15 +151,18 @@ class NonuniformTreeFilterBank:
         return cls(specs, fs_hz=fs_hz)
 
     def analyze_real(self, x: np.ndarray) -> NonuniformAnalysisResult:
+        """実数入力を analytic 化してから非一様木へ解析する。"""
         arr = np.asarray(x, dtype=np.float32)
         analytic = self._analytic_signal(arr)
         return self._analyze(analytic, analytic_input=False)
 
     def analyze_analytic(self, x: np.ndarray) -> NonuniformAnalysisResult:
+        """複素 analytic 入力をそのまま非一様木へ解析する。"""
         arr = np.asarray(x, dtype=np.complex64)
         return self._analyze(arr, analytic_input=True)
 
     def synthesize(self, result: NonuniformAnalysisResult, *, analytic_output: bool = False) -> np.ndarray:
+        """解析結果から root-rate 時間列を再合成する。"""
         if not isinstance(result, NonuniformAnalysisResult):
             raise TypeError("result must be a NonuniformAnalysisResult.")
 
@@ -211,6 +225,8 @@ class NonuniformTreeFilterBank:
         pad_width = self.root_block_size - remainder
         pad_spec = [(0, 0)] * x.ndim
         pad_spec[-1] = (0, pad_width)
+        # root block 長が揃わないと末端 leaf 長が木深さごとに不整合になるため、
+        # 最後はゼロ詰めして dyadic 分割可能な長さへ揃える。
         return np.pad(np.asarray(x, dtype=np.complex64), pad_spec)
 
     def _build_tree(
@@ -258,4 +274,6 @@ class NonuniformTreeFilterBank:
         else:
             multiplier[0] = 1.0
             multiplier[1 : (n_sample + 1) // 2] = 2.0
+        # analytic 信号生成では負周波数側を 0、正周波数側を 2 倍し、
+        # DC と Nyquist だけは実数成分として 1 倍のまま保持する。
         return np.fft.ifft(spectrum * multiplier, axis=-1)

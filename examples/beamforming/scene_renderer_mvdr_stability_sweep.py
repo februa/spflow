@@ -1,5 +1,8 @@
 """MVDR の安定性を周波数・アレイ条件で sweep するサンプル。"""
 
+# scene_renderer で合成した観測波面を使い、設計した steering や重みが
+# 単体式だけでなく波形再構成・指向性評価の流れ全体で破綻しないかを確認する例である。
+
 from __future__ import annotations
 
 import argparse

@@ -1,5 +1,8 @@
 """FrameBuffer と Flow を使った最小パイプライン例。"""
 
+# コア API を最小構成で接続し、バッファリングやステップ実行の責務分離を
+# 実験コード側からどう扱うかを示すためのサンプルとして残している。
+
 from __future__ import annotations
 
 from types import SimpleNamespace

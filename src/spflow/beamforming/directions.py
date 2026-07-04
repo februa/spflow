@@ -29,18 +29,31 @@ def make_directions(
     array_side: str = "right side",
     el_preset_deg: np.ndarray | list[float] | tuple[float, ...] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Construct 3D beam direction cosines and plotting axes.
+    """ビーム走査用の 3 次元方向余弦と描画軸を構成する。
 
-    Returns
-    -------
-    dir3d:
-        Direction cosines with shape ``(3, n_beam_az * n_beam_el)``.
-    axis_az_deg:
-        Horizontal beam axis values with shape ``(n_beam_az,)``.
-    axis_el_deg:
-        Elevation beam axis values with shape ``(n_beam_el,)``.
+    右舷・左舷アレイでは、方位角を等角度ではなく `cos(azimuth)` 空間で概ね等間隔に
+    配置することで、側方アレイで実際に使う方向余弦グリッドへ合わせる。
+    一方で `forward` は前方扇形走査を想定し、方位角をそのまま等間隔に配置する。
+
+    Args:
+        az_min_deg: 方位角下限。単位は度。
+        az_max_deg: 方位角上限。単位は度。
+        el_min_deg: 仰角下限。単位は度。
+        el_max_deg: 仰角上限。単位は度。
+        n_beam_az_real: 実ビーム本数。
+        n_beam_az_virtual: 実端点の外側へ仮想補助点として加える本数。
+        n_beam_el: 仰角ビーム本数。省略時は `el_preset_deg` 長を用いる。
+        array_side: `"right side"` `"left side"` `"forward"` のいずれか。
+        el_preset_deg: 仰角プリセット。shape は `[n_beam_el]`、単位は度。
+
+    Returns:
+        `dir3d`, `axis_az_deg`, `axis_el_deg` の組。
+        `dir3d` の shape は `[3, n_beam_az * n_beam_el]` で、
+        axis=0 は x, y, z の方向余弦成分を表す。
+
+    Raises:
+        ValueError: 方位角範囲やビーム本数、仰角プリセットが整合しない場合。
     """
-
     side = _normalize_array_side(array_side)
     az_min = float(az_min_deg)
     az_max = float(az_max_deg)
@@ -79,6 +92,8 @@ def make_directions(
     if n_beam_el != int(el_preset.size):
         raise ValueError("n_beam_el must match len(el_preset_deg).")
 
+    # 側方アレイでは方向余弦 u = cos(azimuth) をほぼ等間隔に並べる。
+    # センサ遅延は u に対して線形に変化するため、ビーム空間の離散化も u 基準の方が自然である。
     diff_cos_az = abs(np.cos(np.deg2rad(az_max)) - np.cos(np.deg2rad(az_min)))
 
     if side == "forward":
@@ -94,17 +109,26 @@ def make_directions(
             if n_beam_az_real == 1:
                 cos_az = np.array([np.cos(np.deg2rad(0.5 * (az_min + az_max)))], dtype=np.float32)
             else:
+                # 仮想ビームは端点外側の余白として解釈し、実ビーム中心間隔を保ったまま
+                # 開口端の shading や補間に使えるよう cos 空間でずらす。
                 step = diff_cos_az / (n_beam_az_real - 1)
                 start = np.cos(np.deg2rad(az_min)) + step * n_beam_az_virtual / 2.0
                 stop = np.cos(np.deg2rad(az_max)) - step * n_beam_az_virtual / 2.0
                 cos_az = np.linspace(start, stop, n_beam_az, dtype=np.float32)
             cos_az = np.clip(cos_az, -1.0, 1.0)
+            # sin^2 + cos^2 = 1 に従い、側方アレイでは正の側方成分を基準に生成する。
+            # 左舷向きは後段で y 符号を反転して表す。
             sin_az = np.sqrt(np.maximum(0.0, 1.0 - cos_az**2))
             axis_az_deg = np.rad2deg(np.arccos(cos_az))
 
+    # 仰角も同様に、z 成分は sin(el)、水平面投影は cos(el) で与える。
     sin_el = np.sin(np.deg2rad(el_preset))
     cos_el = np.sqrt(np.maximum(0.0, 1.0 - sin_el**2))
 
+    # 各 shape:
+    #   cos_az[:, None]: [n_beam_az, 1]
+    #   cos_el[None, :]: [1, n_beam_el]
+    # 外積により水平・鉛直グリッド上の方向余弦を生成する。
     dircos_x = cos_az[:, np.newaxis] * cos_el[np.newaxis, :]
     dircos_y_base = np.real(sin_az)[:, np.newaxis] * cos_el[np.newaxis, :]
     if side in {"right", "forward"}:
@@ -115,10 +139,11 @@ def make_directions(
 
     n_beam_all = n_beam_az * n_beam_el
     dir3d = np.zeros((3, n_beam_all), dtype=np.float32)
+    # reshape 後の axis=0 は方位、axis=1 は仰角であり、一次元化して
+    # [x, y, z] 成分ごとの走査ベクトル群へ並べ替える。
     dir3d[0, :] = dircos_x.reshape(-1)
     dir3d[1, :] = dircos_y.reshape(-1)
     dir3d[2, :] = dircos_z.reshape(-1)
 
     axis_el_deg = np.rad2deg(np.arcsin(np.clip(sin_el, -1.0, 1.0)))
     return dir3d, axis_az_deg, axis_el_deg
-
