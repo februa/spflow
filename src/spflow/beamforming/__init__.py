@@ -19,6 +19,15 @@ from .covariance import (
     integrate_band_covariances,
     recommended_integration_time_for_independent_samples,
 )
+from .diagnostic_plotting import (
+    BeamDiagnosticPlotUsageNotes,
+    build_beam_diagnostic_plot_usage_notes,
+    centers_to_edges,
+    plot_bl_response,
+    plot_btr_heatmap,
+    plot_fraz_heatmap,
+    write_beam_diagnostic_plot_usage_notes,
+)
 from .directions import make_directions
 from .mvdr_filter import (
     MVDRFilter,
@@ -34,6 +43,19 @@ from .mvdr_weight_designer import (
     MVDRWeightDesigner,
     design_mvdr_weights,
     design_mvdr_weights_with_channel_window,
+)
+from .time_delay import (
+    DelayTable,
+    FractionalDelayFilterBank,
+    IntegerDelayAndSumBeamformer,
+    design_fractional_delay_filter_bank,
+    design_windowed_sinc_fractional_delay_filter,
+)
+from .time_delay_diagnostics import (
+    TimeDelayDiagnosticConfig,
+    TimeDelayDiagnosticSource,
+    build_sparse_single_side_array_positions,
+    run_integer_delay_diagnostics,
 )
 
 # ここに列挙した識別子だけを公開 API と見なし、探索補助用の内部関数は外部契約に含めない。
@@ -51,7 +73,23 @@ __all__ = [
     "integrate_band_covariances",
     "forgetting_factor_from_integration_time",
     "CovarianceEstimator",
+    "BeamDiagnosticPlotUsageNotes",
+    "build_beam_diagnostic_plot_usage_notes",
+    "write_beam_diagnostic_plot_usage_notes",
+    "centers_to_edges",
+    "plot_bl_response",
+    "plot_fraz_heatmap",
+    "plot_btr_heatmap",
+    "TimeDelayDiagnosticConfig",
+    "TimeDelayDiagnosticSource",
+    "build_sparse_single_side_array_positions",
+    "run_integer_delay_diagnostics",
     "make_directions",
+    "DelayTable",
+    "FractionalDelayFilterBank",
+    "IntegerDelayAndSumBeamformer",
+    "design_fractional_delay_filter_bank",
+    "design_windowed_sinc_fractional_delay_filter",
     "design_mvdr_weights",
     "design_mvdr_weights_with_channel_window",
     "design_mvdr_overlap_save_filters",
