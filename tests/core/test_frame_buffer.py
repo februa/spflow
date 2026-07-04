@@ -1,3 +1,8 @@
+"""frame buffer に関する回帰試験。"""
+
+# コア部品は境界条件の取り扱いが不具合源になりやすいため、
+# バッファ残量やスケジューリング順序が崩れないことを小さな入力で固定する。
+
 import numpy as np
 import pytest
 
@@ -5,6 +10,7 @@ from spflow import FrameBuffer
 
 
 def test_frame_buffer_emits_overlapped_frames():
+    """frame bufferがオーバーラップした frame を出力することを確認する。"""
     buffer = FrameBuffer(frame_size=4, hop_size=2, axis=-1)
 
     out1 = buffer.process(np.array([0, 1, 2]))
@@ -17,6 +23,7 @@ def test_frame_buffer_emits_overlapped_frames():
 
 
 def test_frame_buffer_preserves_axis_order():
+    """frame bufferが軸順序を保つことを確認する。"""
     buffer = FrameBuffer(frame_size=3, hop_size=2, axis=-1)
     x = np.arange(10).reshape(2, 5)
 
@@ -29,6 +36,7 @@ def test_frame_buffer_preserves_axis_order():
 
 
 def test_frame_buffer_flush_without_pad_drops_remainder():
+    """frame bufferで pad なし flush 時に余りを破棄することを確認する。"""
     buffer = FrameBuffer(frame_size=4, hop_size=2)
     buffer.process(np.array([1, 2, 3]))
 
@@ -36,6 +44,7 @@ def test_frame_buffer_flush_without_pad_drops_remainder():
 
 
 def test_frame_buffer_flush_with_pad_returns_single_frame_only_when_remainder_exists():
+    """frame bufferで pad あり flush 時に余りがあるときだけ 1 frame を返すことを確認する。"""
     buffer = FrameBuffer(frame_size=4, hop_size=2)
     buffer.process(np.array([1, 2, 3]))
 
@@ -47,6 +56,7 @@ def test_frame_buffer_flush_with_pad_returns_single_frame_only_when_remainder_ex
 
 
 def test_frame_buffer_rejects_shape_mismatch_except_axis():
+    """frame bufferが対象軸以外の shape 不一致を拒否することを確認する。"""
     buffer = FrameBuffer(frame_size=2, hop_size=1, axis=-1)
     buffer.process(np.zeros((2, 3)))
 
