@@ -79,10 +79,12 @@ def build_beam_diagnostic_plot_usage_notes() -> BeamDiagnosticPlotUsageNotes:
             "方位軸を等 cos 空間で設計した場合、degree 空間ではビーム間隔が非一様になる。",
             "そのため FRAZ/BTR の画像描画では、ビーム中心値を線形補間せずセル境界を明示する必要がある。",
             "BL/FRAZ/BTR のピーク方位は連続角ではなく nearest beam center へ量子化される。",
+            "dB は比率表現であり単位ではないため、レベル軸には dB re input RMS、dB re 1 uPa RMS、dB re uPa/sqrt(Hz) など基準量を明記する。",
         ),
         bl=(
             "BL は指定周波数 1 点でのビーム応答であり、帯域平均応答ではない。",
             "複数音源条件では、BL を音源周波数ごとに個別評価し、他周波数音源の影響と混同しない。",
+            "SLC 前後の重ね書き BL は、target 近傍の mainlobe 形状維持と guard 外 sidelobe 抑圧を同時に確認するために使う。",
             "target 方位とピーク方位の差は、主にビームグリッド量子化と整数遅延近似の影響で生じる。",
         ),
         fraz=(
@@ -236,28 +238,84 @@ def plot_bl_response(
     caption: str,
     output_path: str | Path,
     response_label: str = "Beam response",
+    level_unit_label: str = "dB re input RMS",
 ) -> None:
     """BL, すなわち指定周波数でのビーム応答を保存する。
 
     Args:
-        axis_az_deg: 方位中心列。shape は `[n_beam]`、単位は deg。
-        beam_levels_db20: 各ビームの RMS レベル。shape は `[n_beam]`、単位は dB20。
-        target_azimuth_deg: 真値として重ね描きする target 方位。単位は deg。
-        peak_azimuth_deg: 最大応答ビーム中心。単位は deg。
+        axis_az_deg: 方位軸。shape は `[n_beam]`、単位は deg。
+        beam_levels_db20: RMS 振幅レベル。shape は `[n_beam]`。
+            表示単位は `level_unit_label` で明示する。
+        target_azimuth_deg: target 方位。単位は deg。
+        peak_azimuth_deg: BL peak 方位。単位は deg。
         title: 図タイトル。
-        caption: 図下部に表示する使用条件要約。
+        caption: 図下部の説明文。
         output_path: 保存先 PNG パス。
-        response_label: 凡例へ表示する応答系列名。
+        response_label: 凡例名。
+        level_unit_label: y 軸へ表示する dB 基準量。
+            例は `dB re 1 uPa RMS`, `dB re input RMS`, `dB re uPa/sqrt(Hz)`。
 
-    Returns:
-        なし。
+    Raises:
+        OSError: 図保存に失敗した場合。
     """
     fig, axis = plt.subplots(figsize=(10, 4.5))
     axis.plot(axis_az_deg, beam_levels_db20, linewidth=1.5, label=response_label)
     axis.axvline(float(target_azimuth_deg), color="black", linestyle=":", linewidth=1.0, label="Target azimuth")
     axis.axvline(float(peak_azimuth_deg), color="tab:red", linestyle="--", linewidth=1.0, label="Peak azimuth")
     axis.set_xlabel("Azimuth [deg]")
-    axis.set_ylabel("RMS Level [dB20]")
+    # dB は比率表現であり単位そのものではないため、軸ラベルには必ず基準量を含める。
+    axis.set_ylabel(f"RMS Level [{level_unit_label}]")
+    axis.set_title(title)
+    axis.grid(True, alpha=0.3)
+    axis.legend(loc="best")
+    add_caption(fig, caption)
+    fig.tight_layout(rect=(0.03, 0.04, 1.0, 0.96))
+    save_figure(fig, output_path)
+
+
+def plot_bl_comparison(
+    axis_az_deg: np.ndarray,
+    before_levels_db20: np.ndarray,
+    after_levels_db20: np.ndarray,
+    *,
+    target_azimuth_deg: float,
+    before_peak_azimuth_deg: float,
+    after_peak_azimuth_deg: float,
+    title: str,
+    caption: str,
+    output_path: str | Path,
+    before_label: str = "Before SLC",
+    after_label: str = "After SLC",
+    level_unit_label: str = "dB re input RMS",
+) -> None:
+    """SLC 前後の BL を重ね書きし、mainlobe 維持と sidelobe 変化を比較保存する。
+
+    Args:
+        axis_az_deg: 方位軸。shape は `[n_beam]`、単位は deg。
+        before_levels_db20: SLC 前の RMS 振幅レベル。shape は `[n_beam]`。
+        after_levels_db20: SLC 後の RMS 振幅レベル。shape は `[n_beam]`。
+        target_azimuth_deg: target 方位。単位は deg。
+        before_peak_azimuth_deg: SLC 前 peak 方位。単位は deg。
+        after_peak_azimuth_deg: SLC 後 peak 方位。単位は deg。
+        title: 図タイトル。
+        caption: 図下部の説明文。
+        output_path: 保存先 PNG パス。
+        before_label: SLC 前の凡例名。
+        after_label: SLC 後の凡例名。
+        level_unit_label: y 軸へ表示する dB 基準量。
+
+    Raises:
+        OSError: 図保存に失敗した場合。
+    """
+    fig, axis = plt.subplots(figsize=(10, 4.5))
+    axis.plot(axis_az_deg, before_levels_db20, linewidth=1.5, color="tab:blue", label=before_label)
+    axis.plot(axis_az_deg, after_levels_db20, linewidth=1.5, color="tab:orange", label=after_label)
+    axis.axvline(float(target_azimuth_deg), color="black", linestyle=":", linewidth=1.0, label="Target azimuth")
+    axis.axvline(float(before_peak_azimuth_deg), color="tab:blue", linestyle="--", linewidth=1.0, label="Before peak")
+    axis.axvline(float(after_peak_azimuth_deg), color="tab:orange", linestyle="-.", linewidth=1.0, label="After peak")
+    axis.set_xlabel("Azimuth [deg]")
+    # dB は比率表現であり単位そのものではないため、軸ラベルには必ず基準量を含める。
+    axis.set_ylabel(f"RMS Level [{level_unit_label}]")
     axis.set_title(title)
     axis.grid(True, alpha=0.3)
     axis.legend(loc="best")
@@ -280,29 +338,9 @@ def plot_fraz_heatmap(
     title: str,
     caption: str,
     output_path: str | Path,
-    colorbar_label: str = "Level [dB20 RMS]",
+    colorbar_label: str = "RMS Level [dB re input RMS]",
 ) -> None:
-    """FRAZ, すなわち周波数-方位レベル分布を保存する。
-
-    Args:
-        axis_az_deg: 方位中心列。shape は `[n_beam]`、単位は deg。
-        freqs_hz: 周波数中心列。shape は `[n_freq]`、単位は Hz。
-        fraz_levels_db20: 周波数-方位レベル。shape は `[n_beam, n_freq]`、単位は dB20 RMS。
-            axis=0 がビーム、axis=1 が周波数ビンである。
-        target_azimuth_deg: 単一点の真値方位。単位は deg。
-        target_frequency_hz: 単一点の真値周波数。単位は Hz。
-        peak_azimuth_deg: 単一点のピーク方位。単位は deg。
-        peak_frequency_hz: 単一点のピーク周波数。単位は Hz。
-        target_points: 複数 target を重ね描きする場合の `(azimuth_deg, frequency_hz, label)` 列。
-        peak_points: 複数 peak を重ね描きする場合の `(azimuth_deg, frequency_hz, label)` 列。
-        title: 図タイトル。
-        caption: 図下部に表示する使用条件要約。
-        output_path: 保存先 PNG パス。
-        colorbar_label: カラーバーのラベル。
-
-    Returns:
-        なし。
-    """
+    """FRAZ, すなわち周波数-方位レベル分布を保存する。"""
     fig, axis = plt.subplots(figsize=(10, 5.5))
     azimuth_edges_deg = centers_to_edges(axis_az_deg)
     frequency_edges_hz = centers_to_edges(freqs_hz)
@@ -379,27 +417,9 @@ def plot_btr_heatmap(
     title: str,
     caption: str,
     output_path: str | Path,
-    colorbar_label: str = "Relative Level [dB]",
+    colorbar_label: str = "Relative Level [dB re frame max]",
 ) -> None:
-    """BTR, すなわち time-azimuth のビームトラックを保存する。
-
-    Args:
-        axis_az_deg: 方位中心列。shape は `[n_beam]`、単位は deg。
-        times_s: 時刻中心列。shape は `[n_time]`、単位は s。
-        btr_relative_levels_db: 時間-方位相対レベル。shape は `[n_time, n_beam]`、単位は dB。
-            axis=0 が時間ブロック、axis=1 がビームである。
-        btr_peak_azimuths_deg: 各時間ブロックの最大ビーム方位。shape は `[n_time]`、単位は deg。
-            複数同時音源で peak track が代表値にならない場合は `None` を渡す。
-        target_azimuth_deg: 単一点の真値方位。単位は deg。
-        target_azimuths_deg: 複数 target 方位列。shape は `[n_target]`、単位は deg。
-        title: 図タイトル。
-        caption: 図下部に表示する使用条件要約。
-        output_path: 保存先 PNG パス。
-        colorbar_label: カラーバーのラベル。
-
-    Returns:
-        なし。
-    """
+    """BTR, すなわち time-azimuth のビームトラックを保存する。"""
     fig, axis = plt.subplots(figsize=(10, 5.5))
     azimuth_edges_deg = centers_to_edges(axis_az_deg)
     time_edges_s = centers_to_edges(times_s)
@@ -458,6 +478,7 @@ __all__ = [
     "add_caption",
     "save_figure",
     "plot_bl_response",
+    "plot_bl_comparison",
     "plot_fraz_heatmap",
     "plot_btr_heatmap",
 ]

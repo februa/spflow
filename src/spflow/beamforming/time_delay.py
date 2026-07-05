@@ -305,6 +305,51 @@ class DelayTable:
         )
 
 
+def _steering_phase_from_integer_delay(delay_int: np.ndarray, frequency_hz: float, fs_hz: float) -> np.ndarray:
+    """整数遅延だけの steering 複素応答を返す。"""
+    return np.exp(-1j * 2.0 * np.pi * float(frequency_hz) * np.asarray(delay_int, dtype=np.float64) / float(fs_hz))
+
+
+def _fractional_filter_response(
+    fractional_filter_bank: FractionalDelayFilterBank,
+    frac_filter_index: np.ndarray,
+    frequency_hz: float,
+    fs_hz: float,
+) -> np.ndarray:
+    """選択済み小数遅延 FIR の複素周波数応答を返す。
+
+    Args:
+        fractional_filter_bank: 保存済み小数遅延 FIR バンク。
+        frac_filter_index: 各チャネル・各ビームの使用フィルタ番号。shape は `[n_ch, n_beam]`。
+        frequency_hz: 評価周波数。単位は Hz。
+        fs_hz: サンプリング周波数。単位は Hz。
+
+    Returns:
+        各チャネル・各ビームで選ばれた FIR の複素応答。shape は `[n_ch, n_beam]`。
+    """
+    index_table = np.asarray(frac_filter_index, dtype=np.int64)
+    require(index_table.ndim == 2, "frac_filter_index must have shape (n_ch, n_beam).")
+
+    angular_frequency_rad = 2.0 * np.pi * float(frequency_hz) / float(fs_hz)
+    tap_index = np.arange(fractional_filter_bank.n_tap, dtype=np.float64)
+    unique_filter_indices = np.unique(index_table)
+    unique_responses: dict[int, complex] = {}
+
+    for filter_index in unique_filter_indices.tolist():
+        taps = np.asarray(fractional_filter_bank.frac_filters[int(filter_index)], dtype=np.float64)
+        # H(e^{jw}) = Σ h[n] exp(-j w n)。
+        # 実行時の FIR 畳み込みと同じタップ順で周波数応答を評価し、
+        # beam-domain の解析式と time-domain 実装の位相基準を一致させる。
+        unique_responses[int(filter_index)] = complex(
+            np.sum(taps * np.exp(-1j * angular_frequency_rad * tap_index))
+        )
+
+    filter_response = np.empty(index_table.shape, dtype=np.complex128)
+    for filter_index, response in unique_responses.items():
+        filter_response[index_table == int(filter_index)] = response
+    return filter_response
+
+
 class IntegerDelayAndSumBeamformer:
     """整数サンプル遅延だけで時間領域固定整相を行うビームフォーマ。
 
@@ -319,9 +364,17 @@ class IntegerDelayAndSumBeamformer:
     信号処理上は、SLC 前段の時間領域固定 Delay-and-Sum ビームフォーマに位置づく。
     """
 
-    def __init__(self, delay_table: DelayTable, average_channels: bool = True) -> None:
+    def __init__(
+        self,
+        delay_table: DelayTable,
+        average_channels: bool = True,
+        *,
+        fs_hz: float | None = None,
+    ) -> None:
+        """既設の遅延表から整数遅延固定整相器を構成する。"""
         self.delay_table = delay_table
         self.average_channels = bool(average_channels)
+        self.fs_hz = None if fs_hz is None else float(fs_hz)
 
     @classmethod
     def from_geometry(
@@ -343,6 +396,28 @@ class IntegerDelayAndSumBeamformer:
                 fractional_filter_bank=fractional_filter_bank,
             ),
             average_channels=average_channels,
+            fs_hz=float(fs_hz),
+        )
+
+    def steering_response(self, frequency_hz: float) -> np.ndarray:
+        """指定周波数における各チャネル・各ビームの複素 steering 応答を返す。
+
+        Args:
+            frequency_hz: 評価周波数。単位は Hz。
+
+        Returns:
+            整相器側の複素応答。shape は `[n_ch, n_beam]`。
+
+        Raises:
+            ValueError: `fs_hz` を持たない構築方法でインスタンス化されている場合。
+        """
+        require_positive_float("frequency_hz", float(frequency_hz))
+        if self.fs_hz is None:
+            raise ValueError("fs_hz is required to evaluate steering_response().")
+        return _steering_phase_from_integer_delay(
+            delay_int=self.delay_table.delay_int,
+            frequency_hz=float(frequency_hz),
+            fs_hz=float(self.fs_hz),
         )
 
     def process(
@@ -402,6 +477,182 @@ class IntegerDelayAndSumBeamformer:
         if self.average_channels:
             # 固定 Delay-and-Sum ではチャネル平均でビーム出力を得る。
             # 平均化により、同相整列した target 成分は保持しつつチャネル数依存の利得増加を避ける。
+            beam_output = np.mean(steered_channel_output, axis=1, dtype=working_dtype)
+        else:
+            beam_output = np.sum(steered_channel_output, axis=1, dtype=working_dtype)
+
+        if return_steered_channels:
+            return beam_output, steered_channel_output
+        return beam_output
+
+
+class FractionalDelayAndSumBeamformer:
+    """整数遅延と保存済み小数遅延 FIR を組み合わせて固定整相を行うビームフォーマ。
+
+    このクラスは、`DelayTable.delay_int` と `DelayTable.frac_filter_index` に基づいて
+    各チャネルへ整数サンプル遅延と小数遅延 FIR を適用し、チャネル平均でビーム出力を作る。
+
+    入力はチャネル時系列 `[n_ch, n_sample]`、出力は固定整相後の
+    ビーム時系列 `[n_beam, n_sample]` である。
+
+    小数遅延 FIR の設計そのものや SLC 重み更新は責務に含めない。
+    信号処理上は、時間領域固定整相の高域位相量子化誤差を減らす前段ビームフォーマに位置づく。
+    """
+
+    def __init__(
+        self,
+        delay_table: DelayTable,
+        fractional_filter_bank: FractionalDelayFilterBank,
+        average_channels: bool = True,
+        *,
+        fs_hz: float | None = None,
+    ) -> None:
+        """既設の遅延表と保存済み小数遅延 FIR バンクから固定整相器を構成する。"""
+        if delay_table.frac_filter_index is None:
+            raise ValueError("delay_table must include frac_filter_index for fractional beamforming.")
+        self.delay_table = delay_table
+        self.fractional_filter_bank = fractional_filter_bank
+        self.average_channels = bool(average_channels)
+        self.fs_hz = None if fs_hz is None else float(fs_hz)
+
+    @classmethod
+    def from_geometry(
+        cls,
+        array_pos_m: np.ndarray,
+        dir_cos: np.ndarray,
+        fs_hz: float,
+        sound_speed_m_s: float,
+        fractional_filter_bank: FractionalDelayFilterBank,
+        average_channels: bool = True,
+    ) -> "FractionalDelayAndSumBeamformer":
+        """アレイ幾何と保存済み FIR バンクから小数遅延固定整相器を構成する。"""
+        return cls(
+            delay_table=DelayTable.from_geometry(
+                array_pos_m=array_pos_m,
+                dir_cos=dir_cos,
+                fs_hz=fs_hz,
+                sound_speed_m_s=sound_speed_m_s,
+                fractional_filter_bank=fractional_filter_bank,
+            ),
+            fractional_filter_bank=fractional_filter_bank,
+            average_channels=average_channels,
+            fs_hz=float(fs_hz),
+        )
+
+    @classmethod
+    def from_geometry_and_filter_bank_path(
+        cls,
+        array_pos_m: np.ndarray,
+        dir_cos: np.ndarray,
+        fs_hz: float,
+        sound_speed_m_s: float,
+        fractional_filter_bank_path: str | Path,
+        average_channels: bool = True,
+    ) -> "FractionalDelayAndSumBeamformer":
+        """保存済み `.npz` を読み出して小数遅延固定整相器を構成する。"""
+        fractional_filter_bank = FractionalDelayFilterBank.load_npz(fractional_filter_bank_path)
+        return cls.from_geometry(
+            array_pos_m=array_pos_m,
+            dir_cos=dir_cos,
+            fs_hz=fs_hz,
+            sound_speed_m_s=sound_speed_m_s,
+            fractional_filter_bank=fractional_filter_bank,
+            average_channels=average_channels,
+        )
+
+    def steering_response(self, frequency_hz: float) -> np.ndarray:
+        """指定周波数における各チャネル・各ビームの複素 steering 応答を返す。
+
+        Args:
+            frequency_hz: 評価周波数。単位は Hz。
+
+        Returns:
+            整相器側の複素応答。shape は `[n_ch, n_beam]`。
+
+        Raises:
+            ValueError: `fs_hz` を持たない構築方法でインスタンス化されている場合。
+        """
+        require_positive_float("frequency_hz", float(frequency_hz))
+        if self.fs_hz is None:
+            raise ValueError("fs_hz is required to evaluate steering_response().")
+        if self.delay_table.frac_filter_index is None:
+            raise ValueError("delay_table must include frac_filter_index for steering_response().")
+
+        integer_phase = _steering_phase_from_integer_delay(
+            delay_int=self.delay_table.delay_int,
+            frequency_hz=float(frequency_hz),
+            fs_hz=float(self.fs_hz),
+        )
+        filter_response = _fractional_filter_response(
+            fractional_filter_bank=self.fractional_filter_bank,
+            frac_filter_index=self.delay_table.frac_filter_index,
+            frequency_hz=float(frequency_hz),
+            fs_hz=float(self.fs_hz),
+        )
+        return integer_phase * filter_response
+
+    def process(
+        self,
+        x: np.ndarray,
+        return_steered_channels: bool = False,
+    ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+        """整数遅延と小数遅延 FIR により固定ビーム出力を生成する。
+
+        Args:
+            x: 入力チャネル信号。shape は `[n_ch, n_sample]`。
+                axis=0 は受波器チャネル、axis=1 は時間サンプルである。
+            return_steered_channels: `True` の場合はチャネル平均前の
+                整相信号 `[n_beam, n_ch, n_sample]` も返す。
+
+        Returns:
+            `return_steered_channels=False` の場合は固定整相出力
+            `[n_beam, n_sample]` を返す。
+            `True` の場合は `(beam_output, steered_channel_output)` を返す。
+
+        Raises:
+            ValueError: 入力 shape が想定と異なる場合。
+        """
+        input_signal = np.asarray(x)
+        require(input_signal.ndim == 2, "x must have shape (n_ch, n_sample).")
+        require(
+            input_signal.shape[0] == self.delay_table.n_ch,
+            "x and delay_table must agree on n_ch.",
+        )
+        if self.delay_table.frac_filter_index is None:
+            raise ValueError("delay_table must include frac_filter_index for fractional beamforming.")
+
+        # FIR 畳み込みでは tap 係数が float64 のため、出力は少なくとも float64 に保って
+        # 高域位相誤差の確認時に丸めで差分が埋もれないようにする。
+        working_dtype = np.result_type(input_signal.dtype, np.float64)
+        channel_signal = np.asarray(input_signal, dtype=working_dtype)
+        filter_taps = np.asarray(self.fractional_filter_bank.frac_filters, dtype=working_dtype)
+
+        n_ch, n_sample = channel_signal.shape
+        n_beam = self.delay_table.n_beam
+
+        # steered_channel_output shape: [n_beam, n_ch, n_sample]
+        # axis=0 はビーム、axis=1 はチャネル、axis=2 は時間サンプルである。
+        steered_channel_output = np.zeros((n_beam, n_ch, n_sample), dtype=working_dtype)
+
+        for beam_idx in range(n_beam):
+            for ch_idx in range(n_ch):
+                delay_sample = int(self.delay_table.delay_int[ch_idx, beam_idx])
+                if delay_sample >= n_sample:
+                    # 整数遅延だけでブロック外へ出るチャネルは、有効サンプルが残らないため寄与させない。
+                    # 無理に FIR を掛けてもゼロ入力しか見ないので、そのままゼロ出力とする。
+                    continue
+
+                frac_filter_index = int(self.delay_table.frac_filter_index[ch_idx, beam_idx])
+                taps = filter_taps[frac_filter_index]
+                integer_delayed = np.zeros(n_sample, dtype=working_dtype)
+
+                # 先に整数遅延で粗く整相し、その後に小数遅延 FIR で ±0.5 sample の残差を補う。
+                # FIR の共通群遅延は全チャネル共通なので、相対整相性能には影響せず出力全体の時刻だけが後ろへずれる。
+                integer_delayed[delay_sample:] = channel_signal[ch_idx, : n_sample - delay_sample]
+                filtered = np.convolve(integer_delayed, taps, mode="full")
+                steered_channel_output[beam_idx, ch_idx, :] = filtered[:n_sample]
+
+        if self.average_channels:
             beam_output = np.mean(steered_channel_output, axis=1, dtype=working_dtype)
         else:
             beam_output = np.sum(steered_channel_output, axis=1, dtype=working_dtype)

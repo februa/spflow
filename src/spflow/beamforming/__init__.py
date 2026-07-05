@@ -23,12 +23,26 @@ from .diagnostic_plotting import (
     BeamDiagnosticPlotUsageNotes,
     build_beam_diagnostic_plot_usage_notes,
     centers_to_edges,
+    plot_bl_comparison,
     plot_bl_response,
     plot_btr_heatmap,
     plot_fraz_heatmap,
     write_beam_diagnostic_plot_usage_notes,
 )
 from .directions import make_directions
+from .evaluation_criteria import (
+    BeamformingEvaluationCriterion,
+    BeamformingEvaluationPattern,
+    get_evaluation_criteria_for_pattern,
+    list_beamforming_evaluation_criteria,
+    list_beamforming_evaluation_patterns,
+    write_beamforming_evaluation_criteria_markdown,
+)
+from .fractional_delay_performance import (
+    FractionalDelayPerformanceConfig,
+    run_fractional_delay_performance_report,
+)
+from .fractional_delay_slc_diagnostics import run_fractional_delay_slc_diagnostics
 from .mvdr_filter import (
     MVDRFilter,
     MVDROverlapSaveBeamformer,
@@ -44,8 +58,75 @@ from .mvdr_weight_designer import (
     design_mvdr_weights,
     design_mvdr_weights_with_channel_window,
 )
+from .operational_fractional_delay_performance import (
+    OperationalArrayFractionalDelayPerformanceConfig,
+    run_operational_array_fractional_delay_performance_report,
+)
+from .operational_sparse_array import (
+    OperationalSparseArrayDefinition,
+    OperationalSparseArrayDesignConfig,
+    design_operational_sparse_array,
+    load_operational_sparse_array,
+    save_operational_sparse_array,
+)
+from .operational_time_domain_slc_diagnostics import (
+    OperationalTimeDomainSlcDiagnosticConfig,
+    run_operational_time_domain_slc_leakage_diagnostics,
+)
+from .operational_time_domain_adaptive_comparison import (
+    OperationalTimeDomainAdaptiveComparisonConfig,
+    run_operational_time_domain_adaptive_comparison,
+)
+from .operational_time_domain_frequency_separation_diagnostics import (
+    OperationalSameAzimuthFrequencySeparationConfig,
+    run_operational_same_azimuth_frequency_separation_diagnostics,
+)
+from .operational_shading import (
+    OperationalFixedBeamShadingDesignConfig,
+    OperationalShadingDefinition,
+    OperationalShadingDesignConfig,
+    load_operational_shading,
+    run_operational_fixed_beam_shading_design,
+    run_operational_shading_design,
+)
+from .slc import (
+    BeamDomainSLC,
+    BeamGuardSelector,
+    build_reference_blocking_matrix,
+    BlockLeastSquaresSlcSolver,
+    HeadingAwareForgettingController,
+    SlcConfig,
+    SlcCovarianceEstimator,
+    SlcOutputSafetyDecision,
+    SlcProcessResult,
+    SlcReferenceCapacityChecker,
+    SlcReferenceCapacityDecision,
+    evaluate_slc_output_safety,
+)
+from .sparse_single_side_array_design import (
+    SparseSingleSideArrayDesignConfig,
+    SparseSingleSideArrayDesignResult,
+    build_sparse_single_side_array_design,
+    run_sparse_single_side_array_design,
+)
+from .time_domain_adaptive import (
+    TimeDomainAdaptiveWeightDiagnostics,
+    apply_time_domain_fir_beamformer,
+    build_gsc_blocking_matrix,
+    build_real_tone_constraint_matrix,
+    build_time_domain_tone_constraint_vector,
+    build_time_tapped_snapshot_matrix,
+    design_time_domain_gsc_weights,
+    design_time_domain_lcmv_weights,
+    design_time_domain_mvdr_weights,
+    diagnose_time_domain_adaptive_weights,
+    estimate_time_domain_covariance,
+    evaluate_constraint_response,
+)
+from .time_delay_guard_design import TimeDelayGuardDesignConfig, run_integer_delay_guard_design
 from .time_delay import (
     DelayTable,
+    FractionalDelayAndSumBeamformer,
     FractionalDelayFilterBank,
     IntegerDelayAndSumBeamformer,
     design_fractional_delay_filter_bank,
@@ -57,6 +138,7 @@ from .time_delay_diagnostics import (
     build_sparse_single_side_array_positions,
     run_integer_delay_diagnostics,
 )
+from .time_delay_slc_diagnostics import run_integer_delay_slc_diagnostics
 
 # ここに列挙した識別子だけを公開 API と見なし、探索補助用の内部関数は外部契約に含めない。
 __all__ = [
@@ -78,18 +160,79 @@ __all__ = [
     "write_beam_diagnostic_plot_usage_notes",
     "centers_to_edges",
     "plot_bl_response",
+    "plot_bl_comparison",
     "plot_fraz_heatmap",
     "plot_btr_heatmap",
+    "SlcConfig",
+    "SlcReferenceCapacityDecision",
+    "SlcOutputSafetyDecision",
+    "SlcProcessResult",
+    "evaluate_slc_output_safety",
+    "BeamGuardSelector",
+    "SlcReferenceCapacityChecker",
+    "HeadingAwareForgettingController",
+    "SlcCovarianceEstimator",
+    "BlockLeastSquaresSlcSolver",
+    "BeamDomainSLC",
+    "build_reference_blocking_matrix",
+    "OperationalArrayFractionalDelayPerformanceConfig",
+    "run_operational_array_fractional_delay_performance_report",
+    "OperationalSparseArrayDesignConfig",
+    "OperationalSparseArrayDefinition",
+    "design_operational_sparse_array",
+    "save_operational_sparse_array",
+    "load_operational_sparse_array",
+    "OperationalTimeDomainSlcDiagnosticConfig",
+    "run_operational_time_domain_slc_leakage_diagnostics",
+    "OperationalTimeDomainAdaptiveComparisonConfig",
+    "run_operational_time_domain_adaptive_comparison",
+    "OperationalSameAzimuthFrequencySeparationConfig",
+    "run_operational_same_azimuth_frequency_separation_diagnostics",
+    "OperationalFixedBeamShadingDesignConfig",
+    "OperationalShadingDefinition",
+    "OperationalShadingDesignConfig",
+    "load_operational_shading",
+    "run_operational_fixed_beam_shading_design",
+    "run_operational_shading_design",
+    "SparseSingleSideArrayDesignConfig",
+    "SparseSingleSideArrayDesignResult",
+    "build_sparse_single_side_array_design",
+    "run_sparse_single_side_array_design",
     "TimeDelayDiagnosticConfig",
     "TimeDelayDiagnosticSource",
     "build_sparse_single_side_array_positions",
     "run_integer_delay_diagnostics",
+    "run_integer_delay_slc_diagnostics",
     "make_directions",
+    "BeamformingEvaluationCriterion",
+    "BeamformingEvaluationPattern",
+    "get_evaluation_criteria_for_pattern",
+    "list_beamforming_evaluation_criteria",
+    "list_beamforming_evaluation_patterns",
+    "write_beamforming_evaluation_criteria_markdown",
+    "TimeDomainAdaptiveWeightDiagnostics",
+    "build_time_tapped_snapshot_matrix",
+    "estimate_time_domain_covariance",
+    "build_time_domain_tone_constraint_vector",
+    "build_real_tone_constraint_matrix",
+    "design_time_domain_lcmv_weights",
+    "design_time_domain_mvdr_weights",
+    "build_gsc_blocking_matrix",
+    "design_time_domain_gsc_weights",
+    "apply_time_domain_fir_beamformer",
+    "evaluate_constraint_response",
+    "diagnose_time_domain_adaptive_weights",
+    "TimeDelayGuardDesignConfig",
+    "run_integer_delay_guard_design",
     "DelayTable",
+    "FractionalDelayAndSumBeamformer",
     "FractionalDelayFilterBank",
     "IntegerDelayAndSumBeamformer",
     "design_fractional_delay_filter_bank",
     "design_windowed_sinc_fractional_delay_filter",
+    "FractionalDelayPerformanceConfig",
+    "run_fractional_delay_performance_report",
+    "run_fractional_delay_slc_diagnostics",
     "design_mvdr_weights",
     "design_mvdr_weights_with_channel_window",
     "design_mvdr_overlap_save_filters",

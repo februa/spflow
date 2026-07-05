@@ -239,7 +239,7 @@ r_hat_i = (U @ d_i.conj()) / n_sample
 
 と target ごとに計算してもよい。
 
-実装の混乱を避けるため、初期実装では target ごとに次の式を使うことを推奨する。
+実装の混乱を避けるため、正式な方式では target ごとに次の式を使うことを推奨する。
 
 ```python
 r_hat_i = (U @ d_i.conj()) / n_sample
@@ -1043,7 +1043,7 @@ DISABLED:
   Y = D
 ```
 
-初期実装では、`LIMITED_REFERENCE` を省略し、条件を満たさなければ `DISABLED` としてよい。
+正式な方式では、`LIMITED_REFERENCE` を省略せず、条件を満たさない場合の `DISABLED` と参照制限時の `LIMITED_REFERENCE` を区別する。
 
 ---
 
@@ -1159,6 +1159,23 @@ SLC の検証では、以下を確認する。
 9. 方位センサ異常時に通常忘却へ戻ること
 10. 参照不足時に固定整相出力へフォールバックすること
 ```
+
+### 24.1 評価ロールの分離
+
+SLC の評価は、次の 2 つのロールを分けて記録する。
+
+```text
+local_leakage_canceller:
+  target beam に混入した特定方位・特定周波数の interferer 成分を下げる。
+  reduction_at_marker_db、raw_interferer_reduction_db、target_power_delta_db、fallback の有無を見る。
+
+BL_sidelobe_reducer:
+  固定整相後 BL 全体の sidelobe envelope を下げる。
+  first_sidelobe_reduction_db、guard_outside_peak_delta_db、max_guard_outside_worsening_db、
+  percentile / integrated sidelobe、white_noise_gain_db を見る。
+```
+
+`local_leakage_canceller` として有効でも、`guard_outside_peak_delta_db` や `first_sidelobe_reduction_db` が悪化する場合は、BL 全体の sidelobe 低減方式とは判定しない。悪化時は safety gate により固定整相出力へ戻す。
 
 ---
 

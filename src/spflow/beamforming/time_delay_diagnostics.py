@@ -29,7 +29,8 @@ class TimeDelayDiagnosticSource:
     複数本の音源を `TimeDelayDiagnosticConfig.source_specs` へ並べることで、
     複数方位・複数周波数の固定整相評価シーンを構成する。
 
-    入力は方位角、俯仰角、周波数、dB20 レベル、位相、任意ラベルであり、
+    入力は方位角、俯仰角、周波数、dB20 レベル、位相、必要に応じて
+    包絡変調条件、任意ラベルであり、
     出力はシーン生成および source ごとの BL/FRAZ/BTR 指標計算に使う内部条件である。
 
     音源間の適応抑圧、SLC 係数更新、時変包絡制御は責務に含めない。
@@ -41,6 +42,9 @@ class TimeDelayDiagnosticSource:
     level_db20: float = 0.0
     elevation_deg: float = 0.0
     phase_deg: float = 0.0
+    amplitude_modulation_hz: float = 0.0
+    amplitude_modulation_depth: float = 0.0
+    amplitude_modulation_phase_deg: float = 0.0
     label: str | None = None
 
     def __post_init__(self) -> None:
@@ -50,6 +54,12 @@ class TimeDelayDiagnosticSource:
         require_positive_float("frequency_hz", float(self.frequency_hz))
         require(np.isfinite(float(self.level_db20)), "level_db20 must be finite.")
         require(np.isfinite(float(self.phase_deg)), "phase_deg must be finite.")
+        require_non_negative_float("amplitude_modulation_hz", float(self.amplitude_modulation_hz))
+        require(
+            0.0 <= float(self.amplitude_modulation_depth) <= 0.99,
+            "amplitude_modulation_depth must lie in [0.0, 0.99].",
+        )
+        require(np.isfinite(float(self.amplitude_modulation_phase_deg)), "amplitude_modulation_phase_deg must be finite.")
         if self.label is not None:
             require(len(str(self.label)) > 0, "label must not be empty when provided.")
 
@@ -293,13 +303,21 @@ def _generate_target_scene(
         )
         peak_amplitude = _amplitude_from_db20(float(source_spec.level_db20))
         phase_rad = np.deg2rad(float(source_spec.phase_deg))
+        modulation_phase_rad = np.deg2rad(float(source_spec.amplitude_modulation_phase_deg))
 
         # arrival_delay_sec[ch] = -(r_ch^T u) / c。
         # 各 source を同じ符号規約で独立生成し、線形重ね合わせによって複数方位・複数周波数シーンを作る。
         arrival_delay_sec = -(array_positions_m @ source_direction) / float(config.sound_speed_m_s)
 
+        # amplitude_envelope[n] = 1 + depth * cos(2π f_mod t + φ_mod)。
+        # source ごとに異なる低周波包絡を持たせると、同一周波数の複数 source でも
+        # block 単位では相関構造が変化し、後段 SLC のブロック共分散学習を確認しやすくなる。
+        amplitude_envelope = 1.0 + float(source_spec.amplitude_modulation_depth) * np.cos(
+            2.0 * np.pi * float(source_spec.amplitude_modulation_hz) * time_axis_s + modulation_phase_rad
+        )
+
         for channel_index in range(array_positions_m.shape[0]):
-            multichannel_signal[channel_index] += peak_amplitude * np.cos(
+            multichannel_signal[channel_index] += peak_amplitude * amplitude_envelope * np.cos(
                 2.0 * np.pi * float(source_spec.frequency_hz) * (time_axis_s - arrival_delay_sec[channel_index])
                 + phase_rad
             )
@@ -657,3 +675,4 @@ def run_integer_delay_diagnostics(config: TimeDelayDiagnosticConfig) -> dict[str
 
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
     return summary
+

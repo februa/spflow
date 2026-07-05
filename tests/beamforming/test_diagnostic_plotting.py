@@ -36,3 +36,4 @@ def test_usage_notes_markdown_include_axis_and_btr_cautions():
     assert "等 cos 空間" in text
     assert "imshow(extent=...)" in text
     assert "各時刻で最大ビームを 0 dB に正規化" in text
+    assert "dB re" in text

@@ -182,4 +182,4 @@ class PolyphaseDFTFilterBank:
 
 
 class DFT_FilterBank(PRDFTFilterBank):
-    """初期実装との互換性のための別名クラス。"""
+    """既存 API との互換性のための別名クラス。"""
