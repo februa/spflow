@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import numpy as np
+from numpy.typing import NDArray
 
 from .diagnostic_plotting import (
     build_beam_diagnostic_plot_usage_notes,
@@ -42,6 +44,50 @@ from .time_delay_slc_diagnostics import (
     _synthesize_tone_from_snapshots,
 )
 
+
+FloatArray = NDArray[np.floating[Any]]
+
+
+def _require_int_summary_field(summary: dict[str, object], key: str) -> int:
+    """summary 内の整数指標を実行時に検証して取り出す。
+
+    Args:
+        summary: SLC 設計 summary。key ごとの値は JSON 保存を前提に object として保持される。
+        key: 取り出す整数指標名。
+
+    Returns:
+        Python の `int` に確定した指標値。
+
+    Raises:
+        TypeError: 指定 key が整数へ変換できない型の場合。
+
+    境界条件:
+        Pyright / Pylance では `dict[str, object]` の値を直接 `int(...)` へ渡せない。
+        JSON summary 契約を実行時に確認してから型を狭めることで、型エラーを握りつぶさずに集計する。
+    """
+    value = summary[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{key} must be int.")
+    return int(value)
+
+
+def _require_float_summary_field(summary: dict[str, object], key: str) -> float:
+    """summary 内の実数指標を実行時に検証して取り出す。
+
+    Args:
+        summary: SLC 設計 summary。key ごとの値は JSON 保存を前提に object として保持される。
+        key: 取り出す実数指標名。
+
+    Returns:
+        Python の `float` に確定した指標値。
+
+    Raises:
+        TypeError: 指定 key が実数へ変換できない型の場合。
+    """
+    value = summary[key]
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise TypeError(f"{key} must be numeric.")
+    return float(value)
 
 def _build_interference_source_comparisons(
     fixed_source_metrics: list[dict[str, float | str]],
@@ -87,28 +133,68 @@ def _build_interference_source_comparisons(
     return comparisons
 
 
+def _normalize_channel_weights(channel_weights: FloatArray | None, n_ch: int) -> FloatArray:
+    """小数遅延固定整相で使う channel shading 係数を検証して返す。
+
+    Args:
+        channel_weights: active channel に対応する実数重み。shape は `[n_ch]`。None の場合は矩形重み。
+        n_ch: active channel 数。単位は本。
+
+    Returns:
+        検証済みの実数重み。shape は `[n_ch]`。
+
+    Raises:
+        ValueError: 重み shape が active channel 数と一致しない、有限でない、負値を含む、または係数和が正でない場合。
+
+    境界条件:
+        SLC の blocking matrix は固定整相の beam 出力と同じ正規化を仮定する。
+        そのため、非有限値、負値、係数和 0 のまま評価を続けると target 保護条件が数式と対応しないため停止する。
+    """
+    if int(n_ch) <= 0:
+        raise ValueError("n_ch must be positive.")
+    if channel_weights is None:
+        return np.ones(int(n_ch), dtype=np.float64)
+
+    weights = np.asarray(channel_weights, dtype=np.float64)
+    if weights.ndim != 1 or weights.shape[0] != int(n_ch):
+        raise ValueError("channel_weights must have shape (n_ch,).")
+    if not bool(np.all(np.isfinite(weights))):
+        raise ValueError("channel_weights must contain only finite values.")
+    if bool(np.any(weights < 0.0)):
+        raise ValueError("channel_weights must be non-negative.")
+    if float(np.sum(weights)) <= 0.0:
+        raise ValueError("channel_weights must contain positive total weight.")
+    return weights
+
+
 def _build_fractional_beam_response_matrix(
     beamformer: FractionalDelayAndSumBeamformer,
     frequency_hz: float,
+    channel_weights: FloatArray | None = None,
 ) -> np.ndarray:
     """小数遅延固定整相の理論ビーム応答行列を返す。
 
     Args:
         beamformer: 小数遅延固定整相器。`steering_response()` と `delay_table` を持つ。
         frequency_hz: 評価周波数。単位は Hz。
+        channel_weights: active channel の shading 係数。shape は `[n_ch]`。None の場合は矩形重み。
 
     Returns:
         observation beam と look beam の複素応答行列。shape は `[n_beam, n_beam]`。
     """
     arrival_delay_sec = np.asarray(beamformer.delay_table.arrival_delay_sec, dtype=np.float64)
+    weights = _normalize_channel_weights(channel_weights, n_ch=int(arrival_delay_sec.shape[0]))
+    weight_sum = float(np.sum(weights))
 
     # steering_response[ch, beam_obs] は、整数遅延位相と保存済み小数遅延 FIR の
     # 複素周波数応答を含む observation beam 側の整相器応答である。
-    # これと look 方向ごとの到来位相 arrival_phase[ch, beam_look] をセンサ平均することで、
-    # 小数遅延込みの beam-to-beam 理論応答行列を得る。
+    # arrival_phase[ch, beam_look] は look 方向から来る単一トーンの各 ch 到来位相である。
+    # channel shading 使用時は、beam 出力と同じ Σ w_ch * y_ch / Σw で beam-to-beam 応答を定義し、
+    # SLC の blocking matrix が実際の固定整相出力と同じ主ローブ応答を保護するようにする。
     steering_response = np.asarray(beamformer.steering_response(float(frequency_hz)), dtype=np.complex128)
     arrival_phase = np.exp(-1j * 2.0 * np.pi * float(frequency_hz) * arrival_delay_sec)
-    return (steering_response.T @ arrival_phase) / float(arrival_delay_sec.shape[0])
+    weighted_arrival_phase = weights[:, np.newaxis] * arrival_phase
+    return (steering_response.T @ weighted_arrival_phase) / weight_sum
 
 
 def _evaluate_fractional_source_metrics_and_save_bl(
@@ -183,6 +269,7 @@ def _evaluate_fractional_source_metrics_and_save_bl(
 def _run_fractional_delay_diagnostics(
     config: TimeDelayDiagnosticConfig,
     fractional_delay_filter_bank_path: str | Path,
+    channel_weights: FloatArray | None = None,
 ) -> tuple[dict[str, object], FractionalDelayAndSumBeamformer, np.ndarray, np.ndarray, tuple[TimeDelayDiagnosticSource, ...], np.ndarray]:
     """小数遅延固定整相の BL/FRAZ/BTR を保存し、SLC 前段の評価結果を返す。"""
     require_matplotlib()
@@ -208,7 +295,19 @@ def _run_fractional_delay_diagnostics(
         sound_speed_m_s=float(config.sound_speed_m_s),
         fractional_filter_bank_path=fractional_delay_filter_bank_path,
     )
-    beam_output = beamformer.process(multichannel_signal)
+    weights = _normalize_channel_weights(channel_weights, n_ch=int(array_positions_m.shape[0]))
+    beamformer_result = beamformer.process(multichannel_signal, return_steered_channels=True)
+    if not isinstance(beamformer_result, tuple):
+        # return_steered_channels=True では tuple が契約である。
+        # 型推論上の Union を実行時にも検証し、Pylance が主出力と ch 別出力を混同しないようにする。
+        raise TypeError("fractional beamformer must return steered channels when requested.")
+    _, steered_channel_output = beamformer_result
+    steered_channels = np.asarray(steered_channel_output, dtype=np.float64)
+
+    # steered_channels shape: [n_beam, n_ch, n_sample]。
+    # axis=0 は待受ビーム、axis=1 は active channel、axis=2 は時間サンプルである。
+    # channel shading は Σ w_ch y_ch / Σw として適用し、固定整相の target peak 基準を矩形平均と揃える。
+    beam_output = np.sum(steered_channels * weights[np.newaxis, :, np.newaxis], axis=1) / float(np.sum(weights))
 
     axis_az_deg = np.asarray(beam_grid["axis_az_deg"], dtype=np.float64)
     freqs_hz, fraz_levels_db20 = _rfft_levels_db20(beam_output, fs_hz=float(config.fs_hz))
@@ -312,6 +411,10 @@ def _run_fractional_delay_diagnostics(
         "n_ch": int(array_positions_m.shape[0]),
         "n_beam": int(beam_output.shape[0]),
         "fractional_delay_filter_bank_path": str(Path(fractional_delay_filter_bank_path).resolve()),
+        "channel_weight_sum": float(np.sum(weights)),
+        "channel_weight_min": float(np.min(weights)),
+        "channel_weight_max": float(np.max(weights)),
+        "effective_channel_count": float((float(np.sum(weights)) * float(np.sum(weights))) / float(np.sum(weights**2))),
         "fraz_global_peak_azimuth_deg": fraz_global_peak_azimuth_deg,
         "fraz_global_peak_frequency_hz": fraz_global_peak_frequency_hz,
         "fraz_global_peak_level_db20": fraz_global_peak_level_db20,
@@ -357,8 +460,37 @@ def run_fractional_delay_slc_diagnostics(
     target_source_indices: tuple[int, ...] | None = None,
     slc_analysis_block_size: int = 64,
     max_reference_beams: int = 48,
+    channel_weights: FloatArray | None = None,
 ) -> dict[str, object]:
-    """小数遅延固定整相後段へ周波数選択 SLC を適用した BL/FRAZ/BTR 診断を実行する。"""
+    """小数遅延固定整相後段へ周波数選択 SLC を適用した BL/FRAZ/BTR 診断を実行する。
+
+    Args:
+        config: 入力信号、アレイ、描画出力先をまとめた診断設定。
+            `array_positions_m` を指定する場合の shape は `[n_ch, 3]`、単位は m。
+        slc_config: guard、対角ローディング、参照ビーム数などの SLC 設定。
+            guard は beam index 単位、memory_time_sec は秒。
+        fractional_delay_filter_bank_path: 保存済み小数遅延 FIR バンクの `.npz` パス。
+        target_source_indices: SLC で保護する source index。None の場合は先頭 source を target とする。
+        slc_analysis_block_size: narrowband snapshot を作る時間 block 長。単位は sample。
+        max_reference_beams: 1 target beam あたりに使う guard 外 reference beam の上限。
+        channel_weights: active channel に掛ける shading 係数。shape は `[n_ch]`。
+            None の場合は全 channel 等重みとする。
+
+    Returns:
+        SLC 前後の BL/FRAZ/BTR 保存先と、mainlobe 維持量、sidelobe 低減量、
+        SLC 設計 summary を含む辞書。BL/FRAZ の level は `dB re input RMS` 相当、
+        reduction / delta は `dB re before level` として読む。
+
+    Raises:
+        ValueError: block 長、reference beam 上限、または channel_weights の shape / 値が不正な場合。
+        FileNotFoundError: 小数遅延 FIR バンクが存在しない場合。
+
+    境界条件:
+        channel_weights は固定整相の時間出力と理論 response matrix の両方へ
+        `sum(w_ch * y_ch) / sum(w_ch)` として同じ正規化で適用する。
+        片側だけへ重みを入れると、SLC が参照する空間応答と評価対象の beam output がずれ、
+        desired 成分を誤って消す危険がある。
+    """
     require_matplotlib()
     if slc_analysis_block_size <= 0:
         raise ValueError("slc_analysis_block_size must be positive.")
@@ -371,7 +503,9 @@ def run_fractional_delay_slc_diagnostics(
     fixed_summary, beamformer, fixed_beam_output, axis_az_deg, source_specs, _ = _run_fractional_delay_diagnostics(
         config=config,
         fractional_delay_filter_bank_path=fractional_delay_filter_bank_path,
+        channel_weights=channel_weights,
     )
+    summary_weights = _normalize_channel_weights(channel_weights, n_ch=int(beamformer.delay_table.n_ch))
 
     protected_target_indices = _resolve_target_source_indices(source_specs, target_source_indices)
     protected_target_index_set = {int(source_index) for source_index in protected_target_indices}
@@ -396,6 +530,7 @@ def run_fractional_delay_slc_diagnostics(
         response_matrix = _build_fractional_beam_response_matrix(
             beamformer=beamformer,
             frequency_hz=float(target_frequency_hz),
+            channel_weights=channel_weights,
         )
         after_snapshots, tone_design_summary = _apply_frequency_selective_scan_slc(
             tone_snapshots=before_snapshots,
@@ -589,10 +724,10 @@ def run_fractional_delay_slc_diagnostics(
         "protected_target_indices": [int(source_index) for source_index in protected_target_indices],
         "protected_target_labels": [str(_source_label(source_specs[int(source_index)], int(source_index))) for source_index in protected_target_indices],
         "frequencies_hz": [float(frequency_hz) for frequency_hz in unique_target_frequencies_hz],
-        "normal_beam_count": int(np.sum([int(summary["normal_beam_count"]) for summary in per_frequency_design_summaries])),
-        "limited_beam_count": int(np.sum([int(summary["limited_beam_count"]) for summary in per_frequency_design_summaries])),
-        "disabled_beam_count": int(np.sum([int(summary["disabled_beam_count"]) for summary in per_frequency_design_summaries])),
-        "mean_selected_reference_beams": float(np.mean([float(summary["mean_selected_reference_beams"]) for summary in per_frequency_design_summaries])) if per_frequency_design_summaries else 0.0,
+        "normal_beam_count": int(np.sum([_require_int_summary_field(summary, "normal_beam_count") for summary in per_frequency_design_summaries])),
+        "limited_beam_count": int(np.sum([_require_int_summary_field(summary, "limited_beam_count") for summary in per_frequency_design_summaries])),
+        "disabled_beam_count": int(np.sum([_require_int_summary_field(summary, "disabled_beam_count") for summary in per_frequency_design_summaries])),
+        "mean_selected_reference_beams": float(np.mean([_require_float_summary_field(summary, "mean_selected_reference_beams") for summary in per_frequency_design_summaries])) if per_frequency_design_summaries else 0.0,
         "per_frequency": per_frequency_design_summaries,
     }
 
@@ -600,6 +735,10 @@ def run_fractional_delay_slc_diagnostics(
         "fixed_summary_path": str((output_dir / "summary.json").resolve()),
         "fixed_summary": fixed_summary,
         "fractional_delay_filter_bank_path": str(Path(fractional_delay_filter_bank_path).resolve()),
+        "channel_weight_sum": float(np.sum(summary_weights)),
+        "channel_weight_min": float(np.min(summary_weights)),
+        "channel_weight_max": float(np.max(summary_weights)),
+        "effective_channel_count": float((float(np.sum(summary_weights)) * float(np.sum(summary_weights))) / float(np.sum(summary_weights**2))),
         "target_source_indices": [int(source_index) for source_index in protected_target_indices],
         "target_source_labels": [str(_source_label(source_specs[int(source_index)], int(source_index))) for source_index in protected_target_indices],
         "interference_source_labels": [

@@ -3,13 +3,97 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+import numpy as np
+
+from spflow.beamforming.fractional_delay_slc_diagnostics import run_fractional_delay_slc_diagnostics
 from spflow.beamforming.slc import SlcConfig
 from spflow.beamforming.time_delay import design_fractional_delay_filter_bank
 from spflow.beamforming.time_delay_diagnostics import TimeDelayDiagnosticConfig, TimeDelayDiagnosticSource
 from spflow.beamforming.time_delay_slc_diagnostics import run_integer_delay_slc_diagnostics
-from spflow.beamforming.fractional_delay_slc_diagnostics import run_fractional_delay_slc_diagnostics
+
+
+def _require_float_field(summary: Mapping[str, object], key: str) -> float:
+    """summary の実数指標を実行時に検証して取り出す。
+
+    Args:
+        summary: 診断 summary。JSON 保存を前提に値型は object として扱う。
+        key: 取り出す実数指標名。
+
+    Returns:
+        Python の `float` に確定した値。
+
+    Raises:
+        AssertionError: 指標値が実数でない場合。
+    """
+    value = summary[key]
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise AssertionError(f"{key} must be numeric.")
+    return float(value)
+
+
+def _require_mapping(value: object, name: str) -> Mapping[str, object]:
+    """object 値を mapping として検証して返す。
+
+    Args:
+        value: summary から取り出した値。
+        name: エラーメッセージ用の項目名。
+
+    Returns:
+        文字列 key を持つ mapping。
+
+    Raises:
+        AssertionError: value が mapping でない場合。
+    """
+    if not isinstance(value, Mapping):
+        raise AssertionError(f"{name} must be mapping.")
+    return value
+
+
+def _require_sequence(value: object, name: str) -> Sequence[object]:
+    """object 値を sequence として検証して返す。
+
+    Args:
+        value: summary から取り出した値。
+        name: エラーメッセージ用の項目名。
+
+    Returns:
+        sequence として参照できる値。
+
+    Raises:
+        AssertionError: value が sequence でない、または文字列である場合。
+    """
+    if isinstance(value, str) or not isinstance(value, Sequence):
+        raise AssertionError(f"{name} must be sequence.")
+    return value
+
+
+def _require_design_count_positive(summary: Mapping[str, object]) -> None:
+    """SLC 設計 summary に有効な処理 beam が存在することを確認する。
+
+    Args:
+        summary: `slc_design_summary`。shape ではなく JSON mapping として保存される。
+
+    Raises:
+        AssertionError: normal / limited beam 数が整数でない、または合計 0 の場合。
+    """
+    normal_count = _require_float_field(summary, "normal_beam_count")
+    limited_count = _require_float_field(summary, "limited_beam_count")
+    assert int(normal_count) + int(limited_count) > 0
+
+
+def _assert_saved_source_metric_paths(summary: Mapping[str, object]) -> None:
+    """SLC source metric の BL 保存先が存在することを確認する。
+
+    Args:
+        summary: SLC 診断 summary。
+    """
+    for source_metric_value in _require_sequence(summary["slc_source_metrics"], "slc_source_metrics"):
+        source_metric = _require_mapping(source_metric_value, "slc_source_metrics[]")
+        assert Path(str(source_metric["bl_png_path"])).exists()
+        assert Path(str(source_metric["bl_compare_png_path"])).exists()
 
 
 def test_integer_delay_slc_diagnostics_save_before_after_figures_and_preserve_mainlobe() -> None:
@@ -79,23 +163,19 @@ def test_integer_delay_slc_diagnostics_save_before_after_figures_and_preserve_ma
     assert saved_summary["slc_fraz_png_path"] == summary["slc_fraz_png_path"]
     assert saved_summary["slc_btr_png_path"] == summary["slc_btr_png_path"]
     assert bool(summary["all_mainlobes_preserved"])
-    assert float(summary["mean_sidelobe_reduction_db"]) > 0.5
-    assert int(summary["slc_design_summary"]["normal_beam_count"]) + int(summary["slc_design_summary"]["limited_beam_count"]) > 0
+    assert _require_float_field(summary, "mean_sidelobe_reduction_db") > 0.5
+    _require_design_count_positive(_require_mapping(summary["slc_design_summary"], "slc_design_summary"))
 
-    source_comparisons = summary["source_comparisons"]
-    assert isinstance(source_comparisons, list)
+    source_comparisons = _require_sequence(summary["source_comparisons"], "source_comparisons")
     assert len(source_comparisons) == 1
-    source_comparison = source_comparisons[0]
+    source_comparison = _require_mapping(source_comparisons[0], "source_comparisons[0]")
     assert bool(source_comparison["mainlobe_preserved"])
     # mainlobe margin improvement は target レベル低下と guard 外 peak 低下の差で決まるため、
     # 同一周波数・複数音源条件では sidelobe_reduction_db より小さくなる。
     # ここでは固定しきい値を強くしすぎず、mainlobe を維持したまま改善側に倒れることを確認する。
-    assert float(source_comparison["mainlobe_margin_improvement_db"]) > 0.1
+    assert _require_float_field(source_comparison, "mainlobe_margin_improvement_db") > 0.1
 
-    for source_metric in summary["slc_source_metrics"]:
-        assert Path(str(source_metric["bl_png_path"])).exists()
-        assert Path(str(source_metric["bl_compare_png_path"])).exists()
-
+    _assert_saved_source_metric_paths(summary)
 
 
 def test_fractional_delay_slc_diagnostics_save_before_after_figures_and_preserve_mainlobe() -> None:
@@ -106,6 +186,11 @@ def test_fractional_delay_slc_diagnostics_save_before_after_figures_and_preserve
 
     filter_bank = design_fractional_delay_filter_bank(n_frac_filter=65, n_tap=63)
     filter_bank.save_npz(filter_bank_path)
+
+    # Kaiser window を channel shading として与え、固定整相出力と SLC 応答行列が
+    # 同じ `sum(w_ch y_ch) / sum(w_ch)` 正規化を使うことを回帰試験で確認する。
+    raw_channel_weights = np.asarray(np.kaiser(31, 4.0), dtype=np.float64)
+    channel_weights = raw_channel_weights / float(np.max(raw_channel_weights))
     try:
         summary = run_fractional_delay_slc_diagnostics(
             config=TimeDelayDiagnosticConfig(
@@ -156,6 +241,7 @@ def test_fractional_delay_slc_diagnostics_save_before_after_figures_and_preserve
             target_source_indices=(0,),
             slc_analysis_block_size=64,
             max_reference_beams=48,
+            channel_weights=channel_weights,
         )
     finally:
         if filter_bank_path.exists():
@@ -175,23 +261,25 @@ def test_fractional_delay_slc_diagnostics_save_before_after_figures_and_preserve
     assert saved_summary["slc_fraz_png_path"] == summary["slc_fraz_png_path"]
     assert saved_summary["slc_btr_png_path"] == summary["slc_btr_png_path"]
     assert bool(summary["all_mainlobes_preserved"])
-    assert float(summary["mean_sidelobe_reduction_db"]) > 0.2
-    assert int(summary["slc_design_summary"]["normal_beam_count"]) + int(summary["slc_design_summary"]["limited_beam_count"]) > 0
+    assert _require_float_field(summary, "mean_sidelobe_reduction_db") > 0.2
+    assert _require_float_field(summary, "channel_weight_min") < _require_float_field(summary, "channel_weight_max")
+    assert _require_float_field(summary, "effective_channel_count") < 31.0
+    _require_design_count_positive(_require_mapping(summary["slc_design_summary"], "slc_design_summary"))
 
-    source_comparisons = summary["source_comparisons"]
-    assert isinstance(source_comparisons, list)
+    source_comparisons = _require_sequence(summary["source_comparisons"], "source_comparisons")
     assert len(source_comparisons) == 1
-    source_comparison = source_comparisons[0]
+    source_comparison = _require_mapping(source_comparisons[0], "source_comparisons[0]")
     assert bool(source_comparison["mainlobe_preserved"])
-    assert float(source_comparison["sidelobe_reduction_db"]) > 0.2
+    assert _require_float_field(source_comparison, "sidelobe_reduction_db") > 0.2
 
     # 複数音源条件では、target 主ローブ維持とは別に interferer 方位の before/after 指標が必要になる。
     # ここでは方式検討中のため抑圧量の符号は固定せず、summary 契約として保存されることを確認する。
-    interference_source_comparisons = summary["interference_source_comparisons"]
-    assert isinstance(interference_source_comparisons, list)
+    interference_source_comparisons = _require_sequence(
+        summary["interference_source_comparisons"],
+        "interference_source_comparisons",
+    )
     assert len(interference_source_comparisons) == 1
-    assert "nearest_level_reduction_db" in interference_source_comparisons[0]
+    interference_comparison = _require_mapping(interference_source_comparisons[0], "interference_source_comparisons[0]")
+    assert "nearest_level_reduction_db" in interference_comparison
 
-    for source_metric in summary["slc_source_metrics"]:
-        assert Path(str(source_metric["bl_png_path"])).exists()
-        assert Path(str(source_metric["bl_compare_png_path"])).exists()
+    _assert_saved_source_metric_paths(summary)
