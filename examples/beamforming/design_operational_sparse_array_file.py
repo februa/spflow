@@ -28,8 +28,7 @@ def main() -> None:
             fs_hz=32768.0,
             sound_speed_m_s=1500.0,
             maximum_frequency_hz=10000.0,
-            valid_frequency_hz_min=256.0,
-            target_hpbw_deg=8.0,
+            valid_frequency_hz_min=200.0,
             required_peak_margin_db=13.0,
         )
     )

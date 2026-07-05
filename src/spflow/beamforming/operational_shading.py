@@ -192,6 +192,208 @@ def _mainlobe_peak_margin_db(
     return float(levels_db20[peak_index] - np.max(levels_db20[outside_mask]))
 
 
+
+def _effective_channel_count(channel_weights: FloatArray) -> float:
+    """シェーディング後の有効 channel 数 `N_eff` を返す。
+
+    Args:
+        channel_weights: active channel の実数シェーディング係数。shape は `[n_active_ch]`。
+
+    Returns:
+        `N_eff = (sum(w))^2 / sum(w^2)`。単位は channel 数相当。
+
+    Raises:
+        ValueError: 重みが 1 次元でない、有限でない、または正の係数和を持たない場合。
+    """
+    weights = np.asarray(channel_weights, dtype=np.float64)
+    require(weights.ndim == 1 and weights.size > 0, "channel_weights must have shape (n_ch,).")
+    require(bool(np.all(np.isfinite(weights))), "channel_weights must contain finite values.")
+    weight_sum = float(np.sum(weights))
+    weight_power_sum = float(np.sum(weights**2))
+    require(weight_sum > 0.0, "channel_weights must contain positive weight.")
+    require(weight_power_sum > 0.0, "channel_weights squared sum must be positive.")
+
+    # 無相関・同分散雑音に対する shading 後の空間 SN 改善は 10log10(N_eff) で評価できる。
+    # 端 channel を弱めるほど sidelobe は下がりやすいが、N_eff が減り雑音利得を失う。
+    return float((weight_sum * weight_sum) / weight_power_sum)
+
+
+def _first_local_peak_level_db20(levels_db20: FloatArray, start_index: int, step: int) -> float | None:
+    """mainlobe 外側で最初に現れる局所 peak のレベルを返す。
+
+    Args:
+        levels_db20: 方位掃引応答。shape は `[n_scan]`、単位は dB20。
+        start_index: 探索開始 index。
+        step: `+1` なら右側、`-1` なら左側を探索する。
+
+    Returns:
+        最初の局所 peak レベル。局所 peak が見つからない場合は None。
+
+    Raises:
+        ValueError: `step` が `+1` / `-1` 以外の場合。
+    """
+    levels = np.asarray(levels_db20, dtype=np.float64)
+    require(step in (-1, 1), "step must be -1 or +1.")
+
+    index = int(start_index)
+    while 0 < index < levels.size - 1:
+        previous_level = float(levels[index - 1])
+        current_level = float(levels[index])
+        next_level = float(levels[index + 1])
+        # 第一副極は mainlobe 境界の外側で最初に出る局所最大として扱う。
+        # 少数点 null 方式では、この第一副極が別方位へ押し出されていないかが重要になる。
+        if current_level >= previous_level and current_level >= next_level:
+            return current_level
+        index += int(step)
+    return None
+
+
+def _sidelobe_distribution_metrics(
+    scan_azimuths_deg: FloatArray,
+    beam_levels_db20: FloatArray,
+    target_azimuth_deg: float,
+) -> dict[str, float]:
+    """単一 BL 応答から guard 外 sidelobe 分布指標を計算する。
+
+    Args:
+        scan_azimuths_deg: BL 方位軸。shape は `[n_scan]`、単位は deg。
+        beam_levels_db20: BL 応答。shape は `[n_scan]`、単位は dB20。
+        target_azimuth_deg: target 方位。単位は deg。
+
+    Returns:
+        mainlobe peak、guard 外 peak、第一副極、percentile、ISL を含む辞書。
+        `_db_re_mainlobe_peak` が付く値は mainlobe peak に対する相対 dB。
+
+    Raises:
+        ValueError: 配列 shape が一致しない場合。
+    """
+    axis_deg = np.asarray(scan_azimuths_deg, dtype=np.float64)
+    levels_db20 = np.asarray(beam_levels_db20, dtype=np.float64)
+    require(axis_deg.ndim == 1, "scan_azimuths_deg must have shape (n_scan,).")
+    require(levels_db20.shape == axis_deg.shape, "beam_levels_db20 must have shape (n_scan,).")
+
+    nearest_index = int(np.argmin(np.abs(axis_deg - float(target_azimuth_deg))))
+    search_half_width = max(3, int(round(axis_deg.size / 180.0)))
+    search_start = max(0, nearest_index - search_half_width)
+    search_stop = min(axis_deg.size, nearest_index + search_half_width + 1)
+    peak_index = int(search_start + np.argmax(levels_db20[search_start:search_stop]))
+    peak_level_db20 = float(levels_db20[peak_index])
+
+    left_index = peak_index
+    right_index = peak_index
+    # mainlobe 境界は peak から左右の谷までとする。
+    # shading により主ローブ幅が変化するため、固定 beam 数ではなく曲線形状から guard 外を決める。
+    while left_index > 0 and float(levels_db20[left_index - 1]) <= float(levels_db20[left_index]):
+        left_index -= 1
+    while right_index < levels_db20.size - 1 and float(levels_db20[right_index + 1]) <= float(levels_db20[right_index]):
+        right_index += 1
+
+    outside_mask = np.ones(levels_db20.size, dtype=bool)
+    outside_mask[left_index : right_index + 1] = False
+    if not bool(np.any(outside_mask)):
+        return {
+            "mainlobe_peak_level_db20": peak_level_db20,
+            "guard_outside_peak_level_db20": float("-inf"),
+            "sidelobe_peak_margin_db": float("inf"),
+            "first_sidelobe_level_db_re_mainlobe_peak": float("-inf"),
+            "sidelobe_95_percentile_db_re_mainlobe_peak": float("-inf"),
+            "sidelobe_99_percentile_db_re_mainlobe_peak": float("-inf"),
+            "integrated_sidelobe_level_db_re_mainlobe_peak": float("-inf"),
+        }
+
+    outside_levels_db20 = levels_db20[outside_mask]
+    guard_outside_peak_level_db20 = float(np.max(outside_levels_db20))
+    left_first_peak = _first_local_peak_level_db20(levels_db20, left_index - 1, -1)
+    right_first_peak = _first_local_peak_level_db20(levels_db20, right_index + 1, 1)
+    first_peak_candidates = [
+        candidate for candidate in (left_first_peak, right_first_peak) if candidate is not None
+    ]
+    first_sidelobe_level_db20 = (
+        float(max(first_peak_candidates)) if len(first_peak_candidates) > 0 else guard_outside_peak_level_db20
+    )
+
+    relative_outside_levels_db = outside_levels_db20 - peak_level_db20
+    # levels_db20 は RMS 振幅比の dB20 だが、相対 power 比に変換して平均すると数値 dB は同じ基準で読める。
+    outside_power_ratio = np.power(10.0, relative_outside_levels_db / 10.0)
+    integrated_sidelobe_level_db = 10.0 * np.log10(
+        max(float(np.mean(outside_power_ratio)), np.finfo(np.float64).tiny)
+    )
+
+    return {
+        "mainlobe_peak_level_db20": peak_level_db20,
+        "guard_outside_peak_level_db20": guard_outside_peak_level_db20,
+        "sidelobe_peak_margin_db": float(peak_level_db20 - guard_outside_peak_level_db20),
+        "first_sidelobe_level_db_re_mainlobe_peak": float(first_sidelobe_level_db20 - peak_level_db20),
+        "sidelobe_95_percentile_db_re_mainlobe_peak": float(np.percentile(relative_outside_levels_db, 95.0)),
+        "sidelobe_99_percentile_db_re_mainlobe_peak": float(np.percentile(relative_outside_levels_db, 99.0)),
+        "integrated_sidelobe_level_db_re_mainlobe_peak": float(integrated_sidelobe_level_db),
+    }
+
+
+def _evaluate_worst_sidelobe_metrics(
+    positions_m: FloatArray,
+    channel_weights: FloatArray,
+    frequency_hz: float,
+    axis_azimuth_deg: FloatArray,
+    evaluation_azimuths_deg: FloatArray,
+    sound_speed_m_s: float,
+) -> dict[str, float]:
+    """複数 target 方位に対する最悪 sidelobe 分布指標を返す。"""
+    metric_list: list[dict[str, float]] = []
+    for target_azimuth_deg in np.asarray(evaluation_azimuths_deg, dtype=np.float64).tolist():
+        beam_levels_db20 = _weighted_beam_levels_db20(
+            positions_m=positions_m,
+            channel_weights=channel_weights,
+            frequency_hz=float(frequency_hz),
+            target_azimuth_deg=float(target_azimuth_deg),
+            scan_azimuths_deg=np.asarray(axis_azimuth_deg, dtype=np.float64),
+            sound_speed_m_s=float(sound_speed_m_s),
+        )
+        metric_list.append(
+            _sidelobe_distribution_metrics(
+                scan_azimuths_deg=np.asarray(axis_azimuth_deg, dtype=np.float64),
+                beam_levels_db20=beam_levels_db20,
+                target_azimuth_deg=float(target_azimuth_deg),
+            )
+        )
+
+    return {
+        "worst_peak_margin_db": float(
+            np.min(np.asarray([float(metrics["sidelobe_peak_margin_db"]) for metrics in metric_list], dtype=np.float64))
+        ),
+        "worst_first_sidelobe_level_db_re_mainlobe_peak": float(
+            np.max(
+                np.asarray(
+                    [float(metrics["first_sidelobe_level_db_re_mainlobe_peak"]) for metrics in metric_list],
+                    dtype=np.float64,
+                )
+            )
+        ),
+        "worst_sidelobe_95_percentile_db_re_mainlobe_peak": float(
+            np.max(
+                np.asarray(
+                    [float(metrics["sidelobe_95_percentile_db_re_mainlobe_peak"]) for metrics in metric_list],
+                    dtype=np.float64,
+                )
+            )
+        ),
+        "worst_sidelobe_99_percentile_db_re_mainlobe_peak": float(
+            np.max(
+                np.asarray(
+                    [float(metrics["sidelobe_99_percentile_db_re_mainlobe_peak"]) for metrics in metric_list],
+                    dtype=np.float64,
+                )
+            )
+        ),
+        "worst_integrated_sidelobe_level_db_re_mainlobe_peak": float(
+            np.max(
+                np.asarray(
+                    [float(metrics["integrated_sidelobe_level_db_re_mainlobe_peak"]) for metrics in metric_list],
+                    dtype=np.float64,
+                )
+            )
+        ),
+    }
 def _three_db_mainlobe_interval_deg(
     signal_azimuths_deg: FloatArray,
     beam_levels_db20: FloatArray,
@@ -363,6 +565,7 @@ class OperationalShadingDesignConfig:
     fs_hz: float = 32768.0
     sound_speed_m_s: float = 1500.0
     frequency_grid_hz: tuple[float, ...] = (
+        200.0,
         256.0,
         384.0,
         512.0,
@@ -437,8 +640,8 @@ class OperationalShadingDefinition:
     selected_kaiser_beta_by_frequency: FloatArray
     selected_n_beam_az_real_by_frequency: IntArray
     active_channel_indices_by_frequency: tuple[IntArray, ...]
-    records: tuple[dict[str, object], ...]
-    formula: dict[str, object]
+    records: tuple[dict[str, Any], ...]
+    formula: dict[str, Any]
 
     def __post_init__(self) -> None:
         """保存済み係数の shape、周波数軸、active index 範囲を検証する。"""
@@ -502,7 +705,7 @@ class OperationalShadingDefinition:
         index = self._frequency_index_for_frequency(float(frequency_hz))
         return np.asarray(self.active_channel_indices_by_frequency[index], dtype=np.int64)
 
-    def to_payload(self) -> dict[str, object]:
+    def to_payload(self) -> dict[str, Any]:
         """JSON 保存用 payload へ変換する。"""
         return {
             "schema_version": int(self.schema_version),
@@ -521,7 +724,7 @@ class OperationalShadingDefinition:
         }
 
     @classmethod
-    def from_payload(cls, payload: dict[str, object]) -> "OperationalShadingDefinition":
+    def from_payload(cls, payload: dict[str, Any]) -> "OperationalShadingDefinition":
         """JSON payload からシェーディング定義を復元する。"""
         raw_active_indices = payload["active_channel_indices_by_frequency"]
         raw_records = payload["records"]
@@ -539,7 +742,7 @@ class OperationalShadingDefinition:
             # numpy 配列化と OperationalShadingDefinition.__post_init__ の範囲検証で契約を確定する。
             active_index_table.append(np.asarray(raw_indices, dtype=np.int64))
 
-        records: list[dict[str, object]] = []
+        records: list[dict[str, Any]] = []
         for raw_record in raw_records:
             if not isinstance(raw_record, dict):
                 raise TypeError("each record must be a dict.")
@@ -577,8 +780,8 @@ def _evaluate_candidate(
     beta: float,
     n_beam_az_real: int,
     config: OperationalShadingDesignConfig,
-) -> tuple[FloatArray, dict[str, float | bool], float]:
-    """単一候補の係数、-3 dB 重なり指標、peak margin を評価する。"""
+) -> tuple[FloatArray, dict[str, float | bool], dict[str, float]]:
+    """単一候補の係数、-3 dB 重なり指標、sidelobe 分布指標を評価する。"""
     _, axis_azimuth_deg, _ = make_directions(
         az_min_deg=0.0,
         az_max_deg=180.0,
@@ -601,7 +804,7 @@ def _evaluate_candidate(
         sound_speed_m_s=float(config.sound_speed_m_s),
         down_db=float(config.three_db_down_db),
     )
-    peak_margin_db = _evaluate_peak_margin_db(
+    sidelobe_metrics = _evaluate_worst_sidelobe_metrics(
         positions_m=active_positions_m,
         channel_weights=weights,
         frequency_hz=float(frequency_hz),
@@ -609,21 +812,21 @@ def _evaluate_candidate(
         evaluation_azimuths_deg=np.asarray(config.evaluation_azimuths_deg, dtype=np.float64),
         sound_speed_m_s=float(config.sound_speed_m_s),
     )
-    return weights, overlap_metrics, float(peak_margin_db)
+    return weights, overlap_metrics, sidelobe_metrics
 
 
 def _select_shading_for_frequency(
     active_positions_m: FloatArray,
     frequency_hz: float,
     config: OperationalShadingDesignConfig,
-) -> tuple[FloatArray, int, float, dict[str, float | bool], float, bool]:
+) -> tuple[FloatArray, int, float, dict[str, float | bool], dict[str, float], bool]:
     """-3 dB 重なり条件を満たす最小待受方位数と最小 beta の組を選ぶ。"""
     best_penalty = float("inf")
-    best_result: tuple[FloatArray, int, float, dict[str, float | bool], float, bool] | None = None
+    best_result: tuple[FloatArray, int, float, dict[str, float | bool], dict[str, float], bool] | None = None
 
     for n_beam_az_real in config.candidate_n_beam_az_real:
         for beta in config.candidate_kaiser_beta:
-            weights, overlap_metrics, peak_margin_db = _evaluate_candidate(
+            weights, overlap_metrics, sidelobe_metrics = _evaluate_candidate(
                 active_positions_m=active_positions_m,
                 frequency_hz=float(frequency_hz),
                 beta=float(beta),
@@ -631,11 +834,12 @@ def _select_shading_for_frequency(
                 config=config,
             )
             minimum_overlap_margin_deg = float(overlap_metrics["minimum_overlap_margin_deg"])
+            peak_margin_db = float(sidelobe_metrics["worst_peak_margin_db"])
             meets_overlap = bool(overlap_metrics["meets_three_db_overlap"])
             meets_margin = peak_margin_db >= float(config.required_peak_margin_db)
             meets_all = bool(meets_overlap and meets_margin)
             if meets_all:
-                return weights, int(n_beam_az_real), float(beta), overlap_metrics, float(peak_margin_db), True
+                return weights, int(n_beam_az_real), float(beta), overlap_metrics, sidelobe_metrics, True
 
             # 候補が全滅した場合も診断ファイルを残せるよう、条件未達量の合計が最小の候補を保持する。
             # overlap は負値が隣接 -3 dB 範囲の gap を意味するため、負側だけを penalty として扱う。
@@ -650,7 +854,7 @@ def _select_shading_for_frequency(
                     int(n_beam_az_real),
                     float(beta),
                     overlap_metrics,
-                    float(peak_margin_db),
+                    sidelobe_metrics,
                     False,
                 )
 
@@ -660,10 +864,9 @@ def _select_shading_for_frequency(
         raise ValueError("shading candidate search failed.")
     return best_result
 
-
 def _plot_shading_summary(
     output_path: Path,
-    records: list[dict[str, object]],
+    records: list[dict[str, Any]],
     config: OperationalShadingDesignConfig,
 ) -> None:
     """周波数別の beta、待受方位数、-3 dB 重なり量、margin を PNG 保存する。"""
@@ -700,7 +903,7 @@ def _plot_shading_summary(
     plt.close(fig)
 
 
-def run_operational_shading_design(config: OperationalShadingDesignConfig) -> dict[str, object]:
+def run_operational_shading_design(config: OperationalShadingDesignConfig) -> dict[str, Any]:
     """運用スパースアレイ用の周波数別 Kaiser-Bessel シェーディングを設計して保存する。
 
     Args:
@@ -718,7 +921,7 @@ def run_operational_shading_design(config: OperationalShadingDesignConfig) -> di
     active_index_table: list[IntArray] = []
     selected_beta: list[float] = []
     selected_beam_counts: list[int] = []
-    records: list[dict[str, object]] = []
+    records: list[dict[str, Any]] = []
 
     for frequency_hz in np.asarray(config.frequency_grid_hz, dtype=np.float64).tolist():
         active_indices = array_definition.active_channel_indices_for_frequency(float(frequency_hz))
@@ -726,7 +929,7 @@ def run_operational_shading_design(config: OperationalShadingDesignConfig) -> di
         # active_positions_m shape: [n_active_ch, 3]。
         # 運用アレイでは周波数ごとに active subset が変わるため、シェーディング係数も active 配置ごとに設計する。
         active_positions_m = np.asarray(array_definition.positions_m, dtype=np.float64)[active_indices]
-        weights, n_beam_az_real, beta, overlap_metrics, peak_margin_db, meets_all = _select_shading_for_frequency(
+        weights, n_beam_az_real, beta, overlap_metrics, sidelobe_metrics, meets_all = _select_shading_for_frequency(
             active_positions_m=active_positions_m,
             frequency_hz=float(frequency_hz),
             config=config,
@@ -742,6 +945,9 @@ def run_operational_shading_design(config: OperationalShadingDesignConfig) -> di
         active_x_m = active_positions_m[:, 0]
         physical_aperture_m = float(np.max(active_x_m) - np.min(active_x_m)) if active_x_m.size > 1 else 0.0
         equivalent_aperture_m = _equivalent_aperture_m(active_positions_m, weights)
+        effective_channel_count = _effective_channel_count(weights)
+        expected_spatial_snr_gain_db = 10.0 * np.log10(effective_channel_count)
+        snr_loss_vs_rectangular_db = 10.0 * np.log10(float(active_indices.size) / effective_channel_count)
 
         records.append(
             {
@@ -749,22 +955,28 @@ def run_operational_shading_design(config: OperationalShadingDesignConfig) -> di
                 "active_channel_count": int(active_indices.size),
                 "active_aperture_m": float(physical_aperture_m),
                 "equivalent_aperture_m": float(equivalent_aperture_m),
+                "effective_channel_count": float(effective_channel_count),
+                "expected_spatial_snr_gain_db": float(expected_spatial_snr_gain_db),
+                "snr_loss_vs_rectangular_db": float(snr_loss_vs_rectangular_db),
                 "selected_kaiser_beta": float(beta),
                 "selected_n_beam_az_real": int(n_beam_az_real),
                 "minimum_three_db_overlap_margin_deg": float(overlap_metrics["minimum_overlap_margin_deg"]),
                 "minimum_three_db_width_deg": float(overlap_metrics["minimum_three_db_width_deg"]),
                 "maximum_three_db_width_deg": float(overlap_metrics["maximum_three_db_width_deg"]),
                 "maximum_peak_error_deg": float(overlap_metrics["maximum_peak_error_deg"]),
-                "worst_peak_margin_db": float(peak_margin_db),
+                "worst_peak_margin_db": float(sidelobe_metrics["worst_peak_margin_db"]),
+                "worst_first_sidelobe_level_db_re_mainlobe_peak": float(sidelobe_metrics["worst_first_sidelobe_level_db_re_mainlobe_peak"]),
+                "worst_sidelobe_95_percentile_db_re_mainlobe_peak": float(sidelobe_metrics["worst_sidelobe_95_percentile_db_re_mainlobe_peak"]),
+                "worst_sidelobe_99_percentile_db_re_mainlobe_peak": float(sidelobe_metrics["worst_sidelobe_99_percentile_db_re_mainlobe_peak"]),
+                "worst_integrated_sidelobe_level_db_re_mainlobe_peak": float(sidelobe_metrics["worst_integrated_sidelobe_level_db_re_mainlobe_peak"]),
                 "meets_three_db_overlap": bool(overlap_metrics["meets_three_db_overlap"]),
-                "meets_peak_margin": bool(peak_margin_db >= float(config.required_peak_margin_db)),
+                "meets_peak_margin": bool(float(sidelobe_metrics["worst_peak_margin_db"]) >= float(config.required_peak_margin_db)),
                 "meets_all": bool(meets_all),
                 "active_weight_min": float(np.min(weights)),
                 "active_weight_max": float(np.max(weights)),
                 "active_weight_sum": float(np.sum(weights)),
             }
         )
-
     shading_definition = OperationalShadingDefinition(
         schema_version=1,
         fs_hz=float(config.fs_hz),
@@ -802,7 +1014,7 @@ def run_operational_shading_design(config: OperationalShadingDesignConfig) -> di
         _plot_shading_summary(Path(png_path), records, config)
 
     meets_all = bool(all(bool(record["meets_all"]) for record in records))
-    summary: dict[str, object] = {
+    summary: dict[str, Any] = {
         "operational_array_definition_path": str(Path(config.operational_array_definition_path).resolve()),
         "shading_definition_json_path": str(Path(config.output_json_path).resolve()),
         "shading_design_csv_path": None if csv_path is None else str(Path(csv_path).resolve()),
@@ -815,6 +1027,13 @@ def run_operational_shading_design(config: OperationalShadingDesignConfig) -> di
         "maximum_three_db_width_deg_by_frequency": [float(record["maximum_three_db_width_deg"]) for record in records],
         "maximum_peak_error_deg_by_frequency": [float(record["maximum_peak_error_deg"]) for record in records],
         "worst_peak_margin_db_by_frequency": [float(record["worst_peak_margin_db"]) for record in records],
+        "worst_first_sidelobe_level_db_re_mainlobe_peak_by_frequency": [float(record["worst_first_sidelobe_level_db_re_mainlobe_peak"]) for record in records],
+        "worst_sidelobe_95_percentile_db_re_mainlobe_peak_by_frequency": [float(record["worst_sidelobe_95_percentile_db_re_mainlobe_peak"]) for record in records],
+        "worst_sidelobe_99_percentile_db_re_mainlobe_peak_by_frequency": [float(record["worst_sidelobe_99_percentile_db_re_mainlobe_peak"]) for record in records],
+        "worst_integrated_sidelobe_level_db_re_mainlobe_peak_by_frequency": [float(record["worst_integrated_sidelobe_level_db_re_mainlobe_peak"]) for record in records],
+        "effective_channel_count_by_frequency": [float(record["effective_channel_count"]) for record in records],
+        "expected_spatial_snr_gain_db_by_frequency": [float(record["expected_spatial_snr_gain_db"]) for record in records],
+        "snr_loss_vs_rectangular_db_by_frequency": [float(record["snr_loss_vs_rectangular_db"]) for record in records],
         "meets_all": bool(meets_all),
         "records": records,
     }
@@ -846,6 +1065,7 @@ class OperationalFixedBeamShadingDesignConfig:
     fs_hz: float = 32768.0
     sound_speed_m_s: float = 1500.0
     frequency_grid_hz: tuple[float, ...] = (
+        200.0,
         256.0,
         384.0,
         512.0,
@@ -915,8 +1135,8 @@ def _evaluate_fixed_beam_candidate(
     frequency_hz: float,
     beta: float,
     config: OperationalFixedBeamShadingDesignConfig,
-) -> tuple[FloatArray, dict[str, float | bool], float]:
-    """指定ビーム数条件で単一 beta 候補の幅一致度と peak margin を評価する。"""
+) -> tuple[FloatArray, dict[str, float | bool], dict[str, float]]:
+    """指定ビーム数条件で単一 beta 候補の幅一致度と sidelobe 分布を評価する。"""
     _, axis_azimuth_deg, _ = make_directions(
         az_min_deg=0.0,
         az_max_deg=180.0,
@@ -939,7 +1159,7 @@ def _evaluate_fixed_beam_candidate(
         sound_speed_m_s=float(config.sound_speed_m_s),
         down_db=float(config.three_db_down_db),
     )
-    peak_margin_db = _evaluate_peak_margin_db(
+    sidelobe_metrics = _evaluate_worst_sidelobe_metrics(
         positions_m=active_positions_m,
         channel_weights=weights,
         frequency_hz=float(frequency_hz),
@@ -947,20 +1167,19 @@ def _evaluate_fixed_beam_candidate(
         evaluation_azimuths_deg=np.asarray(config.evaluation_azimuths_deg, dtype=np.float64),
         sound_speed_m_s=float(config.sound_speed_m_s),
     )
-    return weights, overlap_metrics, float(peak_margin_db)
-
+    return weights, overlap_metrics, sidelobe_metrics
 
 def _select_fixed_beam_shading_for_frequency(
     active_positions_m: FloatArray,
     frequency_hz: float,
     config: OperationalFixedBeamShadingDesignConfig,
-) -> tuple[FloatArray, float, dict[str, float | bool], float, bool, bool]:
+) -> tuple[FloatArray, float, dict[str, float | bool], dict[str, float], bool, bool]:
     """指定ビーム数で 3 dB overlap 目標に最も近い beta を選ぶ。"""
     best_score = float("inf")
-    best_result: tuple[FloatArray, float, dict[str, float | bool], float, bool, bool] | None = None
+    best_result: tuple[FloatArray, float, dict[str, float | bool], dict[str, float], bool, bool] | None = None
 
     for beta in config.candidate_kaiser_beta:
-        weights, overlap_metrics, peak_margin_db = _evaluate_fixed_beam_candidate(
+        weights, overlap_metrics, sidelobe_metrics = _evaluate_fixed_beam_candidate(
             active_positions_m=active_positions_m,
             frequency_hz=float(frequency_hz),
             beta=float(beta),
@@ -969,6 +1188,7 @@ def _select_fixed_beam_shading_for_frequency(
         overlap_margin_deg = float(overlap_metrics["minimum_overlap_margin_deg"])
         target_error_deg = abs(overlap_margin_deg - float(config.target_overlap_margin_deg))
         meets_width_target = target_error_deg <= float(config.target_overlap_tolerance_deg)
+        peak_margin_db = float(sidelobe_metrics["worst_peak_margin_db"])
         meets_peak_margin = peak_margin_db >= float(config.required_peak_margin_db)
 
         # 3 dB 幅一致を主目的としつつ、peak margin 未達は penalty を加える。
@@ -980,7 +1200,7 @@ def _select_fixed_beam_shading_for_frequency(
                 weights,
                 float(beta),
                 overlap_metrics,
-                float(peak_margin_db),
+                sidelobe_metrics,
                 bool(meets_width_target),
                 bool(meets_peak_margin),
             )
@@ -989,8 +1209,7 @@ def _select_fixed_beam_shading_for_frequency(
         raise ValueError("fixed beam shading candidate search failed.")
     return best_result
 
-
-def run_operational_fixed_beam_shading_design(config: OperationalFixedBeamShadingDesignConfig) -> dict[str, object]:
+def run_operational_fixed_beam_shading_design(config: OperationalFixedBeamShadingDesignConfig) -> dict[str, Any]:
     """指定ビーム数で 3 dB down 幅に近いシェーディング係数を設計して保存する。
 
     Args:
@@ -1008,12 +1227,12 @@ def run_operational_fixed_beam_shading_design(config: OperationalFixedBeamShadin
     active_index_table: list[IntArray] = []
     selected_beta: list[float] = []
     selected_beam_counts: list[int] = []
-    records: list[dict[str, object]] = []
+    records: list[dict[str, Any]] = []
 
     for frequency_hz in np.asarray(config.frequency_grid_hz, dtype=np.float64).tolist():
         active_indices = array_definition.active_channel_indices_for_frequency(float(frequency_hz))
         active_positions_m = np.asarray(array_definition.positions_m, dtype=np.float64)[active_indices]
-        weights, beta, overlap_metrics, peak_margin_db, meets_width_target, meets_peak_margin = _select_fixed_beam_shading_for_frequency(
+        weights, beta, overlap_metrics, sidelobe_metrics, meets_width_target, meets_peak_margin = _select_fixed_beam_shading_for_frequency(
             active_positions_m=active_positions_m,
             frequency_hz=float(frequency_hz),
             config=config,
@@ -1029,6 +1248,9 @@ def run_operational_fixed_beam_shading_design(config: OperationalFixedBeamShadin
         active_x_m = active_positions_m[:, 0]
         physical_aperture_m = float(np.max(active_x_m) - np.min(active_x_m)) if active_x_m.size > 1 else 0.0
         equivalent_aperture_m = _equivalent_aperture_m(active_positions_m, weights)
+        effective_channel_count = _effective_channel_count(weights)
+        expected_spatial_snr_gain_db = 10.0 * np.log10(effective_channel_count)
+        snr_loss_vs_rectangular_db = 10.0 * np.log10(float(active_indices.size) / effective_channel_count)
         overlap_margin_deg = float(overlap_metrics["minimum_overlap_margin_deg"])
         target_error_deg = abs(overlap_margin_deg - float(config.target_overlap_margin_deg))
 
@@ -1038,6 +1260,9 @@ def run_operational_fixed_beam_shading_design(config: OperationalFixedBeamShadin
                 "active_channel_count": int(active_indices.size),
                 "active_aperture_m": float(physical_aperture_m),
                 "equivalent_aperture_m": float(equivalent_aperture_m),
+                "effective_channel_count": float(effective_channel_count),
+                "expected_spatial_snr_gain_db": float(expected_spatial_snr_gain_db),
+                "snr_loss_vs_rectangular_db": float(snr_loss_vs_rectangular_db),
                 "selected_kaiser_beta": float(beta),
                 "selected_n_beam_az_real": int(config.n_beam_az_real),
                 "minimum_three_db_overlap_margin_deg": float(overlap_margin_deg),
@@ -1046,7 +1271,11 @@ def run_operational_fixed_beam_shading_design(config: OperationalFixedBeamShadin
                 "minimum_three_db_width_deg": float(overlap_metrics["minimum_three_db_width_deg"]),
                 "maximum_three_db_width_deg": float(overlap_metrics["maximum_three_db_width_deg"]),
                 "maximum_peak_error_deg": float(overlap_metrics["maximum_peak_error_deg"]),
-                "worst_peak_margin_db": float(peak_margin_db),
+                "worst_peak_margin_db": float(sidelobe_metrics["worst_peak_margin_db"]),
+                "worst_first_sidelobe_level_db_re_mainlobe_peak": float(sidelobe_metrics["worst_first_sidelobe_level_db_re_mainlobe_peak"]),
+                "worst_sidelobe_95_percentile_db_re_mainlobe_peak": float(sidelobe_metrics["worst_sidelobe_95_percentile_db_re_mainlobe_peak"]),
+                "worst_sidelobe_99_percentile_db_re_mainlobe_peak": float(sidelobe_metrics["worst_sidelobe_99_percentile_db_re_mainlobe_peak"]),
+                "worst_integrated_sidelobe_level_db_re_mainlobe_peak": float(sidelobe_metrics["worst_integrated_sidelobe_level_db_re_mainlobe_peak"]),
                 "meets_three_db_width_target": bool(meets_width_target),
                 "meets_peak_margin": bool(meets_peak_margin),
                 "meets_all": bool(meets_width_target and meets_peak_margin),
@@ -1055,7 +1284,6 @@ def run_operational_fixed_beam_shading_design(config: OperationalFixedBeamShadin
                 "active_weight_sum": float(np.sum(weights)),
             }
         )
-
     shading_definition = OperationalShadingDefinition(
         schema_version=1,
         fs_hz=float(config.fs_hz),
@@ -1111,7 +1339,7 @@ def run_operational_fixed_beam_shading_design(config: OperationalFixedBeamShadin
         ))
 
     meets_all = bool(all(bool(record["meets_all"]) for record in records))
-    summary: dict[str, object] = {
+    summary: dict[str, Any] = {
         "operational_array_definition_path": str(Path(config.operational_array_definition_path).resolve()),
         "shading_definition_json_path": str(Path(config.output_json_path).resolve()),
         "shading_design_csv_path": None if csv_path is None else str(Path(csv_path).resolve()),
@@ -1124,6 +1352,13 @@ def run_operational_fixed_beam_shading_design(config: OperationalFixedBeamShadin
         "minimum_three_db_width_deg_by_frequency": [float(record["minimum_three_db_width_deg"]) for record in records],
         "maximum_three_db_width_deg_by_frequency": [float(record["maximum_three_db_width_deg"]) for record in records],
         "worst_peak_margin_db_by_frequency": [float(record["worst_peak_margin_db"]) for record in records],
+        "worst_first_sidelobe_level_db_re_mainlobe_peak_by_frequency": [float(record["worst_first_sidelobe_level_db_re_mainlobe_peak"]) for record in records],
+        "worst_sidelobe_95_percentile_db_re_mainlobe_peak_by_frequency": [float(record["worst_sidelobe_95_percentile_db_re_mainlobe_peak"]) for record in records],
+        "worst_sidelobe_99_percentile_db_re_mainlobe_peak_by_frequency": [float(record["worst_sidelobe_99_percentile_db_re_mainlobe_peak"]) for record in records],
+        "worst_integrated_sidelobe_level_db_re_mainlobe_peak_by_frequency": [float(record["worst_integrated_sidelobe_level_db_re_mainlobe_peak"]) for record in records],
+        "effective_channel_count_by_frequency": [float(record["effective_channel_count"]) for record in records],
+        "expected_spatial_snr_gain_db_by_frequency": [float(record["expected_spatial_snr_gain_db"]) for record in records],
+        "snr_loss_vs_rectangular_db_by_frequency": [float(record["snr_loss_vs_rectangular_db"]) for record in records],
         "meets_all": bool(meets_all),
         "records": records,
     }

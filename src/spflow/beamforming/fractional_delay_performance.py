@@ -6,8 +6,10 @@ import csv
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
+from numpy.typing import NDArray
 
 from .._validation import require, require_positive_float, require_positive_int
 from .diagnostic_plotting import plot_bl_comparison, require_matplotlib
@@ -17,6 +19,9 @@ from .time_delay import (
     FractionalDelayFilterBank,
     IntegerDelayAndSumBeamformer,
 )
+
+
+FloatArray = NDArray[np.floating[Any]]
 
 
 @dataclass(frozen=True)
@@ -50,7 +55,7 @@ class FractionalDelayPerformanceConfig:
         positions = np.asarray(self.array_positions_m, dtype=np.float64)
         require(positions.ndim == 2 and positions.shape[1] == 3, "array_positions_m must have shape (n_ch, 3).")
         require(positions.shape[0] > 0, "array_positions_m must not be empty.")
-        require(np.all(np.isfinite(positions)), "array_positions_m must contain only finite values.")
+        require(bool(np.all(np.isfinite(positions))), "array_positions_m must contain only finite values.")
         require_positive_float("fs_hz", float(self.fs_hz))
         require_positive_float("sound_speed_m_s", float(self.sound_speed_m_s))
         require_positive_int("n_beam_az_real", int(self.n_beam_az_real))
@@ -58,23 +63,26 @@ class FractionalDelayPerformanceConfig:
 
         frequency_grid_hz = np.asarray(self.frequency_grid_hz, dtype=np.float64)
         require(frequency_grid_hz.ndim == 1 and frequency_grid_hz.size > 0, "frequency_grid_hz must be a non-empty 1-D sequence.")
-        require(np.all(np.isfinite(frequency_grid_hz)), "frequency_grid_hz must contain only finite values.")
-        require(np.all(frequency_grid_hz > 0.0), "frequency_grid_hz must contain only positive values.")
-        require(np.all(np.diff(frequency_grid_hz) > 0.0), "frequency_grid_hz must be strictly increasing.")
+        require(bool(np.all(np.isfinite(frequency_grid_hz))), "frequency_grid_hz must contain only finite values.")
+        require(bool(np.all(frequency_grid_hz > 0.0)), "frequency_grid_hz must contain only positive values.")
+        require(bool(np.all(np.diff(frequency_grid_hz) > 0.0)), "frequency_grid_hz must be strictly increasing.")
 
         evaluation_azimuths_deg = np.asarray(self.evaluation_azimuths_deg, dtype=np.float64)
         require(
             evaluation_azimuths_deg.ndim == 1 and evaluation_azimuths_deg.size > 0,
             "evaluation_azimuths_deg must be a non-empty 1-D sequence.",
         )
-        require(np.all((0.0 <= evaluation_azimuths_deg) & (evaluation_azimuths_deg <= 180.0)), "evaluation_azimuths_deg must lie in [0, 180].")
+        require(
+            bool(np.all((0.0 <= evaluation_azimuths_deg) & (evaluation_azimuths_deg <= 180.0))),
+            "evaluation_azimuths_deg must lie in [0, 180].",
+        )
 
         for frequency_hz, azimuth_deg in self.comparison_specs:
             require_positive_float("comparison frequency", float(frequency_hz))
             require(0.0 <= float(azimuth_deg) <= 180.0, "comparison azimuth must lie in [0, 180].")
 
 
-def _direction_from_azimuth_deg(azimuth_deg: float) -> np.ndarray:
+def _direction_from_azimuth_deg(azimuth_deg: float) -> FloatArray:
     """x-y 平面内の方位角から方向余弦ベクトルを返す。"""
     azimuth_rad = np.deg2rad(float(azimuth_deg))
     return np.array([np.cos(azimuth_rad), np.sin(azimuth_rad), 0.0], dtype=np.float64)
@@ -82,12 +90,13 @@ def _direction_from_azimuth_deg(azimuth_deg: float) -> np.ndarray:
 
 def _beam_response_db20(
     beamformer: IntegerDelayAndSumBeamformer | FractionalDelayAndSumBeamformer,
-    positions_m: np.ndarray,
-    axis_azimuth_deg: np.ndarray,
+    positions_m: FloatArray,
+    axis_azimuth_deg: FloatArray,
     frequency_hz: float,
     sound_speed_m_s: float,
     target_azimuth_deg: float,
-) -> np.ndarray:
+    channel_weights: FloatArray | None = None,
+) -> FloatArray:
     """指定 beamformer の BL を解析式で返す。
 
     Args:
@@ -97,19 +106,34 @@ def _beam_response_db20(
         frequency_hz: 評価周波数。単位は Hz。
         sound_speed_m_s: 音速。単位は m/s。
         target_azimuth_deg: target 方位。単位は deg。
+        channel_weights: channel shading 係数。shape は `[n_ch]`。
+            None の場合は全 channel を同じ重みで使う。
 
         Returns:
             BL。shape は `[n_beam]`、単位は dB20。
     """
     steering_response = np.asarray(beamformer.steering_response(float(frequency_hz)), dtype=np.complex128)
+    sensor_positions_m = np.asarray(positions_m, dtype=np.float64)
+    if channel_weights is None:
+        weights = np.ones(sensor_positions_m.shape[0], dtype=np.float64)
+    else:
+        weights = np.asarray(channel_weights, dtype=np.float64)
+    require(sensor_positions_m.ndim == 2 and sensor_positions_m.shape[1] == 3, "positions_m must have shape (n_ch, 3).")
+    require(weights.ndim == 1 and weights.shape[0] == sensor_positions_m.shape[0], "channel_weights must have shape (n_ch,).")
+    require(bool(np.all(np.isfinite(weights))), "channel_weights must contain finite values.")
+    weight_sum = float(np.sum(weights))
+    require(weight_sum > 0.0, "channel_weights must contain positive total weight.")
+
     target_direction = _direction_from_azimuth_deg(float(target_azimuth_deg))
 
     # target_arrival_delay_sec[ch] = -(r_ch^T u_target) / c。
-    # source 到来位相と固定整相器の steering 応答をチャネル平均すると、
+    # source 到来位相と固定整相器の steering 応答を channel shading 付きで加重平均すると、
     # target 1 本に対する observation beam ごとの複素 array response が得られる。
-    target_arrival_delay_sec = -(np.asarray(positions_m, dtype=np.float64) @ target_direction) / float(sound_speed_m_s)
+    # steering_response shape: [n_ch, n_beam]、source_arrival_phase shape: [n_ch]。
+    # weights[:, None] の broadcasting により ch 軸だけを重み付けし、Σw で 0 dB ピーク基準を保つ。
+    target_arrival_delay_sec = -(sensor_positions_m @ target_direction) / float(sound_speed_m_s)
     source_arrival_phase = np.exp(-1j * 2.0 * np.pi * float(frequency_hz) * target_arrival_delay_sec)
-    beam_response = np.mean(steering_response * source_arrival_phase[:, np.newaxis], axis=0)
+    beam_response = np.sum(weights[:, np.newaxis] * steering_response * source_arrival_phase[:, np.newaxis], axis=0) / weight_sum
     return 20.0 * np.log10(np.maximum(np.abs(beam_response), np.finfo(np.float64).tiny))
 
 

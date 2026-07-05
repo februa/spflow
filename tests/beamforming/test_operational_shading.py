@@ -42,7 +42,7 @@ def test_operational_shading_design_saves_frequency_dependent_coefficients() -> 
             output_json_path=shading_json_path,
             output_csv_path=shading_csv_path,
             frequency_grid_hz=(256.0, 1024.0, 10000.0),
-            candidate_kaiser_beta=(2.0, 4.0, 6.0),
+            candidate_kaiser_beta=(2.0, 4.0, 6.0, 8.0, 12.0, 16.0, 20.0),
             candidate_n_beam_az_real=(151, 181),
         )
     )
@@ -68,6 +68,11 @@ def test_operational_shading_design_saves_frequency_dependent_coefficients() -> 
         assert float(record["minimum_three_db_overlap_margin_deg"]) >= 0.0
         assert float(record["minimum_three_db_width_deg"]) > 0.0
         assert float(record["worst_peak_margin_db"]) >= 13.0
+        assert float(record["effective_channel_count"]) <= float(record["active_channel_count"])
+        assert float(record["snr_loss_vs_rectangular_db"]) >= 0.0
+        assert float(record["worst_first_sidelobe_level_db_re_mainlobe_peak"]) <= 0.0
+        assert float(record["worst_sidelobe_95_percentile_db_re_mainlobe_peak"]) <= 0.0
+        assert float(record["worst_integrated_sidelobe_level_db_re_mainlobe_peak"]) <= 0.0
         assert int(record["selected_n_beam_az_real"]) >= 151
 
 
@@ -94,7 +99,7 @@ def test_operational_fixed_beam_shading_reports_width_match_limit() -> None:
             output_csv_path=output_dir / "fixed_151.csv",
             n_beam_az_real=151,
             frequency_grid_hz=(256.0, 10000.0),
-            candidate_kaiser_beta=(0.0, 1.0, 2.0),
+            candidate_kaiser_beta=(0.0, 1.0, 2.0, 4.0, 8.0, 12.0, 16.0, 20.0),
             target_overlap_margin_deg=0.0,
             target_overlap_tolerance_deg=0.5,
         )
@@ -105,9 +110,11 @@ def test_operational_fixed_beam_shading_reports_width_match_limit() -> None:
     assert loaded.selected_n_beam_az_real_by_frequency.tolist() == [151, 151]
     assert all(int(record["selected_n_beam_az_real"]) == 151 for record in summary["records"])
     assert all(float(record["worst_peak_margin_db"]) >= 13.0 for record in summary["records"])
+    assert all(float(record["effective_channel_count"]) <= float(record["active_channel_count"]) for record in summary["records"])
+    assert all(float(record["worst_sidelobe_99_percentile_db_re_mainlobe_peak"]) <= 0.0 for record in summary["records"])
 
-    # 151 本ではビーム間隔が 3 dB 幅よりかなり細かいため、Kaiser-Bessel 窓で主ローブを狭くできず、
-    # 最小 beta の矩形相当が選ばれ、幅一致条件は未達として記録される。
-    assert all(float(beta) == 0.0 for beta in summary["selected_kaiser_beta_by_frequency"])
+    # 151 本固定では margin 確保のため非ゼロ beta が必要になるが、
+    # 3 dB overlap target 0 deg には届かないため、幅一致条件は未達として記録される。
+    assert any(float(beta) > 0.0 for beta in summary["selected_kaiser_beta_by_frequency"])
     assert not bool(summary["meets_all"])
     assert all(not bool(record["meets_three_db_width_target"]) for record in summary["records"])

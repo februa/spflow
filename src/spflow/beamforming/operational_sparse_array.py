@@ -156,13 +156,19 @@ class OperationalSparseArrayDesignConfig:
     fs_hz: float = 32768.0
     sound_speed_m_s: float = 1500.0
     maximum_frequency_hz: float = 10000.0
-    valid_frequency_hz_min: float = 256.0
-    target_hpbw_deg: float = 8.0
+    valid_frequency_hz_min: float = 200.0
+    constant_beamwidth_reference_frequency_hz: float = 200.0
+    target_hpbw_deg: float | None = None
     aperture_safety_factors: tuple[float, ...] = (1.00, 1.04, 1.08, 1.12, 1.16, 1.20)
     required_peak_margin_db: float = 13.0
     evaluation_azimuths_deg: tuple[float, ...] = (60.0, 90.0, 120.0)
     design_frequency_grid_hz: tuple[float, ...] = (
         0.0,
+        10.0,
+        32.0,
+        64.0,
+        128.0,
+        200.0,
         256.0,
         384.0,
         512.0,
@@ -180,7 +186,8 @@ class OperationalSparseArrayDesignConfig:
         (0.05, 1.00, 0.05),
         (1.20, 4.80, 0.20),
         (5.30, 12.30, 0.50),
-        (13.30, 20.30, 1.00),
+        (13.30, 30.30, 1.00),
+        (31.80, 150.30, 1.50),
     )
     scan_azimuth_count: int = 1801
     uniform_subset_segment_counts: tuple[int, ...] = (14, 16, 18, 20, 22, 24)
@@ -193,7 +200,13 @@ class OperationalSparseArrayDesignConfig:
         require_positive_float("maximum_frequency_hz", float(self.maximum_frequency_hz))
         require_positive_float("valid_frequency_hz_min", float(self.valid_frequency_hz_min))
         require(float(self.valid_frequency_hz_min) <= float(self.maximum_frequency_hz), "valid_frequency_hz_min must not exceed maximum_frequency_hz.")
-        require_positive_float("target_hpbw_deg", float(self.target_hpbw_deg))
+        require_positive_float("constant_beamwidth_reference_frequency_hz", float(self.constant_beamwidth_reference_frequency_hz))
+        require(
+            float(self.valid_frequency_hz_min) == float(self.constant_beamwidth_reference_frequency_hz),
+            "valid_frequency_hz_min must match constant_beamwidth_reference_frequency_hz.",
+        )
+        if self.target_hpbw_deg is not None:
+            require_positive_float("target_hpbw_deg", float(self.target_hpbw_deg))
         require_positive_float("required_peak_margin_db", float(self.required_peak_margin_db))
         require_positive_int("scan_azimuth_count", int(self.scan_azimuth_count))
         require_positive_float("gap_alias_safety", float(self.gap_alias_safety))
@@ -238,8 +251,8 @@ class OperationalSparseArrayDefinition:
     positions_m: FloatArray
     design_frequencies_hz: FloatArray
     active_channel_indices_by_frequency: tuple[IntArray, ...]
-    records: tuple[dict[str, object], ...]
-    formula: dict[str, object]
+    records: tuple[dict[str, Any], ...]
+    formula: dict[str, Any]
 
     def __post_init__(self) -> None:
         """保存ファイルから復元した配列 shape と index 範囲を検証する。"""
@@ -312,7 +325,7 @@ class OperationalSparseArrayDefinition:
             active_indices_per_band=[indices.copy() for indices in self.active_channel_indices_by_frequency],
         )
 
-    def to_payload(self) -> dict[str, object]:
+    def to_payload(self) -> dict[str, Any]:
         """JSON 保存用 payload へ変換する。"""
         return {
             "schema_version": int(self.schema_version),
@@ -347,7 +360,7 @@ class OperationalSparseArrayDefinition:
         output_path.write_text(json.dumps(self.to_payload(), indent=2, ensure_ascii=False), encoding="utf-8")
 
     @classmethod
-    def from_payload(cls, payload: dict[str, object]) -> "OperationalSparseArrayDefinition":
+    def from_payload(cls, payload: dict[str, Any]) -> "OperationalSparseArrayDefinition":
         """JSON payload からアレイ定義を復元する。
 
         Args:
@@ -446,6 +459,53 @@ def _required_aperture_m(
     return float(min(float(maximum_aperture_m), float(safety_factor) * aperture_m))
 
 
+def _target_hpbw_deg_from_reference_aperture(
+    sound_speed_m_s: float,
+    reference_frequency_hz: float,
+    reference_aperture_m: float,
+) -> float:
+    """基準周波数と全開口から一定化する HPBW 目標を計算する。
+
+    Args:
+        sound_speed_m_s: 音速。単位は m/s。
+        reference_frequency_hz: ビーム幅を決める基準周波数。単位は Hz。
+        reference_aperture_m: 基準周波数で使う物理全開口。単位は m。
+
+    Returns:
+        `HPBW_rad ≈ 0.886 c / (f_ref D_ref)` から求めた目標 HPBW。単位は deg。
+    """
+    require_positive_float("sound_speed_m_s", float(sound_speed_m_s))
+    require_positive_float("reference_frequency_hz", float(reference_frequency_hz))
+    require_positive_float("reference_aperture_m", float(reference_aperture_m))
+
+    # 200 Hz 未満は全 CH を使うため、ビーム幅は周波数低下に従って広がる。
+    # 200 Hz 以上では、この式で得た HPBW を下限幅として active aperture / shading 側で一定化する。
+    target_hpbw_rad = 0.886 * float(sound_speed_m_s) / (
+        float(reference_frequency_hz) * float(reference_aperture_m)
+    )
+    return float(np.rad2deg(target_hpbw_rad))
+
+
+def _required_constant_beamwidth_aperture_m(
+    frequency_hz: float,
+    reference_frequency_hz: float,
+    reference_aperture_m: float,
+    safety_factor: float,
+) -> float:
+    """200 Hz 基準の一定ビーム幅を保つための active aperture を返す。
+
+    `HPBW ≈ 0.886 c / (f D)` を一定にするには、`f D` を一定に保てばよい。
+    したがって `D(f) = D_ref f_ref / f` とする。
+    """
+    require_positive_float("frequency_hz", float(frequency_hz))
+    require_positive_float("reference_frequency_hz", float(reference_frequency_hz))
+    require_positive_float("reference_aperture_m", float(reference_aperture_m))
+    require_positive_float("safety_factor", float(safety_factor))
+
+    aperture_m = float(reference_aperture_m) * float(reference_frequency_hz) / float(frequency_hz)
+    return float(min(float(reference_aperture_m), float(safety_factor) * aperture_m))
+
+
 def _candidate_all_inside_aperture(positions_m: FloatArray, required_aperture_m: float) -> IntArray:
     """指定開口内にある物理チャネルをすべて使う候補を返す。"""
     x_positions_m = np.asarray(positions_m[:, 0], dtype=np.float64)
@@ -536,10 +596,25 @@ def _choose_active_indices_for_frequency(
     frequency_hz: float,
     config: OperationalSparseArrayDesignConfig,
     scan_azimuths_deg: FloatArray,
-) -> tuple[IntArray, dict[str, object]]:
-    """1 周波数の active channel を候補探索で決める。"""
+) -> tuple[IntArray, dict[str, Any]]:
+    """1 周波数の active channel を設計方針に従って決める。
+
+    200 Hz 未満は低域の波長が長く grating 条件に余裕があるため全 CH を使う。
+    200 Hz 以上では `f D` が一定になる active aperture を候補探索し、
+    200 Hz 全開口で決まる HPBW より狭くならないようにする。
+    """
     x_positions_m = np.asarray(positions_m[:, 0], dtype=np.float64)
     maximum_aperture_m = float(np.max(x_positions_m) - np.min(x_positions_m))
+    reference_frequency_hz = float(config.constant_beamwidth_reference_frequency_hz)
+    target_hpbw_deg = (
+        float(config.target_hpbw_deg)
+        if config.target_hpbw_deg is not None
+        else _target_hpbw_deg_from_reference_aperture(
+            sound_speed_m_s=float(config.sound_speed_m_s),
+            reference_frequency_hz=reference_frequency_hz,
+            reference_aperture_m=maximum_aperture_m,
+        )
+    )
 
     if float(frequency_hz) <= 0.0:
         all_indices = np.arange(positions_m.shape[0], dtype=np.int64)
@@ -550,23 +625,66 @@ def _choose_active_indices_for_frequency(
             "active_aperture_m": float(aperture_m),
             "active_min_spacing_m": float(min_spacing_m),
             "active_max_spacing_m": float(max_spacing_m),
+            "active_max_gap_alias_limit_hz": float(config.sound_speed_m_s) / (2.0 * float(max_spacing_m)),
             "required_aperture_m": None,
             "wavelength_m": None,
+            "target_hpbw_deg": float(target_hpbw_deg),
+            "constant_beamwidth_reference_frequency_hz": float(reference_frequency_hz),
             "worst_peak_margin_db": None,
             "meets_required_peak_margin": None,
             "selection_mode": "all_channels_for_dc",
         }
 
-    candidates: list[tuple[tuple[int, int, float], IntArray, dict[str, object]]] = []
+    if float(frequency_hz) < reference_frequency_hz:
+        all_indices = np.arange(positions_m.shape[0], dtype=np.int64)
+        aperture_m, min_spacing_m, max_spacing_m = _active_spacing_summary_m(positions_m, all_indices)
+        worst_margin_db, margins_db = _evaluate_candidate(
+            positions_m=positions_m,
+            active_indices=all_indices,
+            frequency_hz=float(frequency_hz),
+            config=config,
+            scan_azimuths_deg=scan_azimuths_deg,
+        )
+        meets_margin = bool(worst_margin_db >= float(config.required_peak_margin_db))
+        record: dict[str, Any] = {
+            "frequency_hz": float(frequency_hz),
+            "active_channel_count": int(all_indices.size),
+            "active_aperture_m": float(aperture_m),
+            "active_min_spacing_m": float(min_spacing_m),
+            "active_max_spacing_m": float(max_spacing_m),
+            "active_max_gap_alias_limit_hz": float(config.sound_speed_m_s) / (2.0 * float(max_spacing_m)),
+            "required_aperture_m": float(maximum_aperture_m),
+            "wavelength_m": float(config.sound_speed_m_s) / float(frequency_hz),
+            "target_hpbw_deg": float(target_hpbw_deg),
+            "constant_beamwidth_reference_frequency_hz": float(reference_frequency_hz),
+            "worst_peak_margin_db": float(worst_margin_db),
+            "meets_required_peak_margin": bool(meets_margin),
+            "selection_mode": "all_channels_below_constant_beamwidth_reference",
+            "aperture_safety_factor": None,
+            "candidate_rank_score": [0 if meets_margin else 1, int(all_indices.size), float(max_spacing_m)],
+        }
+        for azimuth_deg, margin_db in zip(config.evaluation_azimuths_deg, margins_db, strict=True):
+            record[f"peak_margin_az{int(round(float(azimuth_deg))):03d}_db"] = float(margin_db)
+        return all_indices, record
+
+    candidates: list[tuple[tuple[int, float, int, float], IntArray, dict[str, Any]]] = []
     wavelength_m = float(config.sound_speed_m_s) / float(frequency_hz)
     for safety_factor in config.aperture_safety_factors:
-        required_aperture = _required_aperture_m(
-            frequency_hz=float(frequency_hz),
-            sound_speed_m_s=float(config.sound_speed_m_s),
-            target_hpbw_deg=float(config.target_hpbw_deg),
-            safety_factor=float(safety_factor),
-            maximum_aperture_m=maximum_aperture_m,
-        )
+        if config.target_hpbw_deg is None:
+            required_aperture = _required_constant_beamwidth_aperture_m(
+                frequency_hz=float(frequency_hz),
+                reference_frequency_hz=reference_frequency_hz,
+                reference_aperture_m=maximum_aperture_m,
+                safety_factor=float(safety_factor),
+            )
+        else:
+            required_aperture = _required_aperture_m(
+                frequency_hz=float(frequency_hz),
+                sound_speed_m_s=float(config.sound_speed_m_s),
+                target_hpbw_deg=float(target_hpbw_deg),
+                safety_factor=float(safety_factor),
+                maximum_aperture_m=maximum_aperture_m,
+            )
         raw_candidate_indices = [
             ("all_inside_aperture", _candidate_all_inside_aperture(positions_m, required_aperture)),
             *(
@@ -596,7 +714,7 @@ def _choose_active_indices_for_frequency(
             )
             aperture_m, min_spacing_m, max_spacing_m = _active_spacing_summary_m(positions_m, active_indices)
             meets_margin = bool(worst_margin_db >= float(config.required_peak_margin_db))
-            record: dict[str, object] = {
+            record: dict[str, Any] = {
                 "frequency_hz": float(frequency_hz),
                 "active_channel_count": int(active_indices.size),
                 "active_aperture_m": float(aperture_m),
@@ -605,7 +723,8 @@ def _choose_active_indices_for_frequency(
                 "active_max_gap_alias_limit_hz": float(config.sound_speed_m_s) / (2.0 * float(max_spacing_m)),
                 "required_aperture_m": float(required_aperture),
                 "wavelength_m": float(wavelength_m),
-                "target_hpbw_deg": float(config.target_hpbw_deg),
+                "target_hpbw_deg": float(target_hpbw_deg),
+                "constant_beamwidth_reference_frequency_hz": float(reference_frequency_hz),
                 "worst_peak_margin_db": float(worst_margin_db),
                 "meets_required_peak_margin": bool(meets_margin),
                 "selection_mode": selection_mode,
@@ -615,17 +734,23 @@ def _choose_active_indices_for_frequency(
                 record[f"peak_margin_az{int(round(float(azimuth_deg))):03d}_db"] = float(margin_db)
 
             # pass した候補は channel 数を優先し、同数なら最大 gap が小さい候補を選ぶ。
-            # CPU 実装では active channel 数が固定整相コストに直結するため、過剰に多い候補を避ける。
+            # 全候補が未達の場合は、方式の成否を判断する前に最も margin 不足が小さい候補を採用する。
+            # これにより、実装上の候補選択が悪くて shading 評価を不利にすることを避ける。
             pass_rank = 0 if meets_margin else 1
-            score = (pass_rank, int(active_indices.size), float(max_spacing_m))
+            margin_deficit_db = max(0.0, float(config.required_peak_margin_db) - float(worst_margin_db))
+            score = (pass_rank, float(margin_deficit_db), int(active_indices.size), float(max_spacing_m))
             candidates.append((score, active_indices.astype(np.int64), record))
 
     require(len(candidates) > 0, "no active channel candidate was generated.")
     candidates.sort(key=lambda item: item[0])
     best_score, best_indices, best_record = candidates[0]
-    best_record["candidate_rank_score"] = [int(best_score[0]), int(best_score[1]), float(best_score[2])]
+    best_record["candidate_rank_score"] = [
+        int(best_score[0]),
+        float(best_score[1]),
+        int(best_score[2]),
+        float(best_score[3]),
+    ]
     return best_indices, best_record
-
 
 def design_operational_sparse_array(
     config: OperationalSparseArrayDesignConfig,
@@ -642,11 +767,21 @@ def design_operational_sparse_array(
         ValueError: 設計候補が生成できない、または shape が不正な場合。
     """
     positions_m = _build_physical_positions(config)
+    physical_aperture_m = float(np.max(positions_m[:, 0]) - np.min(positions_m[:, 0]))
+    effective_target_hpbw_deg = (
+        float(config.target_hpbw_deg)
+        if config.target_hpbw_deg is not None
+        else _target_hpbw_deg_from_reference_aperture(
+            sound_speed_m_s=float(config.sound_speed_m_s),
+            reference_frequency_hz=float(config.constant_beamwidth_reference_frequency_hz),
+            reference_aperture_m=physical_aperture_m,
+        )
+    )
     design_frequencies_hz = np.asarray(config.design_frequency_grid_hz, dtype=np.float64)
     scan_azimuths_deg = np.linspace(0.0, 180.0, int(config.scan_azimuth_count), dtype=np.float64)
 
     active_table: list[IntArray] = []
-    records: list[dict[str, object]] = []
+    records: list[dict[str, Any]] = []
     for frequency_hz in design_frequencies_hz.tolist():
         active_indices, record = _choose_active_indices_for_frequency(
             positions_m=positions_m,
@@ -662,7 +797,9 @@ def design_operational_sparse_array(
         "spacing_alias_condition": "d <= c / (2 f_max)",
         "maximum_alias_free_uniform_spacing_m": dense_spacing_limit_m,
         "hpbw_aperture_formula": "D ~= 0.886 c / (f HPBW_rad)",
-        "target_hpbw_deg": float(config.target_hpbw_deg),
+        "target_hpbw_deg": float(effective_target_hpbw_deg),
+        "constant_beamwidth_reference_frequency_hz": float(config.constant_beamwidth_reference_frequency_hz),
+        "constant_beamwidth_reference_aperture_m": float(physical_aperture_m),
         "required_peak_margin_db": float(config.required_peak_margin_db),
         "valid_frequency_hz_min": float(config.valid_frequency_hz_min),
         "note": "0 Hz は波長が無限大のため方位性能保証対象外。性能評価は valid_frequency_hz_min 以上で行う。",
@@ -682,7 +819,7 @@ def design_operational_sparse_array(
     )
 
 
-def _write_records_csv(path: Path, records: tuple[dict[str, object], ...]) -> None:
+def _write_records_csv(path: Path, records: tuple[dict[str, Any], ...]) -> None:
     """周波数別設計 record を CSV として保存する。"""
     if len(records) == 0:
         return
