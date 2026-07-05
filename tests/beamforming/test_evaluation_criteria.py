@@ -29,6 +29,7 @@ def test_evaluation_criteria_ids_are_unique() -> None:
     assert "input_output_level_consistency" in criterion_ids
     assert "frequency_component_separation" in criterion_ids
     assert "adaptive_constraint_response" in criterion_ids
+    assert "source_visibility_preservation" in criterion_ids
 
 
     for criterion in criteria:
@@ -67,7 +68,32 @@ def test_evaluation_pattern_ids_are_unique() -> None:
     assert "slc_different_frequency_interference" in pattern_ids
     assert "slc_same_azimuth_multi_frequency" in pattern_ids
     assert "time_domain_adaptive_mvdr_lcmv_gsc" in pattern_ids
+    assert "slc_scan_multi_source_display" in pattern_ids
 
+
+def test_slc_scan_multi_source_display_does_not_require_interferer_cancellation() -> None:
+    """全方位 scan 用途では interferer を別信号として残す評価 pattern を使う。
+
+    SLC を scan 表示へ掛ける場合、別方位 source のピークは観測対象であり、
+    target beam leakage canceller のように interferer 自体の低減を必須にしない。
+    """
+    required, recommended = get_evaluation_criteria_for_pattern("slc_scan_multi_source_display")
+    required_ids = {criterion.criterion_id for criterion in required}
+    recommended_ids = {criterion.criterion_id for criterion in recommended}
+    criteria = {
+        criterion.criterion_id: criterion
+        for criterion in list_beamforming_evaluation_criteria()
+    }
+
+    assert {
+        "source_visibility_preservation",
+        "mainlobe_preservation",
+        "fraz_btr_consistency",
+        "waveform_integrity",
+    } <= required_ids
+    assert "target_leakage_components" not in required_ids
+    assert "sidelobe_peak_margin" in recommended_ids
+    assert "interferer 自体を消す必要はない" in criteria["source_visibility_preservation"].pass_guideline
 
 def test_slc_target_only_requires_self_cancellation_checks() -> None:
     """target-only SLC では自己消去と時間波形健全性を必須評価にする。

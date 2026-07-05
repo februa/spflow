@@ -4,7 +4,7 @@
 
 本書は、305 ch / 300.6 m の運用スパースアレイ、保存済み小数遅延 FIR バンク、151 本待受ビームを前提に、固定整相後段へ SLC を入れる条件を整理する。
 
-SLC の評価では、target mainlobe が維持されることだけでは採用判定にしない。Beamforming Evaluation の観点に従い、target-only 保護、同一周波数干渉、異周波数干渉、BL/FRAZ/BTR の整合、runtime、condition number、weight norm を分けて確認する。
+SLC の評価では、target mainlobe が維持されることだけでは採用判定にしない。また、interferer を常に消すことも要求しない。Beamforming Evaluation の観点に従い、`source-preserving scan`、`local_leakage_canceller`、`BL_sidelobe_reducer` の role を分け、target-only 保護、音源可視性、target beam leakage、BL/FRAZ/BTR の整合、runtime、condition number、weight norm を確認する。
 
 ---
 
@@ -50,7 +50,7 @@ y_beam = sum(w_ch * y_ch) / sum(w_ch)
 
 `examples/beamforming/operational_array_fractional_delay_slc_diagnostics.py` で評価する。小数遅延固定整相後の全 beam output を周波数選択 snapshot に変換し、各 scan beam を順に保護 target として SLC を適用する。
 
-この方式は BL/FRAZ/BTR の before / after を作る診断に向いている。一方、全 beam scan では interferer 方位の beam もその beam 自身にとっては desired mainlobe であるため、干渉源ピークそのものを消す評価には使わない。
+この方式は BL/FRAZ/BTR の before / after を作る診断に向いている。一方、全 beam scan では interferer 方位の beam もその beam 自身にとっては desired mainlobe であるため、干渉源ピークそのものを消す評価には使わない。採否 pattern は `slc_scan_multi_source_display` とし、既知 source が別ピークとして残ること、false peak や guard 外 envelope が悪化しないことを確認する。
 
 ### 3.2 target-centric 時間領域 SLC
 
@@ -101,9 +101,10 @@ limited_beam_count                  = 151
 判定:
 
 - target mainlobe は維持された。
-- 同一周波数 interferer に対して、実質的な低減は出ていない。
+- 同一周波数 interferer は別方位 source として残る。source-preserving scan ではこれは許容される。
+- `interferer nearest reduction` は scan 用途の採否指標ではなく、局所 leakage canceller として解釈した場合の参考値である。
 - 全 beam が `LIMITED_REFERENCE` であり、`max_reference_beams=48` の制限下での評価である。
-- 実装は設計通り、現行 shading を固定整相出力と response matrix の両方へ適用している。したがって、この結果は矩形重みの取りこぼしではなく、同一周波数・高相関条件での方式限界として扱う。
+- 実装は設計通り、現行 shading を固定整相出力と response matrix の両方へ適用している。矩形重みの取りこぼしではない。
 
 ---
 
@@ -168,9 +169,10 @@ interferer frequency:
 判定:
 
 - target beam 上の interferer 成分だけを見ると 23.0 dB 低下している。
-- しかし SLC 後の protected-target BL は guard 外 peak と first sidelobe が悪化している。
-- このため、現設定を「BL を改善する SLC」として採用しない。ユーザ提示時の representative BL は、上記 overlay を使って、成分別低減と BL 悪化を分けて説明する。
-- `recommended_output` は現段階では固定整相とする。
+- target-only 低下は -0.0027 dB であり、local_leakage_canceller としての target 保護は成立している。
+- ただし SLC 後の protected-target BL は guard 外 peak と first sidelobe が悪化している。
+- このため、現設定は `local_leakage_canceller` としては採用候補、`BL_sidelobe_reducer` としては不採用とする。
+- ユーザ提示時の representative BL は、上記 overlay を使って、局所 leakage 低減と BL envelope 悪化を分けて説明する。
 
 ---
 
@@ -179,25 +181,30 @@ interferer frequency:
 現時点の判断は次である。
 
 ```text
-narrowband scan SLC, same-frequency interferer:
-  target mainlobe は維持するが、干渉低減は出ないため不採用。
+role = source_preserving_scan:
+  narrowband scan SLC は、target と同一周波数 interferer を別方位 source として残せている。
+  interferer 自体の低減は要求しないため、この用途では不採用とはしない。
 
-time-domain L=1 target-centric SLC, different-frequency interferer:
-  成分別 leakage は下がるが、BL が悪化するため現設定は不採用。
+role = local_leakage_canceller:
+  time-domain L=1 target-centric SLC は、10000 Hz target beam に混入した 8192 Hz interferer 成分を低減している。
+  target 保護、成分別 leakage 低減、runtime の観点では採用候補とする。
+
+role = BL_sidelobe_reducer:
+  time-domain L=1 target-centric SLC は、guard 外 peak と first sidelobe が悪化するため不採用。
 
 fixed fractional beamformer with operational shading:
-  10000 Hz 代表点では BL margin を満たしており、現段階の出力として採用。
+  10000 Hz 代表点では BL margin を満たしており、SLC を掛けない基準出力として採用。
 ```
 
-SLC は効果が全くないとは言わない。異周波数 interferer の target beam leakage には低減が出ている。一方、BL 形状の悪化を許容してよい方式ではないため、運用出力へ採用するには追加制約が必要である。
+SLC の採否は role で決める。別信号として観測したい interferer は消さない。target beam に混入した成分を下げたい場合だけ `local_leakage_canceller` として leakage 低減を要求する。BL 全体の sidelobe envelope を下げたい場合は、`BL_sidelobe_reducer` として guard 外 peak、first sidelobe、最大局所悪化量を必須にする。
 
 ---
 
 ## 7. 未検討・次に確認する項目
 
-1. `eta` と `loading` を BL 悪化量で制約し、成分別 leakage 低減と guard 外 peak 悪化の両方を満たす領域を探す。
+1. `source_preserving_scan` では既知 source の mainlobe を除外した false peak / envelope 指標を追加し、interferer を誤って sidelobe と数えない。
 2. `max_reference_beams=48` の narrowband scan SLC では全 beam が `LIMITED_REFERENCE` になるため、snapshot 数、block 長、reference 数の組み合わせを再評価する。
 3. target absent / training 区間を使い、desired target を含まない共分散推定で同一周波数条件を再評価する。
-4. target-centric BL の悪化を safety gate に入れ、target beam 出力成分だけでなく空間応答の悪化でも固定整相へ戻す。
+4. `local_leakage_canceller` の safety gate は target-only 保護、interferer-only leakage 低減、mixed 出力の過大変化で判定する。BL 悪化は `BL_sidelobe_reducer` role の不合格理由として分けて記録する。
 5. `tap_len=3` の時間タップ付き SLC を、同じ 10000 Hz target / 8192 Hz interferer 条件で再評価する。
 6. 低域 `f < 200 Hz` の全 CH 使用条件では、別途 BL/FRAZ/BTR を生成し、長開口時の SLC reference 選定を確認する。

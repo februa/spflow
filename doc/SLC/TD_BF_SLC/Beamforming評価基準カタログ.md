@@ -32,25 +32,6 @@
 - 失敗時の解釈: 開口長、受波器間隔、active channel 選定、シェーディング、または評価 mask が不適切。
 - 単位・基準: margin は mainlobe peak に対する相対 dB。max_nonlocal_level_db20 など絶対レベルを出す場合は dB re input RMS または dB re 1 uPa RMS を明記する。
 
-### sidelobe_distribution_metrics: guard 外 sidelobe 分布指標
-
-- 分類: BL
-- 目的: guard 外最大 peak だけでなく、guard 外 sector 全体のエネルギー分布と局所悪化を確認する。
-- metric: integrated_sidelobe_level_db, sidelobe_95_percentile_db, sidelobe_99_percentile_db, sidelobe_sector_average_db, max_guard_outside_worsening_db
-- 推奨図: dense_bl_compare.png, sidelobe_distribution_summary.png
-- 判定目安: BL 全体の sidelobe reducer として採用する方式では、第一副極と guard 外 peak に加えて、95% / 99% 点または integrated sidelobe level が悪化しないこと。少数点 null で別方位へ sidelobe が押し出される方式は不合格にする。
-- 失敗時の解釈: 目的関数が marker 低減や少数点 null に偏っており、guard 外 sector 全体の envelope を制約していない可能性が高い。
-- 単位・基準: before/after 差分は dB re before level または固定整相出力に対する相対 dB。絶対レベルを出す場合は dB re input RMS または dB re 1 uPa RMS を明記する。
-
-### dense_angle_grid_response: 高密度方位 grid / off-grid 応答
-
-- 分類: BL
-- 目的: 待受 beam grid 点だけでは見落とす null 深さ、peak 位置、off-grid 悪化を確認する。
-- metric: dense_grid_guard_peak_db20, exact_source_response_db20, local_peak_interpolated_azimuth_deg, off_grid_worsening_db
-- 推奨図: dense_bl_compare.png, exact_marker_response_summary.png
-- 判定目安: 明示 null 方位の exact response と beam grid 最近傍 response を分けて記録する。採否では dense grid 上の guard 外最大値を優先する。
-- 失敗時の解釈: null を置いた方位と評価 grid がずれている、または grid 点では良く見えるが連続方位では peak が残っている。
-- 単位・基準: 方位は deg。応答 level は dB re input RMS、dB re 1 uPa RMS、または before/after 相対 dB として基準量を明記する。
 ### grating_lobe_and_ambiguity: グレーティングローブ・鏡像曖昧性
 
 - 分類: BL
@@ -81,6 +62,16 @@
 - 失敗時の解釈: 表示正規化、BTR 方位軸、FRAZ 周波数軸、または複数音源時の代表 peak の解釈が誤っている。
 - 単位・基準: FRAZ は RMS レベルなら dB re input RMS または dB re 1 uPa RMS、スペクトル密度なら dB re uPa/sqrt(Hz) または dB re uPa/Hz@ch を明記する。BTR 相対表示は dB re frame max。
 
+### source_visibility_preservation: 全方位 scan での音源可視性維持
+
+- 分類: SLC/Scan
+- 目的: 全方位 BL/FRAZ/BTR 表示で、target と interferer を別信号のピークとして残せているかを確認する。
+- metric: known_source_peak_azimuths_deg, known_source_level_delta_db, false_peak_increase_db, known_source_mainlobe_exclusion_mask
+- 推奨図: slc_bl_compare.png, fraz.png, btr.png
+- 判定目安: source-preserving scan では interferer 自体を消す必要はない。既知 source の mainlobe を維持し、別方位 false peak や guard 外 envelope を悪化させないことを確認する。
+- 失敗時の解釈: scan 出力を局所キャンセラとして解釈している、既知 source 方位を sidelobe と誤計上している、または SLC により別信号の可視性が落ちている可能性がある。
+- 単位・基準: 方位は deg。known_source_level_delta_db と false_peak_increase_db は処理前後の相対 dB。絶対レベルは dB re input RMS または dB re 1 uPa RMS を明記する。
+
 ### frequency_component_separation: 同一方位の周波数成分分離
 
 - 分類: Frequency/SLC
@@ -97,7 +88,7 @@
 - 目的: mixed / target-only / interferer-only を分け、SLC が target beam 上のどの成分を削っているかを確認する。
 - metric: raw_target_power_delta_db, raw_interferer_reduction_db, effective_interferer_reduction_db
 - 推奨図: target_leakage_levels.png
-- 判定目安: target-only で target 低下が小さく、interferer-only で漏れ込みが下がること。raw と safety fallback 後を分けること。
+- 判定目安: local_leakage_canceller として採用する場合は、target-only で target 低下が小さく、interferer-only で protected target beam への漏れ込みが下がること。source-preserving scan では interferer 自体の低減を要求しない。raw と safety fallback 後を分けること。
 - 失敗時の解釈: target 自己消去、eta 過大、desired blocking 不足、または同一周波数・高相関条件で SLC が不適。
 - 単位・基準: 成分別 level は RMS 振幅レベル。差分や reduction は処理前後の相対 dB、絶対値は dB re input RMS または dB re 1 uPa RMS。
 
@@ -111,15 +102,6 @@
 - 失敗時の解釈: 制約ベクトルの位相符号、正負周波数制約、tap の並び、blocking matrix、または対角 loading の扱いが誤っている可能性が高い。
 - 単位・基準: 制約応答誤差は desired response に対する相対 dB。null 応答は振幅比 dB20。rank と自由度は count。
 
-### adaptive_weight_robustness: 適応重みの頑健性
-
-- 分類: Adaptive BF
-- 目的: sidelobe 低減や null 深さと引き換えに、白色雑音増幅、target mismatch、学習条件への過適合が起きていないかを確認する。
-- metric: white_noise_gain_db, directivity_index_delta_db, train_test_reduction_gap_db, mismatch_target_power_delta_db, off_grid_worsening_db
-- 推奨図: robustness_sweep_summary.png, train_test_bl_compare.png
-- 判定目安: BL 全体の sidelobe reducer では WNG または weight norm の上限を設け、学習に使っていない方位・周波数でも guard 外 peak が悪化しないこと。target 方位誤差、音速誤差、FIR 残留誤差に対して target-only power が過大に低下しないこと。
-- 失敗時の解釈: 自由度が過大、対角 loading 不足、少数条件への過適合、または target 制約が実環境の steering mismatch に弱い。
-- 単位・基準: WNG と DI は dB の相対量。train/test gap と mismatch delta は dB re before level または固定整相出力に対する相対 dB。
 ### slc_covariance_health: SLC 共分散・係数の健全性
 
 - 分類: SLC
@@ -193,8 +175,14 @@
 ### shading_design: シェーディング設計
 
 - 説明: Kaiser-Bessel 窓と待受ビーム数の妥当性を確認する。
-- 必須: 隣接待受ビームの -3 dB 主ローブ overlap, サイドローブ peak margin, guard 外 sidelobe 分布指標, アレイ定義ファイルと active channel の整合
+- 必須: 隣接待受ビームの -3 dB 主ローブ overlap, サイドローブ peak margin, アレイ定義ファイルと active channel の整合
 - 推奨: グレーティングローブ・鏡像曖昧性, 入力レベルに対する出力レベル・SN 改善の妥当性
+
+### slc_scan_multi_source_display: SLC 全方位 scan 複数音源表示
+
+- 説明: target と interferer を別方位・別周波数の観測対象として残す scan 表示用途を確認する。
+- 必須: 全方位 scan での音源可視性維持, メインローブ維持, FRAZ / BTR の表示整合性, 処理後時間波形の健全性
+- 推奨: サイドローブ peak margin, アレイ定義ファイルと active channel の整合, 入力レベルに対する出力レベル・SN 改善の妥当性
 
 ### slc_target_only: SLC target-only 高 SNR
 
@@ -204,13 +192,13 @@
 
 ### slc_same_frequency_interference: SLC 同一周波数干渉
 
-- 説明: target と interferer が同一周波数で高相関になる厳しい条件を確認する。
+- 説明: local leakage canceller として、target と interferer が同一周波数で高相関になる厳しい条件を確認する。source-preserving scan では別信号として残す判断も許容する。
 - 必須: target beam 成分別漏れ込み, メインローブ維持, SLC 共分散・係数の健全性
 - 推奨: 処理後時間波形の健全性, FRAZ / BTR の表示整合性, 入力レベルに対する出力レベル・SN 改善の妥当性
 
 ### slc_different_frequency_interference: SLC 異周波数干渉
 
-- 説明: 時間領域 SLC L=1 が効きやすい異周波数 interferer 条件を確認する。
+- 説明: local leakage canceller として、時間領域 SLC L=1 が効きやすい異周波数 interferer 条件を確認する。別信号として出力する scan 用途とは分ける。
 - 必須: target beam 成分別漏れ込み, メインローブ維持, 処理後時間波形の健全性
 - 推奨: SLC 共分散・係数の健全性, FRAZ / BTR の表示整合性, 入力レベルに対する出力レベル・SN 改善の妥当性
 
@@ -223,7 +211,7 @@
 ### time_domain_adaptive_mvdr_lcmv_gsc: 時間領域 MVDR / LCMV / GSC
 
 - 説明: channel×tap 制約で target 保護、干渉 null、共分散健全性、実時間性を比較する。
-- 必須: 時間領域適応重みの制約応答, target beam 成分別漏れ込み, メインローブ維持, guard 外 sidelobe 分布指標, 高密度方位 grid / off-grid 応答, 適応重みの頑健性, SLC 共分散・係数の健全性, CPU 実時間性
+- 必須: 時間領域適応重みの制約応答, target beam 成分別漏れ込み, メインローブ維持, SLC 共分散・係数の健全性, CPU 実時間性
 - 推奨: 処理後時間波形の健全性, FRAZ / BTR の表示整合性, 入力レベルに対する出力レベル・SN 改善の妥当性
 
 ### slc_runtime: SLC 実時間性
@@ -267,4 +255,3 @@ BL / FRAZ のように時間方向または周波数方向へ平均した power 
 同じ SN 改善量を power 比から導くと dB10、RMS 振幅比から導くと dB20 になるが、`10log10(N_eff) = 20log10(sqrt(N_eff))` なので数値は一致する。
 入力雑音が channel 間で相関している場合、または干渉音が coherent source の場合、`20log10(sqrt(N_eff))` の改善は成り立たない。
 高域で active subset やシェーディングが変わる場合は、周波数ごとに `N_eff` と分析幅を記録して比較する。
-
