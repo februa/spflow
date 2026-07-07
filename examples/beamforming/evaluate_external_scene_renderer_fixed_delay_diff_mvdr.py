@@ -119,13 +119,53 @@ class ExternalArrayGeometry(ArrayGeometry):
 
 
 def db20_rms_to_tone_peak_amplitude(level_db20: float) -> float:
-    """RMS 基準の dB20 を正弦波ピーク振幅へ変換する。"""
+    """RMS 基準の dB20 を正弦波ピーク振幅へ変換する。
+
+    scene_renderer の tone amplitude は時間波形のピーク振幅である。
+    SL は RMS 振幅で指定するため、`A_peak = sqrt(2) * A_rms` として渡す。
+    """
     return float(np.sqrt(2.0) * (10.0 ** (float(level_db20) / 20.0)))
 
 
 def db20_to_rms_amplitude(level_db20: float) -> float:
     """RMS 基準の dB20 を線形 RMS 振幅へ変換する。"""
     return float(10.0 ** (float(level_db20) / 20.0))
+
+
+def tone_rms_level_db_from_fft_bin(
+    fft_bin_value: NDArray[Any],
+    *,
+    n_fft: int,
+) -> FloatArray:
+    """片側 FFT の非 DC tone bin 値を RMS 振幅 dB へ変換する。
+
+    Args:
+        fft_bin_value: `np.fft.rfft` から取り出した複素 bin 値。
+            beam response の場合 shape は `[n_beam]`、channel spectrum の場合 shape は `[n_ch]`。
+        n_fft: FFT 点数。時間波形 sample 数と一致する。
+
+    Returns:
+        RMS 振幅 level。shape は `fft_bin_value` と同じ、単位は `dB re input RMS`。
+
+    Raises:
+        ValueError: `n_fft` が正でない場合。
+
+    境界条件:
+        この評価では source 周波数を非 DC の単一 tone として扱う。
+        DC や Nyquist bin では片側 FFT の 2 倍補正が成立しないため、この関数の対象外である。
+    """
+    if int(n_fft) <= 0:
+        raise ValueError("n_fft must be positive.")
+    values = np.asarray(fft_bin_value, dtype=np.complex128)
+    normalized_power = np.abs(values / float(n_fft)) ** 2
+    # real tone の非 DC 正周波数 bin は片側だけで全 power の半分を持つ。
+    # RMS 確認式は 10*log10(2*(abs(result/N_FFT)**2)) であり、
+    # SL=0 dB re input RMS, A_peak=sqrt(2) の tone が 0 dB になる。
+    rms_power = 2.0 * normalized_power
+    return np.asarray(
+        10.0 * np.log10(np.maximum(rms_power, np.finfo(np.float64).tiny)),
+        dtype=np.float64,
+    )
 
 
 def _render_scene(
@@ -324,9 +364,11 @@ def evaluate_external_scene_renderer_inputs(
         config=config,
     )
     spectrum_freqs = np.fft.rfftfreq(rendered.shape[1], d=1.0 / float(config.fs_hz))
-    channel_spectrum = np.asarray(
-        np.fft.rfft(rendered, axis=1) / rendered.shape[1], dtype=np.complex128
-    )
+    n_fft = int(rendered.shape[1])
+    # channel_spectrum shape: [n_ch, n_rfft_bin]。
+    # ここでは後段で 10*log10(2*(abs(result/N_FFT)**2)) を使って RMS level を確認するため、
+    # FFT bin は `N_FFT` で正規化せずに保持する。
+    channel_spectrum = np.asarray(np.fft.rfft(rendered, axis=1), dtype=np.complex128)
 
     rows: list[ExternalSceneMetricRow] = []
     fixed_peak_by_source: dict[str, float] = {}
@@ -345,10 +387,7 @@ def evaluate_external_scene_renderer_inputs(
                 source_spectrum,
                 optimize=True,
             )
-            # rfft の片側係数を tone RMS 相当に戻すため sqrt(2) を掛ける。
-            levels_db = 20.0 * np.log10(
-                np.maximum(np.sqrt(2.0) * np.abs(response), np.finfo(np.float64).tiny)
-            )
+            levels_db = tone_rms_level_db_from_fft_bin(response, n_fft=n_fft)
             peak_index = int(np.argmax(levels_db))
             peak_level = float(levels_db[peak_index])
             if method == "fixed_baseline":
