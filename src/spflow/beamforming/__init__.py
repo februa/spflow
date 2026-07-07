@@ -2,6 +2,16 @@
 
 # ビームフォーミング利用者は配列設計・重み設計・実適用をまとめて import することが多いため、
 # 個別実装のファイル構成を意識しなくても使える公開入口をここで固定する。
+from .abf_like_metrics import (
+    AbfLikeMetricDecision,
+    AbfLikeNonSourceMetrics,
+    SourceSectorMask,
+    build_source_sector_mask,
+    build_source_sector_mask_from_azimuths,
+    calculate_abf_like_non_source_metrics,
+    detect_source_beam_indices_from_level_peaks,
+    judge_abf_like_non_source_metrics,
+)
 from .array_design import BandwiseArrayDesign
 from .cbf import (
     CBFBeamformer,
@@ -15,8 +25,8 @@ from .covariance import (
     CovarianceEstimator,
     estimate_covariance,
     forgetting_factor_from_integration_time,
-    integration_blocks_from_integration_time,
     integrate_band_covariances,
+    integration_blocks_from_integration_time,
     recommended_integration_time_for_independent_samples,
 )
 from .diagnostic_plotting import (
@@ -37,6 +47,21 @@ from .evaluation_criteria import (
     list_beamforming_evaluation_criteria,
     list_beamforming_evaluation_patterns,
     write_beamforming_evaluation_criteria_markdown,
+)
+from .fixed_delay_diff_mvdr import (
+    STANDARD_FRACTIONAL_DELAY_PATTERN_COUNT,
+    STANDARD_FRACTIONAL_DELAY_TAP_COUNT,
+    DifferenceCorrectionDesignResult,
+    DifferenceCorrectionDiagnostics,
+    DifferenceCorrectionFIR,
+    DifferenceCorrectionFIRDesigner,
+    LoadedMVDRDesignResult,
+    LoadedMVDRWeightDesigner,
+    ShortFFTCovarianceAccumulator,
+    ShortFFTCovarianceUpdateResult,
+    design_distortionless_fixed_weights,
+    design_fixed_delay_fractional_weights_from_delay_table,
+    design_standard_fractional_delay_filter_bank,
 )
 from .fractional_delay_performance import (
     FractionalDelayPerformanceConfig,
@@ -62,16 +87,20 @@ from .operational_fractional_delay_performance import (
     OperationalArrayFractionalDelayPerformanceConfig,
     run_operational_array_fractional_delay_performance_report,
 )
+from .operational_shading import (
+    OperationalFixedBeamShadingDesignConfig,
+    OperationalShadingDefinition,
+    OperationalShadingDesignConfig,
+    load_operational_shading,
+    run_operational_fixed_beam_shading_design,
+    run_operational_shading_design,
+)
 from .operational_sparse_array import (
     OperationalSparseArrayDefinition,
     OperationalSparseArrayDesignConfig,
     design_operational_sparse_array,
     load_operational_sparse_array,
     save_operational_sparse_array,
-)
-from .operational_time_domain_slc_diagnostics import (
-    OperationalTimeDomainSlcDiagnosticConfig,
-    run_operational_time_domain_slc_leakage_diagnostics,
 )
 from .operational_time_domain_adaptive_comparison import (
     OperationalTimeDomainAdaptiveComparisonConfig,
@@ -81,18 +110,13 @@ from .operational_time_domain_frequency_separation_diagnostics import (
     OperationalSameAzimuthFrequencySeparationConfig,
     run_operational_same_azimuth_frequency_separation_diagnostics,
 )
-from .operational_shading import (
-    OperationalFixedBeamShadingDesignConfig,
-    OperationalShadingDefinition,
-    OperationalShadingDesignConfig,
-    load_operational_shading,
-    run_operational_fixed_beam_shading_design,
-    run_operational_shading_design,
+from .operational_time_domain_slc_diagnostics import (
+    OperationalTimeDomainSlcDiagnosticConfig,
+    run_operational_time_domain_slc_leakage_diagnostics,
 )
 from .slc import (
     BeamDomainSLC,
     BeamGuardSelector,
-    build_reference_blocking_matrix,
     BlockLeastSquaresSlcSolver,
     HeadingAwareForgettingController,
     SlcConfig,
@@ -101,7 +125,14 @@ from .slc import (
     SlcProcessResult,
     SlcReferenceCapacityChecker,
     SlcReferenceCapacityDecision,
+    build_reference_blocking_matrix,
     evaluate_slc_output_safety,
+)
+from .source_mask_slc import (
+    SourceMaskNonSourceLeakageSubtractor,
+    SourceMaskSlcConfig,
+    SourceMaskSlcHealth,
+    SourceMaskSlcResult,
 )
 from .sparse_single_side_array_design import (
     SparseSingleSideArrayDesignConfig,
@@ -109,21 +140,6 @@ from .sparse_single_side_array_design import (
     build_sparse_single_side_array_design,
     run_sparse_single_side_array_design,
 )
-from .time_domain_adaptive import (
-    TimeDomainAdaptiveWeightDiagnostics,
-    apply_time_domain_fir_beamformer,
-    build_gsc_blocking_matrix,
-    build_real_tone_constraint_matrix,
-    build_time_domain_tone_constraint_vector,
-    build_time_tapped_snapshot_matrix,
-    design_time_domain_gsc_weights,
-    design_time_domain_lcmv_weights,
-    design_time_domain_mvdr_weights,
-    diagnose_time_domain_adaptive_weights,
-    estimate_time_domain_covariance,
-    evaluate_constraint_response,
-)
-from .time_delay_guard_design import TimeDelayGuardDesignConfig, run_integer_delay_guard_design
 from .time_delay import (
     DelayTable,
     FractionalDelayAndSumBeamformer,
@@ -138,10 +154,27 @@ from .time_delay_diagnostics import (
     build_sparse_single_side_array_positions,
     run_integer_delay_diagnostics,
 )
+from .time_delay_guard_design import TimeDelayGuardDesignConfig, run_integer_delay_guard_design
 from .time_delay_slc_diagnostics import run_integer_delay_slc_diagnostics
+from .time_domain_adaptive import (
+    TimeDomainAdaptiveWeightDiagnostics,
+    apply_time_domain_fir_beamformer,
+    build_gsc_blocking_matrix,
+    build_real_tone_constraint_matrix,
+    build_time_domain_tone_constraint_vector,
+    build_time_tapped_snapshot_matrix,
+    design_time_domain_gsc_weights,
+    design_time_domain_lcmv_weights,
+    design_time_domain_mvdr_weights,
+    diagnose_time_domain_adaptive_weights,
+    estimate_time_domain_covariance,
+    evaluate_constraint_response,
+)
 
 # ここに列挙した識別子だけを公開 API と見なし、探索補助用の内部関数は外部契約に含めない。
 __all__ = [
+    "AbfLikeMetricDecision",
+    "AbfLikeNonSourceMetrics",
     "BandwiseArrayDesign",
     "apply_channel_window_to_steering",
     "design_cbf_weights",
@@ -167,6 +200,11 @@ __all__ = [
     "SlcReferenceCapacityDecision",
     "SlcOutputSafetyDecision",
     "SlcProcessResult",
+    "SourceSectorMask",
+    "SourceMaskNonSourceLeakageSubtractor",
+    "SourceMaskSlcConfig",
+    "SourceMaskSlcHealth",
+    "SourceMaskSlcResult",
     "evaluate_slc_output_safety",
     "BeamGuardSelector",
     "SlcReferenceCapacityChecker",
@@ -175,6 +213,8 @@ __all__ = [
     "BlockLeastSquaresSlcSolver",
     "BeamDomainSLC",
     "build_reference_blocking_matrix",
+    "build_source_sector_mask",
+    "build_source_sector_mask_from_azimuths",
     "OperationalArrayFractionalDelayPerformanceConfig",
     "run_operational_array_fractional_delay_performance_report",
     "OperationalSparseArrayDesignConfig",
@@ -209,6 +249,7 @@ __all__ = [
     "get_evaluation_criteria_for_pattern",
     "list_beamforming_evaluation_criteria",
     "list_beamforming_evaluation_patterns",
+    "calculate_abf_like_non_source_metrics",
     "write_beamforming_evaluation_criteria_markdown",
     "TimeDomainAdaptiveWeightDiagnostics",
     "build_time_tapped_snapshot_matrix",
@@ -230,14 +271,29 @@ __all__ = [
     "IntegerDelayAndSumBeamformer",
     "design_fractional_delay_filter_bank",
     "design_windowed_sinc_fractional_delay_filter",
+    "detect_source_beam_indices_from_level_peaks",
     "FractionalDelayPerformanceConfig",
     "run_fractional_delay_performance_report",
     "run_fractional_delay_slc_diagnostics",
+    "DifferenceCorrectionDesignResult",
+    "DifferenceCorrectionDiagnostics",
+    "DifferenceCorrectionFIR",
+    "DifferenceCorrectionFIRDesigner",
+    "LoadedMVDRDesignResult",
+    "LoadedMVDRWeightDesigner",
+    "STANDARD_FRACTIONAL_DELAY_PATTERN_COUNT",
+    "STANDARD_FRACTIONAL_DELAY_TAP_COUNT",
+    "ShortFFTCovarianceAccumulator",
+    "ShortFFTCovarianceUpdateResult",
+    "design_distortionless_fixed_weights",
+    "design_fixed_delay_fractional_weights_from_delay_table",
+    "design_standard_fractional_delay_filter_bank",
     "design_mvdr_weights",
     "design_mvdr_weights_with_channel_window",
     "design_mvdr_overlap_save_filters",
     "MVDRWeightDesigner",
     "MVDRWeightCallback",
+    "judge_abf_like_non_source_metrics",
     "beam_response_rms_db",
     "apply_beamformer",
     "apply_beamformer_bands",
