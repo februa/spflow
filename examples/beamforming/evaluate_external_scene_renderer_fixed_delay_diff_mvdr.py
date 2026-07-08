@@ -127,9 +127,26 @@ def db20_rms_to_tone_peak_amplitude(level_db20: float) -> float:
     return float(np.sqrt(2.0) * (10.0 ** (float(level_db20) / 20.0)))
 
 
-def db20_to_rms_amplitude(level_db20: float) -> float:
-    """RMS 基準の dB20 を線形 RMS 振幅へ変換する。"""
-    return float(10.0 ** (float(level_db20) / 20.0))
+def db20_noise_density_to_sample_rms_amplitude(level_db20: float, *, fs_hz: float) -> float:
+    """NL を時間サンプルの白色雑音 RMS 振幅へ変換する。
+
+    Args:
+        level_db20: 片側振幅スペクトル密度として指定した NL。単位は dB re input RMS/sqrt(Hz)。
+        fs_hz: sampling frequency。単位は Hz。
+
+    Returns:
+        channel ごとの白色雑音 sample 標準偏差。単位は input RMS。
+
+    Raises:
+        ValueError: `fs_hz` が正でない場合。
+
+    境界条件:
+        実数 white noise では片側帯域幅が `fs/2` になる。
+        そのため `Amp_NL = 10^(NL/20) * sqrt(fs/2)` を時間波形へ与える。
+    """
+    if float(fs_hz) <= 0.0:
+        raise ValueError("fs_hz must be positive.")
+    return float((10.0 ** (float(level_db20) / 20.0)) * np.sqrt(float(fs_hz) / 2.0))
 
 
 def tone_rms_level_db_from_fft_bin(
@@ -172,7 +189,7 @@ def _render_scene(
     *,
     array_positions_m: FloatArray,
     sources: tuple[ExternalSceneSource, ...],
-    noise_rms_amplitude: float,
+    noise_sample_rms_amplitude: float,
     config: ExternalSceneEvaluationConfig,
 ) -> tuple[FloatArray, FloatArray, FloatArray]:
     """scene_renderer で source 信号を合成し、チャネル無相関雑音を加える。"""
@@ -206,9 +223,9 @@ def _render_scene(
     )
     clean = np.asarray(np.real(SceneRenderer().render(scene, receiver, axis_t)), dtype=np.float64)
     rng = np.random.default_rng(int(config.random_seed))
-    # API には NL から変換済みの RMS 振幅を渡す。
+    # API には NL から `sqrt(fs/2)` で変換済みの sample RMS 振幅を渡す。
     # ここでは channel ごとに独立な N(0, sigma^2) を加える。
-    noise = float(noise_rms_amplitude) * rng.standard_normal(clean.shape)
+    noise = float(noise_sample_rms_amplitude) * rng.standard_normal(clean.shape)
     return np.asarray(clean + noise, dtype=np.float64), clean, noise
 
 
@@ -330,7 +347,7 @@ def evaluate_external_scene_renderer_inputs(
     shading_frequency_step_hz: float,
     fractional_delay_filter_bank: FractionalDelayFilterBank,
     sources: tuple[ExternalSceneSource, ...],
-    noise_rms_amplitude: float,
+    noise_sample_rms_amplitude: float,
     config: ExternalSceneEvaluationConfig = ExternalSceneEvaluationConfig(),
 ) -> tuple[list[ExternalSceneMetricRow], dict[str, NDArray[Any]]]:
     """scene_renderer 入力を使い、source 周波数 BL metric を評価する。
@@ -341,7 +358,7 @@ def evaluate_external_scene_renderer_inputs(
         shading_frequency_step_hz: shading bin 間隔。単位は Hz。
         fractional_delay_filter_bank: 小数遅延 FIR バンク。
         sources: source 条件。ピーク振幅は dB から変換済みの線形値。
-        noise_rms_amplitude: チャネル無相関雑音の RMS 振幅。dB から変換済みの線形値。
+        noise_sample_rms_amplitude: チャネル無相関雑音の sample RMS 振幅。NL から変換済みの線形値。
         config: 評価条件。
 
     Returns:
@@ -352,7 +369,7 @@ def evaluate_external_scene_renderer_inputs(
     rendered, clean, noise = _render_scene(
         array_positions_m=positions,
         sources=sources,
-        noise_rms_amplitude=float(noise_rms_amplitude),
+        noise_sample_rms_amplitude=float(noise_sample_rms_amplitude),
         config=config,
     )
     weights_by_method, frequencies_hz, axis_azimuth_deg, diagnostics = _design_weights(
@@ -532,7 +549,10 @@ def main() -> None:
         shading_frequency_step_hz=float(args.shading_df_hz),
         fractional_delay_filter_bank=filter_bank,
         sources=sources,
-        noise_rms_amplitude=db20_to_rms_amplitude(float(args.noise_level_db20)),
+        noise_sample_rms_amplitude=db20_noise_density_to_sample_rms_amplitude(
+            float(args.noise_level_db20),
+            fs_hz=float(ExternalSceneEvaluationConfig().fs_hz),
+        ),
         config=ExternalSceneEvaluationConfig(fir_taps=int(args.fir_taps)),
     )
     write_scene_outputs(rows, arrays, args.output_dir)

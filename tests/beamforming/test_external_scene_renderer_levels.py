@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from examples.beamforming.evaluate_external_scene_renderer_fixed_delay_diff_mvdr import (
+    db20_noise_density_to_sample_rms_amplitude,
     db20_rms_to_tone_peak_amplitude,
     tone_rms_level_db_from_fft_bin,
 )
@@ -40,3 +41,42 @@ def test_tone_rms_level_db_from_fft_bin_matches_requested_rms_level() -> None:
     )
 
     np.testing.assert_allclose(observed_level_db, np.asarray([requested_level_db]), atol=1.0e-12)
+
+
+def test_noise_level_db20_converts_to_white_noise_sample_rms() -> None:
+    """NL を `10^(NL/20)*sqrt(fs/2)` で sample RMS へ変換する。"""
+    fs_hz = 32768.0
+    noise_level_db = -32.0
+    expected = (10.0 ** (noise_level_db / 20.0)) * np.sqrt(fs_hz / 2.0)
+
+    observed = db20_noise_density_to_sample_rms_amplitude(noise_level_db, fs_hz=fs_hz)
+
+    np.testing.assert_allclose(observed, expected, atol=1.0e-12)
+
+
+def test_white_noise_frequency_spectrum_matches_requested_noise_level() -> None:
+    """白色雑音の片側周波数スペクトル平均が指定 NL に一致することを確認する。
+
+    `Amp_NL = 10^(NL/20)*sqrt(fs/2)` を時間波形の標準偏差として与えると、
+    非 DC / 非 Nyquist の rfft bin では
+    `E[2*abs(X)^2/(N_FFT*fs)] = 10^(NL/10)` になる。
+    ここでは多数 channel の bin power を平均し、周波数スペクトル上の NL を確認する。
+    """
+    fs_hz = 32768.0
+    n_fft = 4096
+    n_ch = 512
+    noise_level_db = -32.0
+    rng = np.random.default_rng(20260708)
+    noise_sample_rms = db20_noise_density_to_sample_rms_amplitude(
+        noise_level_db,
+        fs_hz=fs_hz,
+    )
+    noise = noise_sample_rms * rng.standard_normal((n_ch, n_fft))
+
+    spectrum = np.fft.rfft(noise, axis=1)
+    # spectrum[:, 1:-1] shape: [n_ch, n_positive_bin_without_dc_nyquist]。
+    # 実数 white noise の片側 ASD power は 2*|X|^2/(N_FFT*fs) で推定する。
+    one_sided_density_power = 2.0 * (np.abs(spectrum[:, 1:-1]) ** 2) / (float(n_fft) * fs_hz)
+    observed_level_db = 10.0 * np.log10(float(np.mean(one_sided_density_power)))
+
+    assert abs(observed_level_db - noise_level_db) < 0.1
