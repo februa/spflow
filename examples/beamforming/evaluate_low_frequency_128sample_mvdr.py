@@ -755,64 +755,46 @@ def _plot_signal_input_spectrum(result: SignalCaseResult, output_path: Path) -> 
 
 
 def _plot_signal_beam_response(result: SignalCaseResult, output_path: Path) -> None:
-    """target 正規化 beam response と入力帯域基準の診断図を保存する。
+    """target 正規化した帯域加算 beam response だけを保存する。
 
     Args:
         result: signal case 評価結果。beam response の shape は `[n_beam]`。
         output_path: 保存先 PNG。
 
     Notes:
-        上段は fixed / MVDR それぞれの target beam level を 0 dB に揃えた相対形状で、
-        MVDR の制約形状と固定整相形状を同じ基準で比較するために使う。
-        下段は 128 sample 入力の実測帯域 power を 0 dB とした診断レベルである。
-        下段は自己キャンセルなどの出力レベル低下を見るための補助図であり、
-        「帯域加算後に target を 0 dB へ正規化した図」として読まない。
+        この図は、128 点 FFT の解析帯域内 bin power を線形加算してから dB 化し、
+        fixed / MVDR それぞれの target beam level を 0 dB に揃えた相対形状だけを示す。
+        入力帯域 power 基準の診断図や FFT spectrum は、方式と実装の切り分けを
+        混乱させるため今回の成果物から除外する。
     """
 
     target_index = int(result.target_beam_index)
-    # 各 method の target beam level を引くことで、正規化図では target が 0 dB になる。
-    # 入力帯域基準の出力レベル差は下段に残し、上段では beam shape の比較だけを行う。
+    # 各 method の target beam level を引くことで、帯域加算後の target 方位を 0 dB に揃える。
+    # 広帯域では複数 bin、狭帯域では 1 bin を選んで同じ power 加算式で評価する。
     fixed_relative_db = result.fixed_band_response_db - float(result.fixed_band_response_db[target_index])
     mvdr_relative_db = result.mvdr_band_response_db - float(result.mvdr_band_response_db[target_index])
 
-    fig, axes = _plt().subplots(2, 1, figsize=(10.8, 8.0), sharex=True)
-    axes[0].plot(result.azimuth_deg, fixed_relative_db, color="black", label="fixed_baseline")
-    axes[0].plot(result.azimuth_deg, mvdr_relative_db, color="tab:orange", label="MVDR from 128-sample covariance")
-    axes[0].axvline(TARGET_AZIMUTH_DEG, color="tab:green", linestyle="--", linewidth=1.1, label="source 20 deg")
-    axes[0].axhline(0.0, color="0.35", linestyle=":", linewidth=1.0, label="target beam = 0 dB")
-    axes[0].set_ylim(*_finite_ylim([fixed_relative_db, mvdr_relative_db], dynamic_range_db=65.0))
-    axes[0].set_ylabel("Relative Level [dB re each method target beam]")
-    axes[0].set_title(f"Band-integrated beam response: {result.scenario_id}, analysis {result.band_low_hz:.0f}-{result.band_high_hz:.0f} Hz")
-    axes[0].text(
+    fig, axis = _plt().subplots(figsize=(10.8, 5.2))
+    axis.plot(result.azimuth_deg, fixed_relative_db, color="black", label="fixed_baseline")
+    axis.plot(result.azimuth_deg, mvdr_relative_db, color="tab:orange", label="MVDR from 128-sample covariance")
+    axis.axvline(TARGET_AZIMUTH_DEG, color="tab:green", linestyle="--", linewidth=1.1, label="source 20 deg")
+    axis.axhline(0.0, color="0.35", linestyle=":", linewidth=1.0, label="target beam = 0 dB")
+    axis.set_ylim(*_finite_ylim([fixed_relative_db, mvdr_relative_db], dynamic_range_db=65.0))
+    axis.set_xlabel("Beam azimuth [deg]")
+    axis.set_ylabel("Band-Integrated Level [dB re each method target beam]")
+    axis.set_title(f"Band-integrated beam response: {result.scenario_id}, analysis {result.band_low_hz:.0f}-{result.band_high_hz:.0f} Hz")
+    axis.text(
         0.01,
         0.04,
-        "Top panel: fixed and MVDR target-beam band-integrated levels are both normalized to 0 dB.\n"
-        "Band response = 10log10(sum power of selected 128-point FFT bins).",
-        transform=axes[0].transAxes,
-        fontsize=9,
-        bbox={"boxstyle": "round,pad=0.35", "facecolor": "white", "edgecolor": "0.7", "alpha": 0.92},
-    )
-    axes[0].grid(True, alpha=0.25)
-    axes[0].legend(loc="best")
-
-    axes[1].plot(result.azimuth_deg, result.fixed_band_response_db, color="black", label="fixed_baseline")
-    axes[1].plot(result.azimuth_deg, result.mvdr_band_response_db, color="tab:orange", label="MVDR from 128-sample covariance")
-    axes[1].axvline(TARGET_AZIMUTH_DEG, color="tab:green", linestyle="--", linewidth=1.1, label="source 20 deg")
-    axes[1].axhline(0.0, color="0.35", linestyle=":", linewidth=1.0, label="0 dB input band power")
-    axes[1].set_ylim(*_finite_ylim([result.fixed_band_response_db, result.mvdr_band_response_db], dynamic_range_db=75.0))
-    axes[1].set_xlabel("Beam azimuth [deg]")
-    axes[1].set_ylabel(f"Diagnostic Band Level [{BEAM_RESPONSE_LEVEL_UNIT_LABEL}]")
-    axes[1].text(
-        0.01,
-        0.04,
-        "Bottom panel is input-band-power referenced diagnostics, not target-normalized response.\n"
+        "Target beam is normalized to 0 dB for each method.\n"
+        "Band response = 10log10(sum power of selected 128-point FFT bins).\n"
         "Azimuth axis is 0-180 deg for the x-axis ULA direction-cosine response.",
-        transform=axes[1].transAxes,
+        transform=axis.transAxes,
         fontsize=9,
         bbox={"boxstyle": "round,pad=0.35", "facecolor": "white", "edgecolor": "0.7", "alpha": 0.92},
     )
-    axes[1].grid(True, alpha=0.25)
-    axes[1].legend(loc="best")
+    axis.grid(True, alpha=0.25)
+    axis.legend(loc="best")
     fig.tight_layout()
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     _plt().close(fig)
@@ -958,76 +940,54 @@ def _write_metadata(output_dir: Path) -> None:
             for scenario_id, center_frequency_hz, analysis_band_low_hz, analysis_band_high_hz in NARROWBAND_CASES
         ],
         "spectrum_level_reference": LEVEL_UNIT_LABEL,
-        "beam_response_level_reference": BEAM_RESPONSE_LEVEL_UNIT_LABEL,
+        "raw_beam_response_level_reference": BEAM_RESPONSE_LEVEL_UNIT_LABEL,
+        "figure_beam_response_level_reference": "dB re each method target beam",
         "array_shapes": {
-            "frequency_hz": "[n_freq]",
-            "*_interferer_db": "[n_freq]",
-            "*_rms_err": "[n_freq]",
-            "aperture_wavelength": "[n_freq]",
-            "signal_input_mean_spectrum_level_db": "[n_case, n_rfft_bin]",
+            "frequency_hz": "[n_rfft_bin]",
+            "azimuth_deg": "[n_beam]",
             "input_band_reference_level_db": "[n_case]",
-            "signal_*_band_response_db": "[n_case, n_beam], dB re input band power",
-            "signal_*_target_spectrum_level_db": "[n_case, n_rfft_bin]",
+            "signal_*_band_response_db": "[n_case, n_beam], target-normalized in PNG",
         },
     }
     (output_dir / "metadata.json").write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def _write_review_index(rows: list[FrequencyRow], output_dir: Path) -> None:
-    """AI 向け review index を保存する。"""
+def _write_review_index(output_dir: Path) -> None:
+    """AI 向け review index を保存する。
 
-    mixture_rows = _rows_for_source(rows, "mixture")
-    low_row = mixture_rows[0]
+    今回の成果物は、方式欠陥と実装欠陥の切り分けを混乱させないため、
+    広帯域・狭帯域の帯域加算 beam response だけに絞る。
+    """
+
     lines = [
         "# 低周波・128 sample 共分散 MVDR 評価",
         "",
         "## Scenario",
         "",
         "- target: 20 deg, 0 dB re input RMS",
-        "- interferer: -30 deg, 0 dB re input RMS, target と同一周波数",
         f"- covariance block: `{N_SAMPLE}` sample = `{INTEGRATION_TIME_S:.9f}` s",
         f"- array: {N_CH} ch ULA, spacing {SPACING_M:.3f} m, aperture {ACTIVE_APERTURE_M:.3f} m",
-        "- covariance_source `mixture`: target + interferer を含む実運用寄り条件。",
-        "- covariance_source `interferer-only`: 理想参照。実運用の採否判断には直接使わない。",
+        "- azimuth axis: 0-180 deg の x 方向余弦軸。",
         "",
         "## Artifacts",
         "",
-        "- `figures/interferer_response_vs_frequency.png`: 干渉方向応答。mixture 共分散で抑圧が出ないことを見る主図。",
-        "- `figures/physical_scale_vs_frequency.png`: 波長に対する開口長と target steering 位相幅。",
-        "- `figures/target_error_vs_frequency.png`: target-only 参照に対する出力 RMS error。",
-        "- `figures/input_frequency_spectrum_low_256_1024hz.png`: 低周波広帯域入力の 128-point FFT spectrum。",
-        "- `figures/beam_response_band_integrated_low_256_1024hz.png`: 低周波広帯域の帯域加算 beam response。上段は各 method の target beam を 0 dB に揃えた正規化表示、下段は入力帯域 power 基準の診断表示。",
-        "- `figures/output_frequency_spectrum_low_256_1024hz.png`: 低周波広帯域の target beam 出力 spectrum。",
-        "- `figures/input_frequency_spectrum_high_8500_9500hz.png`: 高周波広帯域入力の 128-point FFT spectrum。",
-        "- `figures/beam_response_band_integrated_high_8500_9500hz.png`: 高周波広帯域の帯域加算 beam response。上段は各 method の target beam を 0 dB に揃えた正規化表示、下段は入力帯域 power 基準の診断表示。",
-        "- `figures/output_frequency_spectrum_high_8500_9500hz.png`: 高周波広帯域の target beam 出力 spectrum。",
-        "- `figures/input_frequency_spectrum_narrow_low_bin_512hz.png`: 低周波 bin-aligned 512 Hz tone 入力の 128-point FFT spectrum。",
-        "- `figures/beam_response_band_integrated_narrow_low_bin_512hz.png`: 低周波 bin-aligned 512 Hz tone の beam response。",
-        "- `figures/output_frequency_spectrum_narrow_low_bin_512hz.png`: 低周波 bin-aligned 512 Hz tone の target beam 出力 spectrum。",
-        "- `figures/input_frequency_spectrum_narrow_low_bin_768hz.png`: 低周波 bin-aligned 768 Hz tone 入力の 128-point FFT spectrum。",
-        "- `figures/beam_response_band_integrated_narrow_low_bin_768hz.png`: 低周波 bin-aligned 768 Hz tone の beam response。",
-        "- `figures/output_frequency_spectrum_narrow_low_bin_768hz.png`: 低周波 bin-aligned 768 Hz tone の target beam 出力 spectrum。",
-        "- `figures/input_frequency_spectrum_narrow_high_bin_8960hz.png`: 高周波 bin-aligned 8960 Hz tone 入力の 128-point FFT spectrum。",
-        "- `figures/beam_response_band_integrated_narrow_high_bin_8960hz.png`: 高周波 bin-aligned 8960 Hz tone の beam response。",
-        "- `figures/output_frequency_spectrum_narrow_high_bin_8960hz.png`: 高周波 bin-aligned 8960 Hz tone の target beam 出力 spectrum。",
-        "- `data/low_frequency_128sample_mvdr_arrays.npz`: tone sweep 図作成元配列。",
-        "- `data/broadband_128sample_mvdr_arrays.npz`: 広帯域図作成元配列。",
-        "- `data/narrowband_128sample_mvdr_arrays.npz`: bin-aligned 狭帯域 tone 図作成元配列。",
+        "- `figures/beam_response_band_integrated_low_256_1024hz.png`: 低周波広帯域 256-1024 Hz の帯域加算 beam response。",
+        "- `figures/beam_response_band_integrated_high_8500_9500hz.png`: 高周波広帯域 8500-9500 Hz の帯域加算 beam response。",
+        "- `figures/beam_response_band_integrated_narrow_low_bin_512hz.png`: 低周波狭帯域 512 Hz。1 bin を選んだ帯域加算 beam response。",
+        "- `figures/beam_response_band_integrated_narrow_low_bin_768hz.png`: 低周波狭帯域 768 Hz。1 bin を選んだ帯域加算 beam response。",
+        "- `figures/beam_response_band_integrated_narrow_high_bin_8960hz.png`: 高周波狭帯域 8960 Hz。1 bin を選んだ帯域加算 beam response。",
+        "- `data/broadband_128sample_mvdr_arrays.npz`: 広帯域 beam response 作成元配列。",
+        "- `data/narrowband_128sample_mvdr_arrays.npz`: bin-aligned 狭帯域 beam response 作成元配列。",
         "- `broadband_scenario_summary.csv`: 広帯域 case の peak 方位と target beam level。",
         "- `narrowband_scenario_summary.csv`: bin-aligned 狭帯域 tone case の peak 方位と target beam level。",
-        "- `scenario_summary.csv`: 周波数・共分散条件別 metric。",
         "- `metadata.json`: 評価条件、単位、shape。",
         "",
         "## Interpretation Notes",
         "",
-        f"- {low_row.frequency_hz:.0f} Hz では波長 {low_row.wavelength_m:.3f} m に対して開口は {low_row.aperture_wavelength:.3f} λ、隣接 CH 位相差は {low_row.adjacent_phase_deg:.3f} deg。",
-        "- `mixture` 共分散では target も統計に含まれるため、128 sample だけでは干渉方向だけを安定に学習できない。",
-        "- `interferer-only` が大きく抑圧できる場合でも、それは理想参照がある条件であり、運用時に同じ性能を保証しない。",
-        "- 広帯域・狭帯域 beam response は 128-point FFT の帯域内 bin power を線形加算する。PNG 上段は各 method の target beam を 0 dB に正規化し、下段は各 case の実測入力帯域 power を 0 dB とした診断表示である。",
-        "- 下段の入力帯域基準診断では、128 sample の標本共分散に target 自身が含まれる場合の自己キャンセルも見える。上段の target 正規化図を beam shape 比較の主図として読む。",
-        "- 低周波広帯域は 256-1024 Hz、高周波広帯域は 8500-9500 Hz を別々の図で確認する。",
-        "- 狭帯域 sanity check は 128-point FFT の bin 中心に一致する tone だけで行う。640 Hz と 9000 Hz は bin 外なので、異常な自己 null 図を成果物へ残さないため生成対象から除外する。",
-        "- 本評価の ULA は x 軸上に並ぶため、beam response 方位軸は 0-180 deg の x 方向余弦軸で表示する。port/starboard の符号曖昧性はこの軸に畳み込まれる。",
+        "- PNG はすべて、128-point FFT の選択 bin power を線形加算してから dB 化し、各 method の target beam を 0 dB に正規化した図である。",
+        "- 広帯域は複数 bin の power 加算、狭帯域は bin 中心 tone に対応する 1 bin の power 加算として同じ式で読む。",
+        "- 入力 FFT、出力 FFT、干渉応答、波長診断、target error などは今回の判断用成果物から除外した。",
+        "- 640 Hz と 9000 Hz は 128-point FFT の bin 外なので、異常な自己 null 図を成果物へ残さないため生成対象から除外した。",
     ]
     (output_dir / "review_index.md").write_text("\n".join(lines), encoding="utf-8")
 
@@ -1054,33 +1014,19 @@ def build_report_package() -> Path:
     FIGURE_DIR.mkdir(parents=True, exist_ok=True)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-    rows = _evaluate_rows()
     broadband_results = _evaluate_broadband_cases()
     narrowband_results = _evaluate_narrowband_cases()
-    _plot_interferer_response(rows, FIGURE_DIR / "interferer_response_vs_frequency.png")
-    _plot_physical_scale(rows, FIGURE_DIR / "physical_scale_vs_frequency.png")
-    _plot_error_response(rows, FIGURE_DIR / "target_error_vs_frequency.png")
     for signal_result in [*broadband_results, *narrowband_results]:
-        _plot_signal_input_spectrum(
-            signal_result,
-            FIGURE_DIR / f"input_frequency_spectrum_{signal_result.scenario_id}.png",
-        )
         _plot_signal_beam_response(
             signal_result,
             FIGURE_DIR / f"beam_response_band_integrated_{signal_result.scenario_id}.png",
         )
-        _plot_signal_output_spectrum(
-            signal_result,
-            FIGURE_DIR / f"output_frequency_spectrum_{signal_result.scenario_id}.png",
-        )
-    _write_npz(rows, DATA_DIR / "low_frequency_128sample_mvdr_arrays.npz")
     _write_signal_npz(broadband_results, DATA_DIR / "broadband_128sample_mvdr_arrays.npz")
     _write_signal_npz(narrowband_results, DATA_DIR / "narrowband_128sample_mvdr_arrays.npz")
-    _write_csv(rows, OUTPUT_DIR / "scenario_summary.csv")
     _write_signal_summary(broadband_results, OUTPUT_DIR / "broadband_scenario_summary.csv")
     _write_signal_summary(narrowband_results, OUTPUT_DIR / "narrowband_scenario_summary.csv")
     _write_metadata(OUTPUT_DIR)
-    _write_review_index(rows, OUTPUT_DIR)
+    _write_review_index(OUTPUT_DIR)
     return _zip_package(OUTPUT_DIR)
 
 

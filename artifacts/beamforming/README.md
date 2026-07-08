@@ -15,7 +15,7 @@ beamforming/
 - 対象: x 軸 ULA、固定整相 + 差分 MVDR、128 sample 共分散
 - 方位軸: 0-180 deg の x 方向余弦軸
 - 広帯域: 256-1024 Hz、8500-9500 Hz
-- 狭帯域: 512 Hz、768 Hz、8960 Hz の FFT bin-aligned tone
+- 狭帯域: 512 Hz、768 Hz、8960 Hz の FFT bin-aligned tone。1 bin を選んだ帯域加算として表示する。
 
 ## 見ないでよいもの
 
