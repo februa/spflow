@@ -416,19 +416,19 @@ def _make_scan_steering(receiver: Receiver, environment: FreeField) -> tuple[Flo
     """
 
     dir3d, axis_az_deg, _ = make_directions(
-        az_min_deg=-90.0,
-        az_max_deg=90.0,
+        az_min_deg=0.0,
+        az_max_deg=180.0,
         el_min_deg=0.0,
         el_max_deg=0.0,
         n_beam_az_real=N_BEAM,
         n_beam_az_virtual=0,
         n_beam_el=1,
-        array_side="forward",
+        array_side="right side",
         el_preset_deg=[0.0],
     )
-    # ULA ではセンサが x 軸上に並ぶため、水平面の +azimuth と -azimuth は
-    # 同じ x 方向余弦を持つ mirror として現れる。ここでは source bearing 表示の
-    # 方位軸をそのまま使い、mirror ambiguity は review_index で明示する。
+    # アレイは x 軸上の ULA なので、空間応答は x 方向余弦 cos(azimuth) で決まる。
+    # そのため評価方位は -90..90 deg ではなく 0..180 deg の broadside/fore-aft 軸で表示し、
+    # port/starboard の符号曖昧性をこの軸へ畳み込んで読む。
     steering = steering_from_dir3d(receiver, environment, FFT_SIZE, FS_HZ, dir3d)
     return np.asarray(axis_az_deg, dtype=np.float64), np.asarray(steering, dtype=np.complex128)
 
@@ -715,7 +715,8 @@ def _plot_signal_beam_response(result: SignalCaseResult, output_path: Path) -> N
         0.01,
         0.04,
         "Normalized response: fixed and MVDR target-beam levels are both set to 0 dB.\n"
-        "Band response = 10log10(sum power of selected 128-point FFT bins).",
+        "Band response = 10log10(sum power of selected 128-point FFT bins).\n"
+        "Azimuth axis is 0-180 deg for the x-axis ULA direction-cosine response.",
         transform=axes[1].transAxes,
         fontsize=9,
         bbox={"boxstyle": "round,pad=0.35", "facecolor": "white", "edgecolor": "0.7", "alpha": 0.92},
@@ -928,7 +929,7 @@ def _write_review_index(rows: list[FrequencyRow], output_dir: Path) -> None:
         "- 絶対レベル図では、128 sample の標本共分散に target 自身が含まれる場合の自己キャンセルも見える。正規化図は形状比較用であり、絶対出力レベルの採否判断には使わない。",
         "- 低周波広帯域は 256-1024 Hz、高周波広帯域は 8500-9500 Hz を別々の図で確認する。",
         "- 狭帯域は各広帯域の中心周波数である 640 Hz と 9000 Hz の tone を入れる。128 sample FFT の bin 幅は 256 Hz なので、狭帯域 beam response は中心±128 Hz の bin power を加算する。",
-        "- 本評価の ULA は水平面で +azimuth / -azimuth の mirror ambiguity を持つため、peak 方位は target marker と mirror 側の両方を確認する。",
+        "- 本評価の ULA は x 軸上に並ぶため、beam response 方位軸は 0-180 deg の x 方向余弦軸で表示する。port/starboard の符号曖昧性はこの軸に畳み込まれる。",
     ]
     (output_dir / "review_index.md").write_text("\n".join(lines), encoding="utf-8")
 
