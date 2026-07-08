@@ -78,10 +78,6 @@ NARROWBAND_CASES = (
     ("narrow_low_bin_768hz", 768.0, 768.0, 768.0),
     ("narrow_high_bin_8960hz", 8960.0, 8960.0, 8960.0),
 )
-OFFBIN_NARROWBAND_DIAGNOSTIC_CASES = (
-    ("offbin_narrow_low_center_640hz", 640.0, 512.0, 768.0),
-    ("offbin_narrow_high_center_9000hz", 9000.0, 8872.0, 9128.0),
-)
 BROADBAND_NOISE_FILTER_LENGTH = 513
 OUTPUT_DIR = ROOT / "artifacts" / "beamforming" / "fixed_delay_diff_mvdr" / "low_frequency_128sample_mvdr"
 FIGURE_DIR = OUTPUT_DIR / "figures"
@@ -121,7 +117,7 @@ class FrequencyRow:
 class SignalCaseResult:
     """128 sample 入力の beam response 評価結果を保持する。
 
-    このクラスは、広帯域 noise、bin-aligned tone、または off-bin tone の入力について、
+    このクラスは、広帯域 noise または bin-aligned tone の入力について、
     128 sample の標本共分散から設計した MVDR と固定整相の出力を保持する。
 
     信号生成、重み設計、図の描画は責務に含めない。
@@ -739,21 +735,6 @@ def _evaluate_narrowband_cases() -> list[SignalCaseResult]:
     ]
 
 
-def _evaluate_offbin_narrowband_diagnostic_cases() -> list[SignalCaseResult]:
-    """FFT bin から外れた中心周波数 tone の診断 case を評価する。
-
-    Notes:
-        640 Hz と 9000 Hz は 128 点 FFT の bin 幅 256 Hz に対して bin 中心ではない。
-        これらは広帯域中心周波数という入力条件の確認用であり、MVDR の狭帯域
-        sanity check には使わない。off-bin tone で MVDR が沈む場合は、短 FFT bin
-        steering と実 tone 位相の mismatch として扱う。
-    """
-
-    return [
-        _evaluate_narrowband_case(scenario_id, center_frequency_hz, analysis_band_low_hz, analysis_band_high_hz)
-        for scenario_id, center_frequency_hz, analysis_band_low_hz, analysis_band_high_hz in OFFBIN_NARROWBAND_DIAGNOSTIC_CASES
-    ]
-
 
 def _plot_signal_input_spectrum(result: SignalCaseResult, output_path: Path) -> None:
     """128 sample 入力 FFT spectrum を保存する。"""
@@ -974,16 +955,6 @@ def _write_metadata(output_dir: Path) -> None:
             }
             for scenario_id, center_frequency_hz, analysis_band_low_hz, analysis_band_high_hz in NARROWBAND_CASES
         ],
-        "offbin_narrowband_diagnostic_cases": [
-            {
-                "scenario_id": scenario_id,
-                "tone_frequency_hz": center_frequency_hz,
-                "analysis_band_low_hz": analysis_band_low_hz,
-                "analysis_band_high_hz": analysis_band_high_hz,
-                "frequency_bin_alignment": "off_bin_diagnostic",
-            }
-            for scenario_id, center_frequency_hz, analysis_band_low_hz, analysis_band_high_hz in OFFBIN_NARROWBAND_DIAGNOSTIC_CASES
-        ],
         "spectrum_level_reference": LEVEL_UNIT_LABEL,
         "beam_response_level_reference": BEAM_RESPONSE_LEVEL_UNIT_LABEL,
         "array_shapes": {
@@ -1037,19 +1008,11 @@ def _write_review_index(rows: list[FrequencyRow], output_dir: Path) -> None:
         "- `figures/input_frequency_spectrum_narrow_high_bin_8960hz.png`: 高周波 bin-aligned 8960 Hz tone 入力の 128-point FFT spectrum。",
         "- `figures/beam_response_band_integrated_narrow_high_bin_8960hz.png`: 高周波 bin-aligned 8960 Hz tone の beam response。",
         "- `figures/output_frequency_spectrum_narrow_high_bin_8960hz.png`: 高周波 bin-aligned 8960 Hz tone の target beam 出力 spectrum。",
-        "- `figures/input_frequency_spectrum_offbin_narrow_low_center_640hz.png`: off-bin 640 Hz tone 入力の診断 spectrum。",
-        "- `figures/beam_response_band_integrated_offbin_narrow_low_center_640hz.png`: off-bin 640 Hz tone の診断 beam response。",
-        "- `figures/output_frequency_spectrum_offbin_narrow_low_center_640hz.png`: off-bin 640 Hz tone の target beam 出力 spectrum。",
-        "- `figures/input_frequency_spectrum_offbin_narrow_high_center_9000hz.png`: off-bin 9000 Hz tone 入力の診断 spectrum。",
-        "- `figures/beam_response_band_integrated_offbin_narrow_high_center_9000hz.png`: off-bin 9000 Hz tone の診断 beam response。",
-        "- `figures/output_frequency_spectrum_offbin_narrow_high_center_9000hz.png`: off-bin 9000 Hz tone の target beam 出力 spectrum。",
         "- `data/low_frequency_128sample_mvdr_arrays.npz`: tone sweep 図作成元配列。",
         "- `data/broadband_128sample_mvdr_arrays.npz`: 広帯域図作成元配列。",
         "- `data/narrowband_128sample_mvdr_arrays.npz`: bin-aligned 狭帯域 tone 図作成元配列。",
-        "- `data/offbin_narrowband_128sample_mvdr_arrays.npz`: off-bin tone 診断図作成元配列。",
         "- `broadband_scenario_summary.csv`: 広帯域 case の peak 方位と target beam level。",
         "- `narrowband_scenario_summary.csv`: bin-aligned 狭帯域 tone case の peak 方位と target beam level。",
-        "- `offbin_narrowband_diagnostic_summary.csv`: off-bin tone 診断 case の peak 方位と target beam level。",
         "- `scenario_summary.csv`: 周波数・共分散条件別 metric。",
         "- `metadata.json`: 評価条件、単位、shape。",
         "",
@@ -1061,7 +1024,7 @@ def _write_review_index(rows: list[FrequencyRow], output_dir: Path) -> None:
         "- 広帯域・狭帯域 beam response は 128-point FFT の帯域内 bin power を線形加算し、各 case の実測入力帯域 power を 0 dB として dB 化している。",
         "- 入力帯域基準図では、128 sample の標本共分散に target 自身が含まれる場合の自己キャンセルも見える。正規化図は形状比較用であり、出力レベルの採否判断には使わない。",
         "- 低周波広帯域は 256-1024 Hz、高周波広帯域は 8500-9500 Hz を別々の図で確認する。",
-        "- 狭帯域 sanity check は 128-point FFT の bin 中心に一致する tone だけで行う。640 Hz と 9000 Hz は bin 外なので off-bin 診断として分離し、狭帯域MVDRの正常性判定には使わない。",
+        "- 狭帯域 sanity check は 128-point FFT の bin 中心に一致する tone だけで行う。640 Hz と 9000 Hz は bin 外なので、異常な自己 null 図を成果物へ残さないため生成対象から除外する。",
         "- 本評価の ULA は x 軸上に並ぶため、beam response 方位軸は 0-180 deg の x 方向余弦軸で表示する。port/starboard の符号曖昧性はこの軸に畳み込まれる。",
     ]
     (output_dir / "review_index.md").write_text("\n".join(lines), encoding="utf-8")
@@ -1092,11 +1055,10 @@ def build_report_package() -> Path:
     rows = _evaluate_rows()
     broadband_results = _evaluate_broadband_cases()
     narrowband_results = _evaluate_narrowband_cases()
-    offbin_narrowband_results = _evaluate_offbin_narrowband_diagnostic_cases()
     _plot_interferer_response(rows, FIGURE_DIR / "interferer_response_vs_frequency.png")
     _plot_physical_scale(rows, FIGURE_DIR / "physical_scale_vs_frequency.png")
     _plot_error_response(rows, FIGURE_DIR / "target_error_vs_frequency.png")
-    for signal_result in [*broadband_results, *narrowband_results, *offbin_narrowband_results]:
+    for signal_result in [*broadband_results, *narrowband_results]:
         _plot_signal_input_spectrum(
             signal_result,
             FIGURE_DIR / f"input_frequency_spectrum_{signal_result.scenario_id}.png",
@@ -1112,11 +1074,9 @@ def build_report_package() -> Path:
     _write_npz(rows, DATA_DIR / "low_frequency_128sample_mvdr_arrays.npz")
     _write_signal_npz(broadband_results, DATA_DIR / "broadband_128sample_mvdr_arrays.npz")
     _write_signal_npz(narrowband_results, DATA_DIR / "narrowband_128sample_mvdr_arrays.npz")
-    _write_signal_npz(offbin_narrowband_results, DATA_DIR / "offbin_narrowband_128sample_mvdr_arrays.npz")
     _write_csv(rows, OUTPUT_DIR / "scenario_summary.csv")
     _write_signal_summary(broadband_results, OUTPUT_DIR / "broadband_scenario_summary.csv")
     _write_signal_summary(narrowband_results, OUTPUT_DIR / "narrowband_scenario_summary.csv")
-    _write_signal_summary(offbin_narrowband_results, OUTPUT_DIR / "offbin_narrowband_diagnostic_summary.csv")
     _write_metadata(OUTPUT_DIR)
     _write_review_index(rows, OUTPUT_DIR)
     return _zip_package(OUTPUT_DIR)
