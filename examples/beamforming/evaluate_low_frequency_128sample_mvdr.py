@@ -30,6 +30,7 @@ from scene_renderer import (  # noqa: E402
     SceneRenderer,
     SourceComponent,
     StaticPose,
+    ToneSpectrum,
 )
 from scene_renderer_mvdr_stability_sweep import (  # noqa: E402
     build_array_design,
@@ -72,6 +73,10 @@ BROADBAND_CASES = (
     ("low_256_1024hz", 256.0, 1024.0, 2561024),
     ("high_8500_9500hz", 8500.0, 9500.0, 85009500),
 )
+NARROWBAND_CASES = (
+    ("narrow_low_center_640hz", 640.0, 512.0, 768.0),
+    ("narrow_high_center_9000hz", 9000.0, 8872.0, 9128.0),
+)
 BROADBAND_NOISE_FILTER_LENGTH = 513
 OUTPUT_DIR = ROOT / "artifacts" / "beamforming" / "fixed_delay_diff_mvdr" / "low_frequency_128sample_mvdr"
 FIGURE_DIR = OUTPUT_DIR / "figures"
@@ -107,10 +112,10 @@ class FrequencyRow:
 
 
 @dataclass(frozen=True)
-class BroadbandCaseResult:
-    """128 sample 広帯域 beam response 評価結果を保持する。
+class SignalCaseResult:
+    """128 sample 入力の beam response 評価結果を保持する。
 
-    このクラスは、低周波または高周波の帯域制限 noise source について、
+    このクラスは、広帯域 noise または中心周波数 tone の入力について、
     128 sample の標本共分散から設計した MVDR と固定整相の出力を保持する。
 
     信号生成、重み設計、図の描画は責務に含めない。
@@ -360,6 +365,43 @@ def _render_broadband_scene(band_low_hz: float, band_high_hz: float, noise_seed:
     return np.asarray(np.real(rendered), dtype=np.float64)
 
 
+def _render_narrowband_scene(center_frequency_hz: float) -> FloatArray:
+    """20 deg 方向の中心周波数 tone を 128 sample だけ描画する。
+
+    Args:
+        center_frequency_hz: tone 周波数。単位は Hz。
+
+    Returns:
+        多 CH 入力信号。shape は `[n_ch, n_sample]`、単位は normalized amplitude。
+
+    境界条件:
+        128 sample FFT の bin 幅は 256 Hz である。中心周波数が bin 中心と一致しない場合、
+        入力 spectrum は隣接 bin へ漏れる。これは短時間観測の実際の見え方なので、
+        窓で隠さずそのまま評価する。
+    """
+
+    receiver = Receiver(
+        trajectory=StaticPose(position_world=[0.0, 0.0, 0.0], heading_deg=0.0),
+        array=LinearArray(n_ch=N_CH, spacing=SPACING_M, axis=0, centered=True),
+    )
+    component = SourceComponent(
+        spectrum=ToneSpectrum(float(center_frequency_hz)),
+        envelope=ConstantEnvelope(),
+        amplitude=float(np.sqrt(2.0) * (10.0 ** (SIGNAL_LEVEL_DB20 / 20.0))),
+    )
+    source = AcousticSource.from_relative_bearing(
+        bearing_deg=TARGET_AZIMUTH_DEG,
+        distance=1000.0,
+        receiver_pose=receiver.trajectory.pose(0.0),
+        components=[component],
+        elevation_deg=0.0,
+    )
+    scene = Scene(sources=[source], ambient_fields=[], environment=FreeField(c=SOUND_SPEED_M_S))
+    axis_t = np.arange(N_SAMPLE, dtype=np.float64) / FS_HZ
+    rendered = SceneRenderer().render(scene, receiver, axis_t)
+    return np.asarray(np.real(rendered), dtype=np.float64)
+
+
 def _make_scan_steering(receiver: Receiver, environment: FreeField) -> tuple[FloatArray, ComplexArray]:
     """beam response 用の scan steering を作る。
 
@@ -474,10 +516,28 @@ def _band_integrated_level(output_spectrum: ComplexArray, frequency_hz: FloatArr
     return np.asarray(10.0 * np.log10(np.maximum(band_power, np.finfo(np.float64).tiny)), dtype=np.float64)
 
 
-def _evaluate_broadband_case(scenario_id: str, band_low_hz: float, band_high_hz: float, noise_seed: int) -> BroadbandCaseResult:
-    """1 つの広帯域 case で 128 sample 共分散 beam response を評価する。"""
+def _evaluate_signal_case(
+    scenario_id: str,
+    input_signal: FloatArray,
+    analysis_band_low_hz: float,
+    analysis_band_high_hz: float,
+) -> SignalCaseResult:
+    """1 つの 128 sample 入力で beam response と spectrum を評価する。
 
-    input_signal = _render_broadband_scene(float(band_low_hz), float(band_high_hz), int(noise_seed))
+    Args:
+        scenario_id: 図・CSV に使う scenario 名。
+        input_signal: 多 CH 入力信号。shape は `[n_ch, 128]`。
+        analysis_band_low_hz: beam response で加算する FFT bin 範囲の下限。単位は Hz。
+        analysis_band_high_hz: beam response で加算する FFT bin 範囲の上限。単位は Hz。
+
+    Returns:
+        入力 FFT、target beam 出力 FFT、帯域加算 beam response を含む評価結果。
+
+    Notes:
+        広帯域 noise と狭帯域 tone の比較で処理を揃えるため、入力生成以外は同じ
+        128 sample 共分散推定、同じ固定整相、同じ MVDR 設計、同じ power 加算を使う。
+    """
+
     receiver = Receiver(
         trajectory=StaticPose(position_world=[0.0, 0.0, 0.0], heading_deg=0.0),
         array=LinearArray(n_ch=N_CH, spacing=SPACING_M, axis=0, centered=True),
@@ -515,23 +575,62 @@ def _evaluate_broadband_case(scenario_id: str, band_low_hz: float, band_high_hz:
     fixed_output_spectrum = _beam_output_spectrum(input_signal, fixed_weights)
     mvdr_output_spectrum = _beam_output_spectrum(input_signal, mvdr_weights)
     target_beam_index = int(np.argmin(np.abs(azimuth_deg - TARGET_AZIMUTH_DEG)))
-    return BroadbandCaseResult(
+    return SignalCaseResult(
         scenario_id=scenario_id,
-        band_low_hz=float(band_low_hz),
-        band_high_hz=float(band_high_hz),
+        band_low_hz=float(analysis_band_low_hz),
+        band_high_hz=float(analysis_band_high_hz),
         frequency_hz=frequency_hz,
         azimuth_deg=azimuth_deg,
         target_beam_index=target_beam_index,
         input_mean_spectrum_level_db=np.asarray(np.mean(input_level_by_channel, axis=0), dtype=np.float64),
         fixed_target_spectrum_level_db=_spectrum_level_db_from_complex(fixed_output_spectrum[[target_beam_index]], N_SAMPLE)[0],
         mvdr_target_spectrum_level_db=_spectrum_level_db_from_complex(mvdr_output_spectrum[[target_beam_index]], N_SAMPLE)[0],
-        fixed_band_response_db=_band_integrated_level(fixed_output_spectrum, frequency_hz, float(band_low_hz), float(band_high_hz)),
-        mvdr_band_response_db=_band_integrated_level(mvdr_output_spectrum, frequency_hz, float(band_low_hz), float(band_high_hz)),
+        fixed_band_response_db=_band_integrated_level(
+            fixed_output_spectrum,
+            frequency_hz,
+            float(analysis_band_low_hz),
+            float(analysis_band_high_hz),
+        ),
+        mvdr_band_response_db=_band_integrated_level(
+            mvdr_output_spectrum,
+            frequency_hz,
+            float(analysis_band_low_hz),
+            float(analysis_band_high_hz),
+        ),
         loaded_condition_number_by_bin=_loaded_condition_number(covariance),
     )
 
 
-def _evaluate_broadband_cases() -> list[BroadbandCaseResult]:
+def _evaluate_broadband_case(scenario_id: str, band_low_hz: float, band_high_hz: float, noise_seed: int) -> SignalCaseResult:
+    """1 つの広帯域 noise case で 128 sample 共分散 beam response を評価する。"""
+
+    input_signal = _render_broadband_scene(float(band_low_hz), float(band_high_hz), int(noise_seed))
+    return _evaluate_signal_case(
+        scenario_id,
+        input_signal,
+        float(band_low_hz),
+        float(band_high_hz),
+    )
+
+
+def _evaluate_narrowband_case(
+    scenario_id: str,
+    center_frequency_hz: float,
+    analysis_band_low_hz: float,
+    analysis_band_high_hz: float,
+) -> SignalCaseResult:
+    """1 つの中心周波数 tone case で 128 sample 共分散 beam response を評価する。"""
+
+    input_signal = _render_narrowband_scene(float(center_frequency_hz))
+    return _evaluate_signal_case(
+        scenario_id,
+        input_signal,
+        float(analysis_band_low_hz),
+        float(analysis_band_high_hz),
+    )
+
+
+def _evaluate_broadband_cases() -> list[SignalCaseResult]:
     """低周波・高周波の広帯域 case を評価する。"""
 
     return [
@@ -540,12 +639,21 @@ def _evaluate_broadband_cases() -> list[BroadbandCaseResult]:
     ]
 
 
-def _plot_broadband_input_spectrum(result: BroadbandCaseResult, output_path: Path) -> None:
-    """広帯域入力 FFT spectrum を保存する。"""
+def _evaluate_narrowband_cases() -> list[SignalCaseResult]:
+    """低周波・高周波の中心周波数 tone case を評価する。"""
+
+    return [
+        _evaluate_narrowband_case(scenario_id, center_frequency_hz, analysis_band_low_hz, analysis_band_high_hz)
+        for scenario_id, center_frequency_hz, analysis_band_low_hz, analysis_band_high_hz in NARROWBAND_CASES
+    ]
+
+
+def _plot_signal_input_spectrum(result: SignalCaseResult, output_path: Path) -> None:
+    """128 sample 入力 FFT spectrum を保存する。"""
 
     fig, axis = _plt().subplots(figsize=(10.8, 4.8))
     axis.plot(result.frequency_hz, result.input_mean_spectrum_level_db, color="black", linewidth=1.0, label="channel mean")
-    axis.axvspan(result.band_low_hz, result.band_high_hz, color="tab:green", alpha=0.15, label="source passband")
+    axis.axvspan(result.band_low_hz, result.band_high_hz, color="tab:green", alpha=0.15, label="analysis band")
     axis.set_xlim(0.0, FS_HZ / 2.0)
     axis.set_ylim(*_finite_ylim([result.input_mean_spectrum_level_db], dynamic_range_db=90.0))
     axis.set_xlabel("Frequency [Hz]")
@@ -558,11 +666,11 @@ def _plot_broadband_input_spectrum(result: BroadbandCaseResult, output_path: Pat
     _plt().close(fig)
 
 
-def _plot_broadband_beam_response(result: BroadbandCaseResult, output_path: Path) -> None:
+def _plot_signal_beam_response(result: SignalCaseResult, output_path: Path) -> None:
     """帯域加算 beam response を絶対値と target 正規化で保存する。
 
     Args:
-        result: 広帯域 case 評価結果。beam response の shape は `[n_beam]`。
+        result: signal case 評価結果。beam response の shape は `[n_beam]`。
         output_path: 保存先 PNG。
 
     Notes:
@@ -584,11 +692,11 @@ def _plot_broadband_beam_response(result: BroadbandCaseResult, output_path: Path
     axes[0].axhline(0.0, color="0.35", linestyle=":", linewidth=1.0, label="0 dB input RMS")
     axes[0].set_ylim(*_finite_ylim([result.fixed_band_response_db, result.mvdr_band_response_db], dynamic_range_db=75.0))
     axes[0].set_ylabel(f"Absolute Level [{LEVEL_UNIT_LABEL}]")
-    axes[0].set_title(f"128-sample covariance beam response: {result.band_low_hz:.0f}-{result.band_high_hz:.0f} Hz")
+    axes[0].set_title(f"128-sample covariance beam response: {result.scenario_id}, analysis {result.band_low_hz:.0f}-{result.band_high_hz:.0f} Hz")
     axes[0].text(
         0.01,
         0.04,
-        "Absolute output level after applying weights to the same 128-sample broadband input.",
+        "Absolute output level after applying weights to the same 128-sample input.",
         transform=axes[0].transAxes,
         fontsize=9,
         bbox={"boxstyle": "round,pad=0.35", "facecolor": "white", "edgecolor": "0.7", "alpha": 0.92},
@@ -607,7 +715,7 @@ def _plot_broadband_beam_response(result: BroadbandCaseResult, output_path: Path
         0.01,
         0.04,
         "Normalized response: fixed and MVDR target-beam levels are both set to 0 dB.\n"
-        "Band response = 10log10(sum power of 128-point FFT bins in passband).",
+        "Band response = 10log10(sum power of selected 128-point FFT bins).",
         transform=axes[1].transAxes,
         fontsize=9,
         bbox={"boxstyle": "round,pad=0.35", "facecolor": "white", "edgecolor": "0.7", "alpha": 0.92},
@@ -619,13 +727,13 @@ def _plot_broadband_beam_response(result: BroadbandCaseResult, output_path: Path
     _plt().close(fig)
 
 
-def _plot_broadband_output_spectrum(result: BroadbandCaseResult, output_path: Path) -> None:
+def _plot_signal_output_spectrum(result: SignalCaseResult, output_path: Path) -> None:
     """target beam の出力 FFT spectrum を保存する。"""
 
     fig, axis = _plt().subplots(figsize=(10.8, 4.8))
     axis.plot(result.frequency_hz, result.fixed_target_spectrum_level_db, color="black", linewidth=1.0, label="fixed_baseline")
     axis.plot(result.frequency_hz, result.mvdr_target_spectrum_level_db, color="tab:orange", linewidth=1.0, label="MVDR from 128-sample covariance")
-    axis.axvspan(result.band_low_hz, result.band_high_hz, color="tab:green", alpha=0.15, label="source passband")
+    axis.axvspan(result.band_low_hz, result.band_high_hz, color="tab:green", alpha=0.15, label="analysis band")
     axis.set_xlim(0.0, FS_HZ / 2.0)
     axis.set_ylim(*_finite_ylim([result.fixed_target_spectrum_level_db, result.mvdr_target_spectrum_level_db], dynamic_range_db=90.0))
     axis.set_xlabel("Frequency [Hz]")
@@ -638,8 +746,8 @@ def _plot_broadband_output_spectrum(result: BroadbandCaseResult, output_path: Pa
     _plt().close(fig)
 
 
-def _write_broadband_npz(results: list[BroadbandCaseResult], output_path: Path) -> None:
-    """広帯域 case の PNG 作成元配列を NPZ に保存する。"""
+def _write_signal_npz(results: list[SignalCaseResult], output_path: Path) -> None:
+    """signal case の PNG 作成元配列を NPZ に保存する。"""
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(
@@ -658,8 +766,8 @@ def _write_broadband_npz(results: list[BroadbandCaseResult], output_path: Path) 
     )
 
 
-def _write_broadband_summary(results: list[BroadbandCaseResult], output_path: Path) -> None:
-    """広帯域 case の target beam level と peak 方位を CSV に保存する。"""
+def _write_signal_summary(results: list[SignalCaseResult], output_path: Path) -> None:
+    """signal case の target beam level と peak 方位を CSV に保存する。"""
 
     rows: list[dict[str, object]] = []
     for result in results:
@@ -746,15 +854,24 @@ def _write_metadata(output_dir: Path) -> None:
             {"scenario_id": scenario_id, "band_low_hz": band_low_hz, "band_high_hz": band_high_hz}
             for scenario_id, band_low_hz, band_high_hz, _ in BROADBAND_CASES
         ],
+        "narrowband_cases": [
+            {
+                "scenario_id": scenario_id,
+                "center_frequency_hz": center_frequency_hz,
+                "analysis_band_low_hz": analysis_band_low_hz,
+                "analysis_band_high_hz": analysis_band_high_hz,
+            }
+            for scenario_id, center_frequency_hz, analysis_band_low_hz, analysis_band_high_hz in NARROWBAND_CASES
+        ],
         "level_reference": LEVEL_UNIT_LABEL,
         "array_shapes": {
             "frequency_hz": "[n_freq]",
             "*_interferer_db": "[n_freq]",
             "*_rms_err": "[n_freq]",
             "aperture_wavelength": "[n_freq]",
-            "broadband_input_mean_spectrum_level_db": "[n_case, n_rfft_bin]",
-            "broadband_*_band_response_db": "[n_case, n_beam]",
-            "broadband_*_target_spectrum_level_db": "[n_case, n_rfft_bin]",
+            "signal_input_mean_spectrum_level_db": "[n_case, n_rfft_bin]",
+            "signal_*_band_response_db": "[n_case, n_beam]",
+            "signal_*_target_spectrum_level_db": "[n_case, n_rfft_bin]",
         },
     }
     (output_dir / "metadata.json").write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -788,9 +905,17 @@ def _write_review_index(rows: list[FrequencyRow], output_dir: Path) -> None:
         "- `figures/input_frequency_spectrum_high_8500_9500hz.png`: 高周波広帯域入力の 128-point FFT spectrum。",
         "- `figures/beam_response_band_integrated_high_8500_9500hz.png`: 高周波広帯域の帯域加算 beam response。上段は絶対レベル、下段は各 method の target beam を 0 dB に揃えた正規化表示。",
         "- `figures/output_frequency_spectrum_high_8500_9500hz.png`: 高周波広帯域の target beam 出力 spectrum。",
+        "- `figures/input_frequency_spectrum_narrow_low_center_640hz.png`: 低周波中心 640 Hz tone 入力の 128-point FFT spectrum。",
+        "- `figures/beam_response_band_integrated_narrow_low_center_640hz.png`: 低周波中心 tone の解析帯域 512-768 Hz beam response。",
+        "- `figures/output_frequency_spectrum_narrow_low_center_640hz.png`: 低周波中心 tone の target beam 出力 spectrum。",
+        "- `figures/input_frequency_spectrum_narrow_high_center_9000hz.png`: 高周波中心 9000 Hz tone 入力の 128-point FFT spectrum。",
+        "- `figures/beam_response_band_integrated_narrow_high_center_9000hz.png`: 高周波中心 tone の解析帯域 8872-9128 Hz beam response。",
+        "- `figures/output_frequency_spectrum_narrow_high_center_9000hz.png`: 高周波中心 tone の target beam 出力 spectrum。",
         "- `data/low_frequency_128sample_mvdr_arrays.npz`: tone sweep 図作成元配列。",
         "- `data/broadband_128sample_mvdr_arrays.npz`: 広帯域図作成元配列。",
+        "- `data/narrowband_128sample_mvdr_arrays.npz`: 中心周波数 tone 図作成元配列。",
         "- `broadband_scenario_summary.csv`: 広帯域 case の peak 方位と target beam level。",
+        "- `narrowband_scenario_summary.csv`: 中心周波数 tone case の peak 方位と target beam level。",
         "- `scenario_summary.csv`: 周波数・共分散条件別 metric。",
         "- `metadata.json`: 評価条件、単位、shape。",
         "",
@@ -802,6 +927,7 @@ def _write_review_index(rows: list[FrequencyRow], output_dir: Path) -> None:
         "- 広帯域 beam response は 128-point FFT の帯域内 bin power を線形加算してから dB 化している。",
         "- 絶対レベル図では、128 sample の標本共分散に target 自身が含まれる場合の自己キャンセルも見える。正規化図は形状比較用であり、絶対出力レベルの採否判断には使わない。",
         "- 低周波広帯域は 256-1024 Hz、高周波広帯域は 8500-9500 Hz を別々の図で確認する。",
+        "- 狭帯域は各広帯域の中心周波数である 640 Hz と 9000 Hz の tone を入れる。128 sample FFT の bin 幅は 256 Hz なので、狭帯域 beam response は中心±128 Hz の bin power を加算する。",
         "- 本評価の ULA は水平面で +azimuth / -azimuth の mirror ambiguity を持つため、peak 方位は target marker と mirror 側の両方を確認する。",
     ]
     (output_dir / "review_index.md").write_text("\n".join(lines), encoding="utf-8")
@@ -831,26 +957,29 @@ def build_report_package() -> Path:
 
     rows = _evaluate_rows()
     broadband_results = _evaluate_broadband_cases()
+    narrowband_results = _evaluate_narrowband_cases()
     _plot_interferer_response(rows, FIGURE_DIR / "interferer_response_vs_frequency.png")
     _plot_physical_scale(rows, FIGURE_DIR / "physical_scale_vs_frequency.png")
     _plot_error_response(rows, FIGURE_DIR / "target_error_vs_frequency.png")
-    for broadband_result in broadband_results:
-        _plot_broadband_input_spectrum(
-            broadband_result,
-            FIGURE_DIR / f"input_frequency_spectrum_{broadband_result.scenario_id}.png",
+    for signal_result in [*broadband_results, *narrowband_results]:
+        _plot_signal_input_spectrum(
+            signal_result,
+            FIGURE_DIR / f"input_frequency_spectrum_{signal_result.scenario_id}.png",
         )
-        _plot_broadband_beam_response(
-            broadband_result,
-            FIGURE_DIR / f"beam_response_band_integrated_{broadband_result.scenario_id}.png",
+        _plot_signal_beam_response(
+            signal_result,
+            FIGURE_DIR / f"beam_response_band_integrated_{signal_result.scenario_id}.png",
         )
-        _plot_broadband_output_spectrum(
-            broadband_result,
-            FIGURE_DIR / f"output_frequency_spectrum_{broadband_result.scenario_id}.png",
+        _plot_signal_output_spectrum(
+            signal_result,
+            FIGURE_DIR / f"output_frequency_spectrum_{signal_result.scenario_id}.png",
         )
     _write_npz(rows, DATA_DIR / "low_frequency_128sample_mvdr_arrays.npz")
-    _write_broadband_npz(broadband_results, DATA_DIR / "broadband_128sample_mvdr_arrays.npz")
+    _write_signal_npz(broadband_results, DATA_DIR / "broadband_128sample_mvdr_arrays.npz")
+    _write_signal_npz(narrowband_results, DATA_DIR / "narrowband_128sample_mvdr_arrays.npz")
     _write_csv(rows, OUTPUT_DIR / "scenario_summary.csv")
-    _write_broadband_summary(broadband_results, OUTPUT_DIR / "broadband_scenario_summary.csv")
+    _write_signal_summary(broadband_results, OUTPUT_DIR / "broadband_scenario_summary.csv")
+    _write_signal_summary(narrowband_results, OUTPUT_DIR / "narrowband_scenario_summary.csv")
     _write_metadata(OUTPUT_DIR)
     _write_review_index(rows, OUTPUT_DIR)
     return _zip_package(OUTPUT_DIR)
