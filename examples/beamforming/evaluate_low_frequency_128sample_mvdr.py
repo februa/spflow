@@ -82,6 +82,7 @@ OUTPUT_DIR = ROOT / "artifacts" / "beamforming" / "fixed_delay_diff_mvdr" / "low
 FIGURE_DIR = OUTPUT_DIR / "figures"
 DATA_DIR = OUTPUT_DIR / "data"
 LEVEL_UNIT_LABEL = "dB re input RMS"
+BEAM_RESPONSE_LEVEL_UNIT_LABEL = "dB re input band power"
 
 
 @dataclass(frozen=True)
@@ -119,8 +120,9 @@ class SignalCaseResult:
     128 sample の標本共分散から設計した MVDR と固定整相の出力を保持する。
 
     信号生成、重み設計、図の描画は責務に含めない。
-    信号処理上は、短時間共分散で得た beam response と FFT spectrum を
-    同じ dB reference で比較するための中間表現である。
+    信号処理上は、短時間共分散で得た beam response と FFT spectrum を保持する。
+    beam response は入力帯域 power を 0 dB とする相対値、FFT spectrum は per-bin
+    RMS level として扱うため、両者の dB reference を混同しない。
     """
 
     scenario_id: str
@@ -129,6 +131,7 @@ class SignalCaseResult:
     frequency_hz: FloatArray
     azimuth_deg: FloatArray
     target_beam_index: int
+    input_band_reference_level_db: float
     input_mean_spectrum_level_db: FloatArray
     fixed_target_spectrum_level_db: FloatArray
     mvdr_target_spectrum_level_db: FloatArray
@@ -516,6 +519,46 @@ def _band_integrated_level(output_spectrum: ComplexArray, frequency_hz: FloatArr
     return np.asarray(10.0 * np.log10(np.maximum(band_power, np.finfo(np.float64).tiny)), dtype=np.float64)
 
 
+def _input_band_reference_level_db(
+    input_spectrum: ComplexArray,
+    frequency_hz: FloatArray,
+    band_low_hz: float,
+    band_high_hz: float,
+) -> float:
+    """入力信号の実測帯域パワー基準を dB で返す。
+
+    Args:
+        input_spectrum: CH 別 rFFT。shape は `[n_ch, n_rfft_bin]`。
+        frequency_hz: rFFT の周波数軸。shape は `[n_rfft_bin]`、単位は Hz。
+        band_low_hz: 積分する帯域下限。単位は Hz。
+        band_high_hz: 積分する帯域上限。単位は Hz。
+
+    Returns:
+        CH 平均の帯域内 power level。単位は dB re input RMS。
+
+    Raises:
+        ValueError: 指定帯域に rFFT bin が 1 つも含まれない場合。
+
+    Notes:
+        scene_renderer の広帯域 noise と tone では、同じ level 指定でも 128 sample
+        FFT 上の実測帯域 power が完全には一致しない。beam response の比較では
+        方式差ではない入力実現値の差を除くため、各 case の CH 平均入力帯域 power
+        を 0 dB 基準として出力帯域 power を割る。
+    """
+
+    power = _one_sided_power_from_spectrum(input_spectrum, N_SAMPLE)
+    band_mask = (float(band_low_hz) <= frequency_hz) & (frequency_hz <= float(band_high_hz))
+    if not bool(np.any(band_mask)):
+        raise ValueError("band does not contain any rFFT bin.")
+
+    # power shape: [n_ch, n_rfft_bin]。axis=0 は CH、axis=1 は周波数 bin。
+    # 各 CH の同じ到来信号を基準にしたいので、帯域内 power を CH ごとに加算した後、
+    # CH 平均を取って fixed/MVDR 出力の共通 0 dB reference とする。
+    band_power_by_channel = np.sum(power[:, band_mask], axis=1)
+    reference_power = float(np.mean(band_power_by_channel))
+    return float(10.0 * np.log10(max(reference_power, float(np.finfo(np.float64).tiny))))
+
+
 def _evaluate_signal_case(
     scenario_id: str,
     input_signal: FloatArray,
@@ -568,13 +611,35 @@ def _evaluate_signal_case(
         dtype=np.complex128,
     )
     frequency_hz = np.asarray(np.fft.rfftfreq(N_SAMPLE, d=1.0 / FS_HZ), dtype=np.float64)
-    input_level_by_channel = _spectrum_level_db_from_complex(
-        np.asarray(np.fft.rfft(input_signal, n=N_SAMPLE, axis=1), dtype=np.complex128),
-        N_SAMPLE,
-    )
+    # input_spectrum shape: [n_ch, n_rfft_bin]。axis=0 はセンサ CH、axis=1 は 128 点 rFFT の bin。
+    # 同じ spectrum から入力表示と beam response の入力帯域基準を作り、広帯域/tone 間で
+    # dB reference がずれないようにする。
+    input_spectrum = np.asarray(np.fft.rfft(input_signal, n=N_SAMPLE, axis=1), dtype=np.complex128)
+    input_level_by_channel = _spectrum_level_db_from_complex(input_spectrum, N_SAMPLE)
     fixed_output_spectrum = _beam_output_spectrum(input_signal, fixed_weights)
     mvdr_output_spectrum = _beam_output_spectrum(input_signal, mvdr_weights)
     target_beam_index = int(np.argmin(np.abs(azimuth_deg - TARGET_AZIMUTH_DEG)))
+    input_band_reference_level_db = _input_band_reference_level_db(
+        input_spectrum,
+        frequency_hz,
+        float(analysis_band_low_hz),
+        float(analysis_band_high_hz),
+    )
+    # 出力帯域 power は、各 case の実測入力帯域 power を 0 dB とする相対値へ変換する。
+    # これにより、広帯域 noise と狭帯域 tone の生成差や 128 sample FFT の漏れを
+    # beamformer の利得差として誤読しない。
+    fixed_band_response_db = _band_integrated_level(
+        fixed_output_spectrum,
+        frequency_hz,
+        float(analysis_band_low_hz),
+        float(analysis_band_high_hz),
+    ) - input_band_reference_level_db
+    mvdr_band_response_db = _band_integrated_level(
+        mvdr_output_spectrum,
+        frequency_hz,
+        float(analysis_band_low_hz),
+        float(analysis_band_high_hz),
+    ) - input_band_reference_level_db
     return SignalCaseResult(
         scenario_id=scenario_id,
         band_low_hz=float(analysis_band_low_hz),
@@ -582,21 +647,12 @@ def _evaluate_signal_case(
         frequency_hz=frequency_hz,
         azimuth_deg=azimuth_deg,
         target_beam_index=target_beam_index,
+        input_band_reference_level_db=input_band_reference_level_db,
         input_mean_spectrum_level_db=np.asarray(np.mean(input_level_by_channel, axis=0), dtype=np.float64),
         fixed_target_spectrum_level_db=_spectrum_level_db_from_complex(fixed_output_spectrum[[target_beam_index]], N_SAMPLE)[0],
         mvdr_target_spectrum_level_db=_spectrum_level_db_from_complex(mvdr_output_spectrum[[target_beam_index]], N_SAMPLE)[0],
-        fixed_band_response_db=_band_integrated_level(
-            fixed_output_spectrum,
-            frequency_hz,
-            float(analysis_band_low_hz),
-            float(analysis_band_high_hz),
-        ),
-        mvdr_band_response_db=_band_integrated_level(
-            mvdr_output_spectrum,
-            frequency_hz,
-            float(analysis_band_low_hz),
-            float(analysis_band_high_hz),
-        ),
+        fixed_band_response_db=fixed_band_response_db,
+        mvdr_band_response_db=mvdr_band_response_db,
         loaded_condition_number_by_bin=_loaded_condition_number(covariance),
     )
 
@@ -667,21 +723,21 @@ def _plot_signal_input_spectrum(result: SignalCaseResult, output_path: Path) -> 
 
 
 def _plot_signal_beam_response(result: SignalCaseResult, output_path: Path) -> None:
-    """帯域加算 beam response を絶対値と target 正規化で保存する。
+    """入力帯域基準の beam response と target 正規化形状を保存する。
 
     Args:
         result: signal case 評価結果。beam response の shape は `[n_beam]`。
         output_path: 保存先 PNG。
 
     Notes:
-        上段は実際に 128 sample 入力へ重みを掛けた絶対レベルである。
+        上段は 128 sample 入力の実測帯域 power を 0 dB とした相対レベルである。
         下段は fixed / MVDR それぞれの target beam level を 0 dB に揃えた相対形状で、
         MVDR の制約形状と固定整相形状を同じ基準で比較するために使う。
     """
 
     target_index = int(result.target_beam_index)
     # 各 method の target beam level を引くことで、正規化図では target が 0 dB になる。
-    # 絶対レベル差は上段に残し、下段では beam shape の比較だけを行う。
+    # 入力帯域基準の出力レベル差は上段に残し、下段では beam shape の比較だけを行う。
     fixed_relative_db = result.fixed_band_response_db - float(result.fixed_band_response_db[target_index])
     mvdr_relative_db = result.mvdr_band_response_db - float(result.mvdr_band_response_db[target_index])
 
@@ -689,14 +745,14 @@ def _plot_signal_beam_response(result: SignalCaseResult, output_path: Path) -> N
     axes[0].plot(result.azimuth_deg, result.fixed_band_response_db, color="black", label="fixed_baseline")
     axes[0].plot(result.azimuth_deg, result.mvdr_band_response_db, color="tab:orange", label="MVDR from 128-sample covariance")
     axes[0].axvline(TARGET_AZIMUTH_DEG, color="tab:green", linestyle="--", linewidth=1.1, label="source 20 deg")
-    axes[0].axhline(0.0, color="0.35", linestyle=":", linewidth=1.0, label="0 dB input RMS")
+    axes[0].axhline(0.0, color="0.35", linestyle=":", linewidth=1.0, label="0 dB input band power")
     axes[0].set_ylim(*_finite_ylim([result.fixed_band_response_db, result.mvdr_band_response_db], dynamic_range_db=75.0))
-    axes[0].set_ylabel(f"Absolute Level [{LEVEL_UNIT_LABEL}]")
+    axes[0].set_ylabel(f"Band Level [{BEAM_RESPONSE_LEVEL_UNIT_LABEL}]")
     axes[0].set_title(f"128-sample covariance beam response: {result.scenario_id}, analysis {result.band_low_hz:.0f}-{result.band_high_hz:.0f} Hz")
     axes[0].text(
         0.01,
         0.04,
-        "Absolute output level after applying weights to the same 128-sample input.",
+        "Output band power normalized by the measured input band power of this case.",
         transform=axes[0].transAxes,
         fontsize=9,
         bbox={"boxstyle": "round,pad=0.35", "facecolor": "white", "edgecolor": "0.7", "alpha": 0.92},
@@ -758,6 +814,7 @@ def _write_signal_npz(results: list[SignalCaseResult], output_path: Path) -> Non
         azimuth_deg=results[0].azimuth_deg,
         band_low_hz=np.asarray([result.band_low_hz for result in results], dtype=np.float64),
         band_high_hz=np.asarray([result.band_high_hz for result in results], dtype=np.float64),
+        input_band_reference_level_db=np.asarray([result.input_band_reference_level_db for result in results], dtype=np.float64),
         input_mean_spectrum_level_db=np.stack([result.input_mean_spectrum_level_db for result in results], axis=0),
         fixed_target_spectrum_level_db=np.stack([result.fixed_target_spectrum_level_db for result in results], axis=0),
         mvdr_target_spectrum_level_db=np.stack([result.mvdr_target_spectrum_level_db for result in results], axis=0),
@@ -788,6 +845,7 @@ def _write_signal_summary(results: list[SignalCaseResult], output_path: Path) ->
                     "target_beam_band_level_db": float(response[target_index]),
                     "peak_azimuth_deg": float(result.azimuth_deg[peak_index]),
                     "peak_band_level_db": float(response[peak_index]),
+                    "input_band_reference_level_db": float(result.input_band_reference_level_db),
                     "loaded_condition_number_max": float(np.max(result.loaded_condition_number_by_bin)),
                 }
             )
@@ -864,14 +922,16 @@ def _write_metadata(output_dir: Path) -> None:
             }
             for scenario_id, center_frequency_hz, analysis_band_low_hz, analysis_band_high_hz in NARROWBAND_CASES
         ],
-        "level_reference": LEVEL_UNIT_LABEL,
+        "spectrum_level_reference": LEVEL_UNIT_LABEL,
+        "beam_response_level_reference": BEAM_RESPONSE_LEVEL_UNIT_LABEL,
         "array_shapes": {
             "frequency_hz": "[n_freq]",
             "*_interferer_db": "[n_freq]",
             "*_rms_err": "[n_freq]",
             "aperture_wavelength": "[n_freq]",
             "signal_input_mean_spectrum_level_db": "[n_case, n_rfft_bin]",
-            "signal_*_band_response_db": "[n_case, n_beam]",
+            "input_band_reference_level_db": "[n_case]",
+            "signal_*_band_response_db": "[n_case, n_beam], dB re input band power",
             "signal_*_target_spectrum_level_db": "[n_case, n_rfft_bin]",
         },
     }
@@ -901,10 +961,10 @@ def _write_review_index(rows: list[FrequencyRow], output_dir: Path) -> None:
         "- `figures/physical_scale_vs_frequency.png`: 波長に対する開口長と target steering 位相幅。",
         "- `figures/target_error_vs_frequency.png`: target-only 参照に対する出力 RMS error。",
         "- `figures/input_frequency_spectrum_low_256_1024hz.png`: 低周波広帯域入力の 128-point FFT spectrum。",
-        "- `figures/beam_response_band_integrated_low_256_1024hz.png`: 低周波広帯域の帯域加算 beam response。上段は絶対レベル、下段は各 method の target beam を 0 dB に揃えた正規化表示。",
+        "- `figures/beam_response_band_integrated_low_256_1024hz.png`: 低周波広帯域の帯域加算 beam response。上段は入力帯域 power 基準、下段は各 method の target beam を 0 dB に揃えた正規化表示。",
         "- `figures/output_frequency_spectrum_low_256_1024hz.png`: 低周波広帯域の target beam 出力 spectrum。",
         "- `figures/input_frequency_spectrum_high_8500_9500hz.png`: 高周波広帯域入力の 128-point FFT spectrum。",
-        "- `figures/beam_response_band_integrated_high_8500_9500hz.png`: 高周波広帯域の帯域加算 beam response。上段は絶対レベル、下段は各 method の target beam を 0 dB に揃えた正規化表示。",
+        "- `figures/beam_response_band_integrated_high_8500_9500hz.png`: 高周波広帯域の帯域加算 beam response。上段は入力帯域 power 基準、下段は各 method の target beam を 0 dB に揃えた正規化表示。",
         "- `figures/output_frequency_spectrum_high_8500_9500hz.png`: 高周波広帯域の target beam 出力 spectrum。",
         "- `figures/input_frequency_spectrum_narrow_low_center_640hz.png`: 低周波中心 640 Hz tone 入力の 128-point FFT spectrum。",
         "- `figures/beam_response_band_integrated_narrow_low_center_640hz.png`: 低周波中心 tone の解析帯域 512-768 Hz beam response。",
@@ -925,8 +985,8 @@ def _write_review_index(rows: list[FrequencyRow], output_dir: Path) -> None:
         f"- {low_row.frequency_hz:.0f} Hz では波長 {low_row.wavelength_m:.3f} m に対して開口は {low_row.aperture_wavelength:.3f} λ、隣接 CH 位相差は {low_row.adjacent_phase_deg:.3f} deg。",
         "- `mixture` 共分散では target も統計に含まれるため、128 sample だけでは干渉方向だけを安定に学習できない。",
         "- `interferer-only` が大きく抑圧できる場合でも、それは理想参照がある条件であり、運用時に同じ性能を保証しない。",
-        "- 広帯域 beam response は 128-point FFT の帯域内 bin power を線形加算してから dB 化している。",
-        "- 絶対レベル図では、128 sample の標本共分散に target 自身が含まれる場合の自己キャンセルも見える。正規化図は形状比較用であり、絶対出力レベルの採否判断には使わない。",
+        "- 広帯域・狭帯域 beam response は 128-point FFT の帯域内 bin power を線形加算し、各 case の実測入力帯域 power を 0 dB として dB 化している。",
+        "- 入力帯域基準図では、128 sample の標本共分散に target 自身が含まれる場合の自己キャンセルも見える。正規化図は形状比較用であり、出力レベルの採否判断には使わない。",
         "- 低周波広帯域は 256-1024 Hz、高周波広帯域は 8500-9500 Hz を別々の図で確認する。",
         "- 狭帯域は各広帯域の中心周波数である 640 Hz と 9000 Hz の tone を入れる。128 sample FFT の bin 幅は 256 Hz なので、狭帯域 beam response は中心±128 Hz の bin power を加算する。",
         "- 本評価の ULA は x 軸上に並ぶため、beam response 方位軸は 0-180 deg の x 方向余弦軸で表示する。port/starboard の符号曖昧性はこの軸に畳み込まれる。",
