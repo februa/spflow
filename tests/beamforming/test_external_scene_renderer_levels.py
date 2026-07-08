@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 
 from examples.beamforming.evaluate_external_scene_renderer_fixed_delay_diff_mvdr import (
+    ExternalLevelNormalizationCheck,
     db20_noise_density_to_sample_rms_amplitude,
     db20_rms_to_tone_peak_amplitude,
     tone_rms_level_db_from_fft_bin,
+    write_level_normalization_check_png,
 )
 
 
@@ -76,7 +80,57 @@ def test_white_noise_frequency_spectrum_matches_requested_noise_level() -> None:
     spectrum = np.fft.rfft(noise, axis=1)
     # spectrum[:, 1:-1] shape: [n_ch, n_positive_bin_without_dc_nyquist]。
     # 実数 white noise の片側 ASD power は 2*|X|^2/(N_FFT*fs) で推定する。
-    one_sided_density_power = 2.0 * (np.abs(spectrum[:, 1:-1]) ** 2) / (float(n_fft) * fs_hz)
+    one_sided_density_power = (
+        2.0 * (np.abs(spectrum[:, 1:-1]) ** 2) / (float(n_fft) * fs_hz)
+    )
     observed_level_db = 10.0 * np.log10(float(np.mean(one_sided_density_power)))
 
     assert abs(observed_level_db - noise_level_db) < 0.1
+
+
+def test_write_level_normalization_check_png_creates_frequency_spectrum_plot() -> None:
+    """SL/NL 確認方法を PNG として保存できることを確認する。
+
+    source は整数 bin の 0 dB RMS tone、noise は `sqrt(fs/2)` 換算済み white noise にする。
+    この条件なら、図上で tone peak と noise ASD の期待線が直接比較できる。
+    """
+    fs_hz = 1024.0
+    n_fft = 1024
+    n_ch = 4
+    tone_bin = 32
+    source_frequency_hz = float(tone_bin)
+    source_level_db = 0.0
+    noise_level_db = -32.0
+    sample_index = np.arange(n_fft, dtype=np.float64)
+    clean_mono = db20_rms_to_tone_peak_amplitude(source_level_db) * np.cos(
+        2.0 * np.pi * tone_bin * sample_index / float(n_fft)
+    )
+    clean = np.tile(clean_mono[np.newaxis, :], (n_ch, 1))
+    rng = np.random.default_rng(20260708)
+    noise_sample_rms = db20_noise_density_to_sample_rms_amplitude(
+        noise_level_db,
+        fs_hz=fs_hz,
+    )
+    noise = noise_sample_rms * rng.standard_normal((n_ch, n_fft))
+    arrays = {
+        "clean_signal": clean,
+        "noise_signal": noise,
+    }
+    output_path = Path(
+        "artifacts/beamforming/fixed_delay_diff_mvdr/level_normalization_test/"
+        "external_level_normalization_check.png"
+    )
+
+    write_level_normalization_check_png(
+        output_path=output_path,
+        arrays=arrays,
+        check=ExternalLevelNormalizationCheck(
+            source_frequencies_hz=(source_frequency_hz,),
+            source_levels_db20=(source_level_db,),
+            noise_level_db20=noise_level_db,
+            fs_hz=fs_hz,
+        ),
+    )
+
+    assert output_path.exists()
+    assert output_path.stat().st_size > 0

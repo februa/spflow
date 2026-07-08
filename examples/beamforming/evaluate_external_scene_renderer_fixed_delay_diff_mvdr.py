@@ -12,6 +12,11 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
+try:
+    import matplotlib.pyplot as plt
+except ImportError:  # pragma: no cover - 実行環境依存
+    plt = None
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
@@ -48,6 +53,7 @@ from spflow.beamforming import (  # noqa: E402
     design_fixed_delay_fractional_weights_from_delay_table,
     make_directions,
 )
+from spflow.beamforming.diagnostic_plotting import require_matplotlib  # noqa: E402
 from spflow.beamforming.time_delay import FractionalDelayFilterBank  # noqa: E402
 
 FloatArray = NDArray[np.float64]
@@ -100,6 +106,22 @@ class ExternalSceneMetricRow:
     nearest_source_beam_azimuth_deg: float
     nearest_source_beam_error_deg: float
     q_reconstruction_rms_error: float
+
+
+@dataclass(frozen=True)
+class ExternalLevelNormalizationCheck:
+    """SL/NL 入力正規化の周波数スペクトル確認条件を保持する。
+
+    このクラスは、scene_renderer に渡した source level と noise level の期待値を、
+    出力 PNG の水平線・垂直線として描くための設定である。
+    beamforming 重み設計や採否判定は責務に含めない。
+    信号処理上は、入力波形の生成直後に行う input/output level consistency 確認である。
+    """
+
+    source_frequencies_hz: tuple[float, ...]
+    source_levels_db20: tuple[float, ...]
+    noise_level_db20: float
+    fs_hz: float
 
 
 class ExternalArrayGeometry(ArrayGeometry):
@@ -183,6 +205,145 @@ def tone_rms_level_db_from_fft_bin(
         10.0 * np.log10(np.maximum(rms_power, np.finfo(np.float64).tiny)),
         dtype=np.float64,
     )
+
+
+def one_sided_noise_density_level_db_from_signal(
+    noise_signal: NDArray[Any],
+    *,
+    fs_hz: float,
+) -> tuple[FloatArray, FloatArray, float]:
+    """白色雑音波形から片側振幅スペクトル密度 level を推定する。
+
+    Args:
+        noise_signal: 雑音波形。shape は `[n_ch, n_sample]`、単位は input amplitude。
+        fs_hz: sampling frequency。単位は Hz。
+
+    Returns:
+        `(frequency_hz, density_level_db, mean_density_level_db)`。
+        `frequency_hz` と `density_level_db` の shape は `[n_rfft_bin - 2]`。
+        DC と Nyquist は片側 2 倍補正の対象外なので除外する。
+
+    Raises:
+        ValueError: shape または `fs_hz` が不正な場合。
+    """
+    samples = np.asarray(noise_signal, dtype=np.float64)
+    if samples.ndim != 2 or samples.shape[0] == 0 or samples.shape[1] < 4:
+        raise ValueError("noise_signal must have shape [n_ch, n_sample>=4].")
+    if float(fs_hz) <= 0.0:
+        raise ValueError("fs_hz must be positive.")
+    n_fft = int(samples.shape[1])
+    frequency_hz = np.fft.rfftfreq(n_fft, d=1.0 / float(fs_hz))
+    spectrum = np.fft.rfft(samples, axis=1)
+    # spectrum shape: [n_ch, n_rfft_bin]。
+    # 実数 white noise の片側 ASD power は 2*|X|^2/(N_FFT*fs) で推定する。
+    density_power = 2.0 * (np.abs(spectrum[:, 1:-1]) ** 2) / (float(n_fft) * float(fs_hz))
+    density_level_db = np.asarray(
+        10.0 * np.log10(np.maximum(np.mean(density_power, axis=0), np.finfo(np.float64).tiny)),
+        dtype=np.float64,
+    )
+    mean_density_level_db = float(
+        10.0 * np.log10(max(float(np.mean(density_power)), np.finfo(np.float64).tiny))
+    )
+    return (
+        np.asarray(frequency_hz[1:-1], dtype=np.float64),
+        density_level_db,
+        mean_density_level_db,
+    )
+
+
+def write_level_normalization_check_png(
+    *,
+    output_path: Path,
+    arrays: dict[str, NDArray[Any]],
+    check: ExternalLevelNormalizationCheck,
+) -> None:
+    """SL/NL 正規化を周波数スペクトル PNG として保存する。
+
+    Args:
+        output_path: PNG 保存先。
+        arrays: `evaluate_external_scene_renderer_inputs` が返した描画前配列。
+            `clean_signal` と `noise_signal` を使う。
+        check: 期待する SL/NL と sampling frequency。
+
+    Returns:
+        なし。
+
+    Raises:
+        ValueError: 配列 shape や source 条件数が不正な場合。
+        RuntimeError: matplotlib が利用できない場合。
+    """
+    if len(check.source_frequencies_hz) != len(check.source_levels_db20):
+        raise ValueError("source frequency and level counts must match.")
+    clean = np.asarray(arrays["clean_signal"], dtype=np.float64)
+    noise = np.asarray(arrays["noise_signal"], dtype=np.float64)
+    if clean.ndim != 2 or noise.ndim != 2 or clean.shape != noise.shape:
+        raise ValueError("clean_signal and noise_signal must have the same [n_ch, n_sample] shape.")
+    if clean.shape[1] < 4:
+        raise ValueError("signals must contain at least 4 samples.")
+
+    require_matplotlib()
+    assert plt is not None
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    n_fft = int(clean.shape[1])
+    frequency_hz = np.fft.rfftfreq(n_fft, d=1.0 / float(check.fs_hz))
+    clean_spectrum = np.fft.rfft(clean, axis=1)
+    # clean_power shape: [n_rfft_bin]。
+    # channel 位相差に依存しない入力 tone level を見るため、channel power を平均する。
+    clean_power = 2.0 * np.mean(np.abs(clean_spectrum / float(n_fft)) ** 2, axis=0)
+    clean_level_db = np.asarray(
+        10.0 * np.log10(np.maximum(clean_power, np.finfo(np.float64).tiny)),
+        dtype=np.float64,
+    )
+    noise_frequency_hz, noise_level_db, mean_noise_level_db = (
+        one_sided_noise_density_level_db_from_signal(noise, fs_hz=float(check.fs_hz))
+    )
+
+    figure, axes = plt.subplots(2, 1, figsize=(11.0, 7.0), sharex=True)
+    tone_axis = axes[0]
+    noise_axis = axes[1]
+    tone_axis.plot(frequency_hz, clean_level_db, linewidth=1.0, color="tab:blue")
+    for source_index, (source_frequency_hz, source_level_db) in enumerate(
+        zip(check.source_frequencies_hz, check.source_levels_db20, strict=True)
+    ):
+        tone_axis.axvline(float(source_frequency_hz), color="tab:orange", linewidth=0.9)
+        tone_axis.axhline(float(source_level_db), color="tab:green", linewidth=0.8, linestyle="--")
+        tone_axis.text(
+            float(source_frequency_hz),
+            float(source_level_db),
+            f"S{source_index + 1}: {source_level_db:.1f} dB",
+            fontsize=8,
+            rotation=90,
+            va="bottom",
+            ha="right",
+        )
+    tone_axis.set_ylabel("Tone RMS level [dB re input RMS]")
+    tone_axis.set_title("Input normalization check")
+    tone_axis.grid(True, alpha=0.3)
+
+    noise_axis.plot(noise_frequency_hz, noise_level_db, linewidth=0.8, color="tab:purple")
+    noise_axis.axhline(
+        float(check.noise_level_db20),
+        color="tab:red",
+        linewidth=0.9,
+        linestyle="--",
+    )
+    noise_axis.axhline(mean_noise_level_db, color="black", linewidth=0.8, linestyle=":")
+    noise_axis.set_xlabel("Frequency [Hz]")
+    noise_axis.set_ylabel("Noise ASD [dB re input RMS/sqrt(Hz)]")
+    noise_axis.grid(True, alpha=0.3)
+    noise_axis.text(
+        0.99,
+        0.95,
+        f"target {check.noise_level_db20:.1f} dB, mean {mean_noise_level_db:.2f} dB",
+        transform=noise_axis.transAxes,
+        fontsize=9,
+        ha="right",
+        va="top",
+    )
+    figure.tight_layout()
+    figure.savefig(output_path, dpi=150)
+    plt.close(figure)
 
 
 def _render_scene(
@@ -448,9 +609,12 @@ def evaluate_external_scene_renderer_inputs(
 
 
 def write_scene_outputs(
-    rows: list[ExternalSceneMetricRow], arrays: dict[str, NDArray[Any]], output_dir: Path
+    rows: list[ExternalSceneMetricRow],
+    arrays: dict[str, NDArray[Any]],
+    output_dir: Path,
+    normalization_check: ExternalLevelNormalizationCheck | None = None,
 ) -> None:
-    """scene_renderer 評価の CSV、NPZ、Markdown report を保存する。"""
+    """scene_renderer 評価の CSV、NPZ、Markdown report、入力正規化 PNG を保存する。"""
     output_dir.mkdir(parents=True, exist_ok=True)
     summary_path = output_dir / "external_scene_summary.csv"
     with summary_path.open("w", newline="", encoding="utf-8") as stream:
@@ -465,6 +629,14 @@ def write_scene_outputs(
         frequency_hz=arrays["frequency_hz"],
         azimuth_deg=arrays["azimuth_deg"],
     )
+    normalization_png_name: str | None = None
+    if normalization_check is not None:
+        normalization_png_name = "external_level_normalization_check.png"
+        write_level_normalization_check_png(
+            output_path=output_dir / normalization_png_name,
+            arrays=arrays,
+            check=normalization_check,
+        )
     lines = [
         "# 外部アレイ係数 + scene_renderer 入力評価",
         "",
@@ -475,11 +647,14 @@ def write_scene_outputs(
             "- `external_scene_arrays.npz`: scene_renderer が生成した channel 信号、"
             "clean/noise 成分、評価軸。"
         ),
+        "- `external_level_normalization_check.png`: SL/NL 入力正規化の周波数スペクトル確認図。",
         "- level は `dB re input RMS` 相当のシミュレーション振幅基準である。",
         "",
         "## 結果要約",
         "",
     ]
+    if normalization_png_name is not None:
+        lines.extend(["", "## 入力正規化確認", "", f"- `{normalization_png_name}`"])
     for row in rows:
         lines.append(
             f"- `{row.source_label}` `{row.method}`: peak {row.peak_azimuth_deg:.3f} deg, "
@@ -543,6 +718,13 @@ def main() -> None:
         )
         for index in range(len(azimuths))
     )
+    config = ExternalSceneEvaluationConfig(fir_taps=int(args.fir_taps))
+    normalization_check = ExternalLevelNormalizationCheck(
+        source_frequencies_hz=frequencies,
+        source_levels_db20=levels,
+        noise_level_db20=float(args.noise_level_db20),
+        fs_hz=float(config.fs_hz),
+    )
     rows, arrays = evaluate_external_scene_renderer_inputs(
         array_positions_m=positions,
         shading_by_channel_bin=shading,
@@ -551,11 +733,11 @@ def main() -> None:
         sources=sources,
         noise_sample_rms_amplitude=db20_noise_density_to_sample_rms_amplitude(
             float(args.noise_level_db20),
-            fs_hz=float(ExternalSceneEvaluationConfig().fs_hz),
+            fs_hz=float(config.fs_hz),
         ),
-        config=ExternalSceneEvaluationConfig(fir_taps=int(args.fir_taps)),
+        config=config,
     )
-    write_scene_outputs(rows, arrays, args.output_dir)
+    write_scene_outputs(rows, arrays, args.output_dir, normalization_check=normalization_check)
     print(args.output_dir / "external_scene_report.md")
 
 
