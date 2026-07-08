@@ -559,28 +559,61 @@ def _plot_broadband_input_spectrum(result: BroadbandCaseResult, output_path: Pat
 
 
 def _plot_broadband_beam_response(result: BroadbandCaseResult, output_path: Path) -> None:
-    """帯域加算 beam response を保存する。"""
+    """帯域加算 beam response を絶対値と target 正規化で保存する。
 
-    fig, axis = _plt().subplots(figsize=(10.8, 5.2))
-    axis.plot(result.azimuth_deg, result.fixed_band_response_db, color="black", label="fixed_baseline")
-    axis.plot(result.azimuth_deg, result.mvdr_band_response_db, color="tab:orange", label="MVDR from 128-sample covariance")
-    axis.axvline(TARGET_AZIMUTH_DEG, color="tab:green", linestyle="--", linewidth=1.1, label="source 20 deg")
-    axis.axhline(0.0, color="0.35", linestyle=":", linewidth=1.0, label="0 dB input RMS")
-    axis.set_ylim(*_finite_ylim([result.fixed_band_response_db, result.mvdr_band_response_db], dynamic_range_db=65.0))
-    axis.set_xlabel("Beam azimuth [deg]")
-    axis.set_ylabel(f"Band-integrated RMS Level [{LEVEL_UNIT_LABEL}]")
-    axis.set_title(f"128-sample covariance beam response: {result.band_low_hz:.0f}-{result.band_high_hz:.0f} Hz")
-    axis.text(
+    Args:
+        result: 広帯域 case 評価結果。beam response の shape は `[n_beam]`。
+        output_path: 保存先 PNG。
+
+    Notes:
+        上段は実際に 128 sample 入力へ重みを掛けた絶対レベルである。
+        下段は fixed / MVDR それぞれの target beam level を 0 dB に揃えた相対形状で、
+        MVDR の制約形状と固定整相形状を同じ基準で比較するために使う。
+    """
+
+    target_index = int(result.target_beam_index)
+    # 各 method の target beam level を引くことで、正規化図では target が 0 dB になる。
+    # 絶対レベル差は上段に残し、下段では beam shape の比較だけを行う。
+    fixed_relative_db = result.fixed_band_response_db - float(result.fixed_band_response_db[target_index])
+    mvdr_relative_db = result.mvdr_band_response_db - float(result.mvdr_band_response_db[target_index])
+
+    fig, axes = _plt().subplots(2, 1, figsize=(10.8, 8.0), sharex=True)
+    axes[0].plot(result.azimuth_deg, result.fixed_band_response_db, color="black", label="fixed_baseline")
+    axes[0].plot(result.azimuth_deg, result.mvdr_band_response_db, color="tab:orange", label="MVDR from 128-sample covariance")
+    axes[0].axvline(TARGET_AZIMUTH_DEG, color="tab:green", linestyle="--", linewidth=1.1, label="source 20 deg")
+    axes[0].axhline(0.0, color="0.35", linestyle=":", linewidth=1.0, label="0 dB input RMS")
+    axes[0].set_ylim(*_finite_ylim([result.fixed_band_response_db, result.mvdr_band_response_db], dynamic_range_db=75.0))
+    axes[0].set_ylabel(f"Absolute Level [{LEVEL_UNIT_LABEL}]")
+    axes[0].set_title(f"128-sample covariance beam response: {result.band_low_hz:.0f}-{result.band_high_hz:.0f} Hz")
+    axes[0].text(
         0.01,
         0.04,
-        "Band response = 10log10(sum power of 128-point FFT bins in passband).\n"
-        "MVDR covariance is estimated from the same 128-sample broadband input.",
-        transform=axis.transAxes,
+        "Absolute output level after applying weights to the same 128-sample broadband input.",
+        transform=axes[0].transAxes,
         fontsize=9,
         bbox={"boxstyle": "round,pad=0.35", "facecolor": "white", "edgecolor": "0.7", "alpha": 0.92},
     )
-    axis.grid(True, alpha=0.25)
-    axis.legend(loc="best")
+    axes[0].grid(True, alpha=0.25)
+    axes[0].legend(loc="best")
+
+    axes[1].plot(result.azimuth_deg, fixed_relative_db, color="black", label="fixed_baseline")
+    axes[1].plot(result.azimuth_deg, mvdr_relative_db, color="tab:orange", label="MVDR from 128-sample covariance")
+    axes[1].axvline(TARGET_AZIMUTH_DEG, color="tab:green", linestyle="--", linewidth=1.1, label="source 20 deg")
+    axes[1].axhline(0.0, color="0.35", linestyle=":", linewidth=1.0, label="target beam normalization")
+    axes[1].set_ylim(*_finite_ylim([fixed_relative_db, mvdr_relative_db], dynamic_range_db=65.0))
+    axes[1].set_xlabel("Beam azimuth [deg]")
+    axes[1].set_ylabel("Relative Level [dB re each method target beam]")
+    axes[1].text(
+        0.01,
+        0.04,
+        "Normalized response: fixed and MVDR target-beam levels are both set to 0 dB.\n"
+        "Band response = 10log10(sum power of 128-point FFT bins in passband).",
+        transform=axes[1].transAxes,
+        fontsize=9,
+        bbox={"boxstyle": "round,pad=0.35", "facecolor": "white", "edgecolor": "0.7", "alpha": 0.92},
+    )
+    axes[1].grid(True, alpha=0.25)
+    axes[1].legend(loc="best")
     fig.tight_layout()
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     _plt().close(fig)
@@ -750,10 +783,10 @@ def _write_review_index(rows: list[FrequencyRow], output_dir: Path) -> None:
         "- `figures/physical_scale_vs_frequency.png`: 波長に対する開口長と target steering 位相幅。",
         "- `figures/target_error_vs_frequency.png`: target-only 参照に対する出力 RMS error。",
         "- `figures/input_frequency_spectrum_low_256_1024hz.png`: 低周波広帯域入力の 128-point FFT spectrum。",
-        "- `figures/beam_response_band_integrated_low_256_1024hz.png`: 低周波広帯域の帯域加算 beam response。",
+        "- `figures/beam_response_band_integrated_low_256_1024hz.png`: 低周波広帯域の帯域加算 beam response。上段は絶対レベル、下段は各 method の target beam を 0 dB に揃えた正規化表示。",
         "- `figures/output_frequency_spectrum_low_256_1024hz.png`: 低周波広帯域の target beam 出力 spectrum。",
         "- `figures/input_frequency_spectrum_high_8500_9500hz.png`: 高周波広帯域入力の 128-point FFT spectrum。",
-        "- `figures/beam_response_band_integrated_high_8500_9500hz.png`: 高周波広帯域の帯域加算 beam response。",
+        "- `figures/beam_response_band_integrated_high_8500_9500hz.png`: 高周波広帯域の帯域加算 beam response。上段は絶対レベル、下段は各 method の target beam を 0 dB に揃えた正規化表示。",
         "- `figures/output_frequency_spectrum_high_8500_9500hz.png`: 高周波広帯域の target beam 出力 spectrum。",
         "- `data/low_frequency_128sample_mvdr_arrays.npz`: tone sweep 図作成元配列。",
         "- `data/broadband_128sample_mvdr_arrays.npz`: 広帯域図作成元配列。",
@@ -767,6 +800,7 @@ def _write_review_index(rows: list[FrequencyRow], output_dir: Path) -> None:
         "- `mixture` 共分散では target も統計に含まれるため、128 sample だけでは干渉方向だけを安定に学習できない。",
         "- `interferer-only` が大きく抑圧できる場合でも、それは理想参照がある条件であり、運用時に同じ性能を保証しない。",
         "- 広帯域 beam response は 128-point FFT の帯域内 bin power を線形加算してから dB 化している。",
+        "- 絶対レベル図では、128 sample の標本共分散に target 自身が含まれる場合の自己キャンセルも見える。正規化図は形状比較用であり、絶対出力レベルの採否判断には使わない。",
         "- 低周波広帯域は 256-1024 Hz、高周波広帯域は 8500-9500 Hz を別々の図で確認する。",
         "- 本評価の ULA は水平面で +azimuth / -azimuth の mirror ambiguity を持つため、peak 方位は target marker と mirror 側の両方を確認する。",
     ]
