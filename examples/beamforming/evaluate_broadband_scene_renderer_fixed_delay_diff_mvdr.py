@@ -547,29 +547,51 @@ def _plot_input_spectrum(result: EvaluationResult, output_path: Path) -> None:
 
 
 def _plot_beam_response(result: EvaluationResult, output_path: Path) -> None:
-    """整相後出力 FFT から beam response を保存する。"""
+    """単一 FFT bin と帯域加算を分けて beam response を保存する。
+
+    Args:
+        result: 評価結果。beam response 配列の shape は `[n_beam]`。
+        output_path: 保存先 PNG。
+
+    境界条件:
+        広帯域入力では 1 bin あたりの level は 0 dB 近傍にならない。
+        そのため上段は「単一 bin」、下段は「帯域 power 加算」と明記し、
+        0 dB 近傍の値が帯域加算結果であることを図中に残す。
+    """
 
     fig, axes = _plt().subplots(2, 1, figsize=(10.5, 8.0), sharex=True)
-    for axis, fixed, diff, title in (
+    for axis, fixed, diff, title, ylabel, note in (
         (
             axes[0],
             result.fixed_beam_response_center_db,
             result.diff_beam_response_center_db,
-            "Nearest 9000 Hz FFT bin beam response",
+            "Single FFT-bin beam response at nearest 9000 Hz bin",
+            f"Per-bin RMS Level [{LEVEL_UNIT_LABEL}]",
+            "No band summation: broadband power is spread over many FFT bins.",
         ),
         (
             axes[1],
             result.fixed_beam_response_band_db,
             result.diff_beam_response_band_db,
-            "8500-9500 Hz band-integrated beam response",
+            "Band-integrated beam response: power sum over 8500-9500 Hz",
+            f"Band-integrated RMS Level [{LEVEL_UNIT_LABEL}]",
+            "This is the broadband beam response; target beam is expected near 0 dB.",
         ),
     ):
         axis.plot(result.azimuth_deg, fixed, color="black", label="fixed_baseline")
         axis.plot(result.azimuth_deg, diff, color="tab:orange", label="diff_mvdr_fir512")
         axis.axvline(SOURCE_AZIMUTH_DEG, color="tab:green", linestyle="--", linewidth=1.0, label="source 20 deg")
         axis.set_ylim(*_finite_ylim([fixed, diff], dynamic_range_db=70.0))
-        axis.set_ylabel(f"RMS Level [{LEVEL_UNIT_LABEL}]")
+        axis.set_ylabel(ylabel)
         axis.set_title(title)
+        axis.text(
+            0.01,
+            0.04,
+            note,
+            transform=axis.transAxes,
+            fontsize=9,
+            bbox={"boxstyle": "round,pad=0.3", "facecolor": "white", "edgecolor": "0.7", "alpha": 0.9},
+        )
         axis.grid(True, alpha=0.25)
         axis.legend(loc="best")
     axes[1].set_xlabel("Beam azimuth [deg]")
@@ -577,6 +599,48 @@ def _plot_beam_response(result: EvaluationResult, output_path: Path) -> None:
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     _plt().close(fig)
 
+
+def _plot_band_integrated_beam_response(result: EvaluationResult, output_path: Path) -> None:
+    """帯域加算 beam response だけを大きく表示する。
+
+    Args:
+        result: 評価結果。`*_beam_response_band_db` の shape は `[n_beam]`。
+        output_path: 保存先 PNG。
+
+    信号処理上の意味:
+        各 beam の rFFT 出力について、8500-9500 Hz の one-sided per-bin power を
+        線形領域で合計してから dB 化する。広帯域 source の総 RMS level を見る図であり、
+        単一 FFT bin の spectrum level と比較してはいけない。
+    """
+
+    fig, axis = _plt().subplots(figsize=(10.8, 5.2))
+    axis.plot(result.azimuth_deg, result.fixed_beam_response_band_db, color="black", label="fixed_baseline")
+    axis.plot(result.azimuth_deg, result.diff_beam_response_band_db, color="tab:orange", label="diff_mvdr_fir512")
+    axis.axvline(SOURCE_AZIMUTH_DEG, color="tab:green", linestyle="--", linewidth=1.1, label="source 20 deg")
+    axis.axhline(0.0, color="0.35", linestyle=":", linewidth=1.0, label="0 dB integrated input RMS")
+    axis.set_ylim(
+        *_finite_ylim(
+            [result.fixed_beam_response_band_db, result.diff_beam_response_band_db],
+            dynamic_range_db=55.0,
+        )
+    )
+    axis.set_xlabel("Beam azimuth [deg]")
+    axis.set_ylabel(f"Band-integrated RMS Level [{LEVEL_UNIT_LABEL}]")
+    axis.set_title("Broadband beam response: sum power over 8500-9500 Hz")
+    axis.text(
+        0.01,
+        0.04,
+        "Band response = 10log10(sum power of FFT bins from 8500 to 9500 Hz).\n"
+        "This is why the target peak is near 0 dB while per-bin spectra are much lower.",
+        transform=axis.transAxes,
+        fontsize=9,
+        bbox={"boxstyle": "round,pad=0.35", "facecolor": "white", "edgecolor": "0.7", "alpha": 0.92},
+    )
+    axis.grid(True, alpha=0.25)
+    axis.legend(loc="best")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    _plt().close(fig)
 
 def _plot_output_spectrum(result: EvaluationResult, output_path: Path) -> None:
     """20 deg beam の整相後信号 FFT 周波数スペクトルを保存する。"""
@@ -741,7 +805,8 @@ def _write_review_index(output_dir: Path) -> None:
         "## Artifacts",
         "",
         "- `figures/input_frequency_spectrum.png`: 入力多 CH 信号を FFT した channel 平均 spectrum。",
-        "- `figures/beam_response_9000hz.png`: 整相後 FFT から作った 9000 Hz 近傍 bin と 8500-9500 Hz 積分 beam response。",
+        "- `figures/beam_response_single_bin_and_band_integrated.png`: 上段は 9000 Hz 近傍の単一 FFT bin、下段は 8500-9500 Hz の power 加算 beam response。",
+        "- `figures/beam_response_band_integrated_8500_9500hz.png`: 帯域加算 beam response だけを大きく表示した人間向け図。",
         "- `figures/output_frequency_spectrum_20deg.png`: 20 deg beam の整相後信号 FFT spectrum。",
         "- `data/broadband_arrays.npz`: PNG 作成元配列。shape は `metadata.json` を参照。",
         "- `scenario_summary.csv`: method 別 peak 方位、band level、diagnostic metric。",
@@ -750,7 +815,8 @@ def _write_review_index(output_dir: Path) -> None:
         "## Interpretation Notes",
         "",
         "- BL/beam response は fixed_baseline と diff_mvdr_fir512 を併記する。",
-        "- `beam_response_9000hz.png` の下段は広帯域 passband power を積分した応答であり、単一 bin の偶然変動だけを見ないための補助である。",
+        "- 単一 FFT bin の spectrum level は広帯域 energy が bin に分散するため 0 dB 近傍にはならない。",
+        "- `beam_response_band_integrated_8500_9500hz.png` は passband power を線形加算してから dB 化した図であり、広帯域 source の総 level を見るための主図である。",
         "- BTR は本評価要求に含まれないため生成していない。時間 track 連続性評価には使わない。",
     ]
     (output_dir / "review_index.md").write_text("\n".join(lines), encoding="utf-8")
@@ -780,7 +846,8 @@ def build_report_package() -> Path:
 
     result = _evaluate()
     _plot_input_spectrum(result, FIGURE_DIR / "input_frequency_spectrum.png")
-    _plot_beam_response(result, FIGURE_DIR / "beam_response_9000hz.png")
+    _plot_beam_response(result, FIGURE_DIR / "beam_response_single_bin_and_band_integrated.png")
+    _plot_band_integrated_beam_response(result, FIGURE_DIR / "beam_response_band_integrated_8500_9500hz.png")
     _plot_output_spectrum(result, FIGURE_DIR / "output_frequency_spectrum_20deg.png")
     _save_npz(result, DATA_DIR / "broadband_arrays.npz")
     _write_csv(OUTPUT_DIR / "scenario_summary.csv", _summary_rows(result))
