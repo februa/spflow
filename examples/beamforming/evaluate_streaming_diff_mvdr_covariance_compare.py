@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import argparse
 import csv
 import io
 import json
@@ -55,6 +56,8 @@ SOURCE_RMS = 1.0
 DIAGONAL_LOADING_RATIO = 1.0e-2
 COVARIANCE_TIME_CONSTANT_SEC = 1.0e6
 N_BEAM = 181
+AZIMUTH_MIN_DEG = 0.0
+AZIMUTH_MAX_DEG = 180.0
 OUTPUT_DIR = (
     ROOT / "artifacts" / "beamforming" / "fixed_delay_diff_mvdr" / "streaming_covariance_compare"
 )
@@ -110,6 +113,34 @@ class ScenarioSpec:
 
 
 @dataclass(frozen=True)
+class StreamingDiffMvdrEvaluationConfig:
+    """streaming 差分 MVDR 評価の外部設定を保持する。
+
+    このクラスは、サンプリング周波数、配列条件、FFT 長、評価時間、beam 軸、
+    scenario 群、出力先を 1 つの JSON 入力から受け取るための設定である。
+    信号生成、共分散推定、MVDR 重み計算、PNG 作成は責務に含めない。
+    信号処理上は、同じ評価式を別環境・軽量テスト・本評価で再利用するための
+    実験条件を表す。
+    """
+
+    fs_hz: float = FS_HZ
+    sound_speed_m_s: float = SOUND_SPEED_M_S
+    n_ch: int = N_CH
+    spacing_m: float = SPACING_M
+    fft_size: int = FFT_SIZE
+    duration_sec: float = DURATION_SEC
+    frame_size: int = FRAME_SIZE
+    source_rms: float = SOURCE_RMS
+    diagonal_loading_ratio: float = DIAGONAL_LOADING_RATIO
+    covariance_time_constant_sec: float = COVARIANCE_TIME_CONSTANT_SEC
+    n_beam: int = N_BEAM
+    azimuth_min_deg: float = AZIMUTH_MIN_DEG
+    azimuth_max_deg: float = AZIMUTH_MAX_DEG
+    output_dir: Path = OUTPUT_DIR
+    scenarios: tuple[ScenarioSpec, ...] | None = None
+
+
+@dataclass(frozen=True)
 class ScenarioResult:
     """1 scenario の評価結果と PNG 作成元配列を保持する。
 
@@ -131,6 +162,275 @@ def _plt() -> Any:
     if plt is None:
         raise RuntimeError("matplotlib is required to plot figures.")
     return plt
+
+
+def _resolve_repo_path(path_value: str | Path) -> Path:
+    """JSON 内の相対 path を repository root 基準の絶対 path に解決する。"""
+
+    path = Path(path_value)
+    if path.is_absolute():
+        return path
+    return ROOT / path
+
+
+def _as_float(payload: dict[str, Any], key: str, default: float) -> float:
+    """JSON scalar を float に変換する。"""
+
+    value = payload.get(key, default)
+    if not isinstance(value, int | float):
+        raise TypeError(f"{key} must be a number.")
+    return float(value)
+
+
+def _as_int(payload: dict[str, Any], key: str, default: int) -> int:
+    """JSON scalar を int に変換する。"""
+
+    value = payload.get(key, default)
+    if not isinstance(value, int):
+        raise TypeError(f"{key} must be an integer.")
+    return int(value)
+
+
+def _source_from_payload(payload: dict[str, Any], default_rms: float) -> SourceSpec:
+    """JSON source 定義を `SourceSpec` へ変換する。
+
+    tone は `frequency_hz`、band は `band_low_hz` と `band_high_hz` を必須にする。
+    これは解析対象 bin を外部設定から一意に決め、帯域加算レベルの基準が
+    source 定義とずれないようにするためである。
+    """
+
+    name_value = payload.get("name")
+    kind_value = payload.get("kind")
+    azimuth_value = payload.get("azimuth_deg")
+    if not isinstance(name_value, str) or not name_value:
+        raise TypeError("source.name must be a non-empty string.")
+    if not isinstance(kind_value, str):
+        raise TypeError("source.kind must be a string.")
+    if not isinstance(azimuth_value, int | float):
+        raise TypeError("source.azimuth_deg must be a number.")
+
+    rms_value = payload.get("rms", default_rms)
+    if not isinstance(rms_value, int | float):
+        raise TypeError("source.rms must be a number.")
+    rms = float(rms_value)
+    if rms <= 0.0:
+        raise ValueError("source.rms must be positive.")
+
+    if kind_value == "tone":
+        frequency_value = payload.get("frequency_hz")
+        if not isinstance(frequency_value, int | float):
+            raise TypeError("tone source requires numeric frequency_hz.")
+        return SourceSpec(
+            name=name_value,
+            azimuth_deg=float(azimuth_value),
+            kind=kind_value,
+            frequency_hz=float(frequency_value),
+            rms=rms,
+        )
+    if kind_value == "band":
+        low_value = payload.get("band_low_hz")
+        high_value = payload.get("band_high_hz")
+        if not isinstance(low_value, int | float) or not isinstance(high_value, int | float):
+            raise TypeError("band source requires numeric band_low_hz and band_high_hz.")
+        if float(low_value) >= float(high_value):
+            raise ValueError("band_low_hz must be smaller than band_high_hz.")
+        return SourceSpec(
+            name=name_value,
+            azimuth_deg=float(azimuth_value),
+            kind=kind_value,
+            band_low_hz=float(low_value),
+            band_high_hz=float(high_value),
+            rms=rms,
+        )
+    raise ValueError(f"unsupported source kind: {kind_value}")
+
+
+def _scenario_from_payload(payload: dict[str, Any], default_rms: float) -> ScenarioSpec:
+    """JSON scenario 定義を `ScenarioSpec` へ変換する。"""
+
+    scenario_id_value = payload.get("scenario_id")
+    title_value = payload.get("title", scenario_id_value)
+    sources_value = payload.get("sources")
+    if not isinstance(scenario_id_value, str) or not scenario_id_value:
+        raise TypeError("scenario_id must be a non-empty string.")
+    if not isinstance(title_value, str):
+        raise TypeError("title must be a string.")
+    if not isinstance(sources_value, list) or len(sources_value) == 0:
+        raise TypeError("sources must be a non-empty list.")
+
+    sources: list[SourceSpec] = []
+    for source_payload in sources_value:
+        if not isinstance(source_payload, dict):
+            raise TypeError("each source must be an object.")
+        sources.append(_source_from_payload(source_payload, default_rms=default_rms))
+    return ScenarioSpec(scenario_id=scenario_id_value, title=title_value, sources=tuple(sources))
+
+
+def load_evaluation_config(config_path: Path | None) -> StreamingDiffMvdrEvaluationConfig:
+    """JSON config を読み込み、評価設定として返す。
+
+    Args:
+        config_path: JSON config のパス。`None` の場合は既定の 3 秒評価条件を返す。
+
+    Returns:
+        検証済みの評価設定。shape に効く値は `_apply_config` で module-level の
+        定数へ反映される。
+
+    Raises:
+        TypeError: JSON の型が想定と異なる場合。
+        ValueError: FFT 長、frame 長、評価時間、source 帯域が不正な場合。
+    """
+
+    if config_path is None:
+        config = StreamingDiffMvdrEvaluationConfig()
+        _validate_config(config)
+        return config
+
+    payload_raw = json.loads(config_path.read_text(encoding="utf-8"))
+    if not isinstance(payload_raw, dict):
+        raise TypeError("config root must be an object.")
+    payload: dict[str, Any] = payload_raw
+    default_source_rms = _as_float(payload, "source_rms", SOURCE_RMS)
+
+    scenarios_value = payload.get("scenarios")
+    scenarios: tuple[ScenarioSpec, ...] | None = None
+    if scenarios_value is not None:
+        if not isinstance(scenarios_value, list) or len(scenarios_value) == 0:
+            raise TypeError("scenarios must be a non-empty list when specified.")
+        scenario_list: list[ScenarioSpec] = []
+        for scenario_payload in scenarios_value:
+            if not isinstance(scenario_payload, dict):
+                raise TypeError("each scenario must be an object.")
+            scenario_list.append(
+                _scenario_from_payload(scenario_payload, default_rms=default_source_rms)
+            )
+        scenarios = tuple(scenario_list)
+
+    output_dir_value = payload.get("output_dir", OUTPUT_DIR)
+    if not isinstance(output_dir_value, str | Path):
+        raise TypeError("output_dir must be a string path.")
+
+    config = StreamingDiffMvdrEvaluationConfig(
+        fs_hz=_as_float(payload, "fs_hz", FS_HZ),
+        sound_speed_m_s=_as_float(payload, "sound_speed_m_s", SOUND_SPEED_M_S),
+        n_ch=_as_int(payload, "n_ch", N_CH),
+        spacing_m=_as_float(payload, "spacing_m", SPACING_M),
+        fft_size=_as_int(payload, "fft_size", FFT_SIZE),
+        duration_sec=_as_float(payload, "duration_sec", DURATION_SEC),
+        frame_size=_as_int(payload, "frame_size", FRAME_SIZE),
+        source_rms=default_source_rms,
+        diagonal_loading_ratio=_as_float(payload, "diagonal_loading_ratio", DIAGONAL_LOADING_RATIO),
+        covariance_time_constant_sec=_as_float(
+            payload, "covariance_time_constant_sec", COVARIANCE_TIME_CONSTANT_SEC
+        ),
+        n_beam=_as_int(payload, "n_beam", N_BEAM),
+        azimuth_min_deg=_as_float(payload, "azimuth_min_deg", AZIMUTH_MIN_DEG),
+        azimuth_max_deg=_as_float(payload, "azimuth_max_deg", AZIMUTH_MAX_DEG),
+        output_dir=_resolve_repo_path(output_dir_value),
+        scenarios=scenarios,
+    )
+    _validate_config(config)
+    return config
+
+
+def _validate_config(config: StreamingDiffMvdrEvaluationConfig) -> None:
+    """評価設定の境界条件を検証する。"""
+
+    if config.fs_hz <= 0.0:
+        raise ValueError("fs_hz must be positive.")
+    if config.sound_speed_m_s <= 0.0:
+        raise ValueError("sound_speed_m_s must be positive.")
+    if config.n_ch <= 0:
+        raise ValueError("n_ch must be positive.")
+    if config.spacing_m <= 0.0:
+        raise ValueError("spacing_m must be positive.")
+    if config.fft_size <= 0 or config.fft_size % 2 != 0:
+        raise ValueError("fft_size must be a positive even integer.")
+    if config.frame_size <= 0:
+        raise ValueError("frame_size must be positive.")
+    if config.frame_size < config.fft_size:
+        raise ValueError("frame_size must be greater than or equal to fft_size.")
+    if config.duration_sec <= 0.0:
+        raise ValueError("duration_sec must be positive.")
+    if config.source_rms <= 0.0:
+        raise ValueError("source_rms must be positive.")
+    if config.diagonal_loading_ratio < 0.0:
+        raise ValueError("diagonal_loading_ratio must be non-negative.")
+    if config.covariance_time_constant_sec <= 0.0:
+        raise ValueError("covariance_time_constant_sec must be positive.")
+    if config.n_beam <= 1:
+        raise ValueError("n_beam must be greater than 1.")
+    if config.azimuth_min_deg >= config.azimuth_max_deg:
+        raise ValueError("azimuth_min_deg must be smaller than azimuth_max_deg.")
+
+    sample_count = int(round(config.fs_hz * config.duration_sec))
+    if sample_count <= 0:
+        raise ValueError("fs_hz * duration_sec must be at least 1 sample.")
+    if sample_count % config.fft_size != 0:
+        raise ValueError("fs_hz * duration_sec must be divisible by fft_size.")
+    if sample_count % config.frame_size != 0:
+        raise ValueError("fs_hz * duration_sec must be divisible by frame_size.")
+
+    # source 帯域は rFFT 周波数軸に対して評価されるため、Nyquist を超える設定は
+    # 表示上の欠落ではなく、評価条件そのものの誤りとして扱う。
+    nyquist_hz = 0.5 * float(config.fs_hz)
+    scenarios = config.scenarios if config.scenarios is not None else _scenario_specs()
+    for scenario in scenarios:
+        if len(scenario.sources) == 0:
+            raise ValueError(f"{scenario.scenario_id} must have at least one source.")
+        for source in scenario.sources:
+            if (
+                source.azimuth_deg < config.azimuth_min_deg
+                or source.azimuth_deg > config.azimuth_max_deg
+            ):
+                raise ValueError(f"{source.name} azimuth is outside the beam scan range.")
+            if source.rms <= 0.0:
+                raise ValueError(f"{source.name} rms must be positive.")
+            if source.kind == "tone":
+                if source.frequency_hz is None:
+                    raise ValueError(f"{source.name} tone source requires frequency_hz.")
+                if source.frequency_hz < 0.0 or source.frequency_hz > nyquist_hz:
+                    raise ValueError(f"{source.name} frequency_hz is outside [0, Nyquist].")
+            elif source.kind == "band":
+                if source.band_low_hz is None or source.band_high_hz is None:
+                    raise ValueError(
+                        f"{source.name} band source requires band_low_hz/band_high_hz."
+                    )
+                if source.band_low_hz < 0.0 or source.band_high_hz > nyquist_hz:
+                    raise ValueError(f"{source.name} band is outside [0, Nyquist].")
+            else:
+                raise ValueError(f"unsupported source kind: {source.kind}")
+
+
+def _apply_config(config: StreamingDiffMvdrEvaluationConfig) -> None:
+    """検証済み config を既存の評価関数が参照する module-level 定数へ反映する。"""
+
+    global FS_HZ, SOUND_SPEED_M_S, N_CH, SPACING_M, FFT_SIZE, N_BIN
+    global DURATION_SEC, N_SAMPLE, N_BLOCK, FRAME_SIZE, N_FRAME, SOURCE_RMS
+    global DIAGONAL_LOADING_RATIO, COVARIANCE_TIME_CONSTANT_SEC, N_BEAM
+    global AZIMUTH_MIN_DEG, AZIMUTH_MAX_DEG, OUTPUT_DIR, FIGURE_DIR, DATA_DIR
+
+    _validate_config(config)
+    FS_HZ = float(config.fs_hz)
+    SOUND_SPEED_M_S = float(config.sound_speed_m_s)
+    N_CH = int(config.n_ch)
+    SPACING_M = float(config.spacing_m)
+    FFT_SIZE = int(config.fft_size)
+    N_BIN = FFT_SIZE // 2 + 1
+    DURATION_SEC = float(config.duration_sec)
+    N_SAMPLE = int(round(FS_HZ * DURATION_SEC))
+    N_BLOCK = N_SAMPLE // FFT_SIZE
+    FRAME_SIZE = int(config.frame_size)
+    N_FRAME = N_SAMPLE // FRAME_SIZE
+    SOURCE_RMS = float(config.source_rms)
+    DIAGONAL_LOADING_RATIO = float(config.diagonal_loading_ratio)
+    COVARIANCE_TIME_CONSTANT_SEC = float(config.covariance_time_constant_sec)
+    N_BEAM = int(config.n_beam)
+    AZIMUTH_MIN_DEG = float(config.azimuth_min_deg)
+    AZIMUTH_MAX_DEG = float(config.azimuth_max_deg)
+    OUTPUT_DIR = config.output_dir
+    FIGURE_DIR = OUTPUT_DIR / "figures"
+    DATA_DIR = OUTPUT_DIR / "data"
 
 
 def _array_positions() -> FloatArray:
@@ -180,6 +480,28 @@ def _steering_table(
     return steering
 
 
+def _default_source(
+    name: str,
+    azimuth_deg: float,
+    kind: str,
+    *,
+    frequency_hz: float | None = None,
+    band_low_hz: float | None = None,
+    band_high_hz: float | None = None,
+) -> SourceSpec:
+    """既定 scenario の source RMS を現在の評価設定に合わせて生成する。"""
+
+    return SourceSpec(
+        name=name,
+        azimuth_deg=azimuth_deg,
+        kind=kind,
+        frequency_hz=frequency_hz,
+        band_low_hz=band_low_hz,
+        band_high_hz=band_high_hz,
+        rms=SOURCE_RMS,
+    )
+
+
 def _scenario_specs() -> tuple[ScenarioSpec, ...]:
     """ユーザー指定 6 パターンを返す。"""
 
@@ -187,28 +509,36 @@ def _scenario_specs() -> tuple[ScenarioSpec, ...]:
         ScenarioSpec(
             "low_narrow_az030",
             "Low frequency narrowband, source azimuth 30 deg",
-            (SourceSpec("low_tone_512", 30.0, "tone", frequency_hz=512.0),),
+            (_default_source("low_tone_512", 30.0, "tone", frequency_hz=512.0),),
         ),
         ScenarioSpec(
             "low_broadband_az010",
             "Low frequency broadband, source azimuth 10 deg",
             (
-                SourceSpec(
-                    "low_band_256_1536", 10.0, "band", band_low_hz=256.0, band_high_hz=1536.0
+                _default_source(
+                    "low_band_256_1536",
+                    10.0,
+                    "band",
+                    band_low_hz=256.0,
+                    band_high_hz=1536.0,
                 ),
             ),
         ),
         ScenarioSpec(
             "high_narrow_az050",
             "High frequency narrowband, source azimuth 50 deg",
-            (SourceSpec("high_tone_8192", 50.0, "tone", frequency_hz=8192.0),),
+            (_default_source("high_tone_8192", 50.0, "tone", frequency_hz=8192.0),),
         ),
         ScenarioSpec(
             "high_broadband_az180",
             "High frequency broadband, source azimuth 180 deg",
             (
-                SourceSpec(
-                    "high_band_7168_11264", 180.0, "band", band_low_hz=7168.0, band_high_hz=11264.0
+                _default_source(
+                    "high_band_7168_11264",
+                    180.0,
+                    "band",
+                    band_low_hz=7168.0,
+                    band_high_hz=11264.0,
                 ),
             ),
         ),
@@ -216,20 +546,28 @@ def _scenario_specs() -> tuple[ScenarioSpec, ...]:
             "near_broadband_high_low_az085_az080",
             "Nearby broadband sources, high/low non-overlapped bands, 85/80 deg",
             (
-                SourceSpec(
-                    "high_band_7168_11264", 85.0, "band", band_low_hz=7168.0, band_high_hz=11264.0
+                _default_source(
+                    "high_band_7168_11264",
+                    85.0,
+                    "band",
+                    band_low_hz=7168.0,
+                    band_high_hz=11264.0,
                 ),
-                SourceSpec(
-                    "low_band_512_2048", 80.0, "band", band_low_hz=512.0, band_high_hz=2048.0
+                _default_source(
+                    "low_band_512_2048",
+                    80.0,
+                    "band",
+                    band_low_hz=512.0,
+                    band_high_hz=2048.0,
                 ),
             ),
         ),
         ScenarioSpec(
             "near_narrow_high_high_az085_az080",
-            "Nearby narrowband high-frequency sources, shifted tones, 85/80 deg",
+            "Nearby narrowband high/high shifted tones, 85/80 deg",
             (
-                SourceSpec("high_tone_8192", 85.0, "tone", frequency_hz=8192.0),
-                SourceSpec("high_tone_8448", 80.0, "tone", frequency_hz=8448.0),
+                _default_source("high_tone_8192", 85.0, "tone", frequency_hz=8192.0),
+                _default_source("high_tone_8448", 80.0, "tone", frequency_hz=8448.0),
             ),
         ),
     )
@@ -972,12 +1310,18 @@ def _zip_output() -> Path:
     return zip_path
 
 
-def build_report() -> Path:
+def build_report(config: StreamingDiffMvdrEvaluationConfig | None = None) -> Path:
     """評価を実行し、図・数値・数式チェック結果を出力する。
 
     Returns:
         出力ディレクトリをまとめた zip ファイルのパス。
     """
+
+    active_config = config if config is not None else load_evaluation_config(None)
+    _apply_config(active_config)
+    scenarios = (
+        active_config.scenarios if active_config.scenarios is not None else _scenario_specs()
+    )
 
     if OUTPUT_DIR.exists():
         shutil.rmtree(OUTPUT_DIR)
@@ -985,13 +1329,13 @@ def build_report() -> Path:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     positions_m = _array_positions()
-    azimuths_deg = np.linspace(0.0, 180.0, N_BEAM, dtype=np.float64)
+    azimuths_deg = np.linspace(AZIMUTH_MIN_DEG, AZIMUTH_MAX_DEG, N_BEAM, dtype=np.float64)
     frequencies_hz = np.fft.rfftfreq(FFT_SIZE, d=1.0 / FS_HZ)
     steering = _steering_table(positions_m, azimuths_deg, frequencies_hz)
 
     results: list[ScenarioResult] = []
     figure_paths: list[Path] = []
-    for scenario in _scenario_specs():
+    for scenario in scenarios:
         result = _evaluate_scenario(scenario, positions_m, azimuths_deg, frequencies_hz, steering)
         results.append(result)
         figure_paths.append(_plot_beam_response(result, azimuths_deg))
@@ -1007,10 +1351,106 @@ def build_report() -> Path:
     return _zip_output()
 
 
+def _default_config_payload() -> dict[str, Any]:
+    """外部設定ファイルの雛形を返す。"""
+
+    return {
+        "fs_hz": 32768.0,
+        "sound_speed_m_s": 1500.0,
+        "n_ch": 16,
+        "spacing_m": 0.05,
+        "fft_size": 256,
+        "duration_sec": 3.0,
+        "frame_size": 32768,
+        "source_rms": 1.0,
+        "diagonal_loading_ratio": 1.0e-2,
+        "covariance_time_constant_sec": 1.0e6,
+        "n_beam": 181,
+        "azimuth_min_deg": 0.0,
+        "azimuth_max_deg": 180.0,
+        "output_dir": "artifacts/beamforming/fixed_delay_diff_mvdr/streaming_covariance_compare",
+        "scenarios": [
+            {
+                "scenario_id": scenario.scenario_id,
+                "title": scenario.title,
+                "sources": [
+                    {
+                        "name": source.name,
+                        "azimuth_deg": source.azimuth_deg,
+                        "kind": source.kind,
+                        "frequency_hz": source.frequency_hz,
+                        "band_low_hz": source.band_low_hz,
+                        "band_high_hz": source.band_high_hz,
+                        "rms": source.rms,
+                    }
+                    for source in scenario.sources
+                ],
+            }
+            for scenario in _scenario_specs()
+        ],
+    }
+
+
+def _write_default_config(path: Path) -> None:
+    """既定評価条件の JSON config を保存する。"""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(_default_config_payload(), indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def _parse_args() -> argparse.Namespace:
+    """CLI 引数を解析する。"""
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--config",
+        type=Path,
+        help="評価条件を受け取る JSON config。未指定時はスクリプト内の既定 3 秒条件を使う。",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="config の output_dir を一時的に上書きする。相対 path は repository root 基準。",
+    )
+    parser.add_argument(
+        "--write-default-config",
+        type=Path,
+        help="既定 3 秒評価条件の JSON config を書き出して終了する。",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
     """コマンドライン実行入口。"""
 
-    zip_path = build_report()
+    args = _parse_args()
+    if args.write_default_config is not None:
+        _write_default_config(_resolve_repo_path(args.write_default_config))
+        print(f"wrote {_resolve_repo_path(args.write_default_config)}")
+        return
+
+    config = load_evaluation_config(args.config)
+    if args.output_dir is not None:
+        config = StreamingDiffMvdrEvaluationConfig(
+            fs_hz=config.fs_hz,
+            sound_speed_m_s=config.sound_speed_m_s,
+            n_ch=config.n_ch,
+            spacing_m=config.spacing_m,
+            fft_size=config.fft_size,
+            duration_sec=config.duration_sec,
+            frame_size=config.frame_size,
+            source_rms=config.source_rms,
+            diagonal_loading_ratio=config.diagonal_loading_ratio,
+            covariance_time_constant_sec=config.covariance_time_constant_sec,
+            n_beam=config.n_beam,
+            azimuth_min_deg=config.azimuth_min_deg,
+            azimuth_max_deg=config.azimuth_max_deg,
+            output_dir=_resolve_repo_path(args.output_dir),
+            scenarios=config.scenarios,
+        )
+    zip_path = build_report(config)
     print(f"wrote {OUTPUT_DIR}")
     print(f"wrote {zip_path}")
 

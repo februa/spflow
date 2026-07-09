@@ -1,0 +1,126 @@
+{
+  "fs_hz": 32768.0,
+  "sound_speed_m_s": 1500.0,
+  "n_ch": 16,
+  "spacing_m": 0.05,
+  "fft_size": 256,
+  "duration_sec": 3.0,
+  "frame_size": 32768,
+  "source_rms": 1.0,
+  "diagonal_loading_ratio": 0.01,
+  "covariance_time_constant_sec": 1000000.0,
+  "n_beam": 181,
+  "azimuth_min_deg": 0.0,
+  "azimuth_max_deg": 180.0,
+  "output_dir": "artifacts/beamforming/fixed_delay_diff_mvdr/streaming_covariance_compare",
+  "scenarios": [
+    {
+      "scenario_id": "low_narrow_az030",
+      "title": "Low frequency narrowband, source azimuth 30 deg",
+      "sources": [
+        {
+          "name": "low_tone_512",
+          "azimuth_deg": 30.0,
+          "kind": "tone",
+          "frequency_hz": 512.0,
+          "band_low_hz": null,
+          "band_high_hz": null,
+          "rms": 1.0
+        }
+      ]
+    },
+    {
+      "scenario_id": "low_broadband_az010",
+      "title": "Low frequency broadband, source azimuth 10 deg",
+      "sources": [
+        {
+          "name": "low_band_256_1536",
+          "azimuth_deg": 10.0,
+          "kind": "band",
+          "frequency_hz": null,
+          "band_low_hz": 256.0,
+          "band_high_hz": 1536.0,
+          "rms": 1.0
+        }
+      ]
+    },
+    {
+      "scenario_id": "high_narrow_az050",
+      "title": "High frequency narrowband, source azimuth 50 deg",
+      "sources": [
+        {
+          "name": "high_tone_8192",
+          "azimuth_deg": 50.0,
+          "kind": "tone",
+          "frequency_hz": 8192.0,
+          "band_low_hz": null,
+          "band_high_hz": null,
+          "rms": 1.0
+        }
+      ]
+    },
+    {
+      "scenario_id": "high_broadband_az180",
+      "title": "High frequency broadband, source azimuth 180 deg",
+      "sources": [
+        {
+          "name": "high_band_7168_11264",
+          "azimuth_deg": 180.0,
+          "kind": "band",
+          "frequency_hz": null,
+          "band_low_hz": 7168.0,
+          "band_high_hz": 11264.0,
+          "rms": 1.0
+        }
+      ]
+    },
+    {
+      "scenario_id": "near_broadband_high_low_az085_az080",
+      "title": "Nearby broadband sources, high/low non-overlapped bands, 85/80 deg",
+      "sources": [
+        {
+          "name": "high_band_7168_11264",
+          "azimuth_deg": 85.0,
+          "kind": "band",
+          "frequency_hz": null,
+          "band_low_hz": 7168.0,
+          "band_high_hz": 11264.0,
+          "rms": 1.0
+        },
+        {
+          "name": "low_band_512_2048",
+          "azimuth_deg": 80.0,
+          "kind": "band",
+          "frequency_hz": null,
+          "band_low_hz": 512.0,
+          "band_high_hz": 2048.0,
+          "rms": 1.0
+        }
+      ]
+    },
+    {
+      "scenario_id": "near_narrow_high_high_az085_az080",
+      "title": "Nearby narrowband high/high shifted tones, 85/80 deg",
+      "sources": [
+        {
+          "name": "high_tone_8192",
+          "azimuth_deg": 85.0,
+          "kind": "tone",
+          "frequency_hz": 8192.0,
+          "band_low_hz": null,
+          "band_high_hz": null,
+          "rms": 1.0
+        },
+        {
+          "name": "high_tone_8448",
+          "azimuth_deg": 80.0,
+          "kind": "tone",
+          "frequency_hz": 8448.0,
+          "band_low_hz": null,
+          "band_high_hz": null,
+          "rms": 1.0
+        }
+      ]
+    }
+  ]
+}

@@ -1408,3 +1408,67 @@ w^H a = 1
 ### 20.5 評価上の注意
 
 `diff_mvdr_beam_sum` は delay table の整数遅延で snapshot 中心をずらすため、低周波の広い mainlobe では peak 方位が source 方位の近傍へ浅く移動する場合がある。ただし source 方位 beam の歪みなし制約と帯域加算レベルは保持されている。方式差の解釈では、peak 方位だけでなく source beam レベル、帯域加算レベル、条件数、fallback 率を併せて確認する。
+
+## 21. 外部 config と別環境実行手順
+
+### 21.1 JSON config 入力
+
+`evaluate_streaming_diff_mvdr_covariance_compare.py` は、別環境でも同じ評価条件を再現できるように `--config` で JSON を受け取る。既定の 3 秒評価条件は以下に保存した。
+
+```text
+examples/beamforming/streaming_diff_mvdr_covariance_compare_config.json
+```
+
+この JSON は、サンプリング周波数、音速、channel 数、センサ間隔、FFT 長、積分時間、frame 長、diagonal loading、beam 数、beam 方位範囲、出力先、scenario/source 群を保持する。
+
+実行例は以下である。
+
+```powershell
+.\.venv\Scripts\python.exe .\examples\beamforming\evaluate_streaming_diff_mvdr_covariance_compare.py `
+  --config .\examples\beamforming\streaming_diff_mvdr_covariance_compare_config.json
+```
+
+出力先だけを変える場合は、config を編集せず `--output-dir` で上書きできる。
+
+```powershell
+.\.venv\Scripts\python.exe .\examples\beamforming\evaluate_streaming_diff_mvdr_covariance_compare.py `
+  --config .\examples\beamforming\streaming_diff_mvdr_covariance_compare_config.json `
+  --output-dir artifacts\beamforming\fixed_delay_diff_mvdr\streaming_covariance_compare_local
+```
+
+### 21.2 軽量テスト config
+
+テストでは、同じ処理経路を短時間で通すため、`fft_size=64`、`duration_sec=0.125`、`n_ch=4`、`n_beam=7` の一時 JSON を生成する。これにより、通常共分散、beam 方向合算共分散、MVDR 重み設計、PNG/CSV/NPZ 出力、one-sided rFFT の RMS 正規化を 1 ケースで確認できる。
+
+対象テストは以下である。
+
+```text
+tests/beamforming/test_streaming_diff_mvdr_covariance_compare_config.py
+```
+
+### 21.3 vendor と依存関係
+
+別環境では、figure 出力に `matplotlib` が必要である。`pyproject.toml` の `dev` と `beamforming-eval` optional dependency に `matplotlib` を追加し、型チェック用に `pyright` も `dev` に追加した。
+
+`scene_renderer` を使う既存 example との整合のため、vendor submodule を使う手順を README に追加した。
+
+```powershell
+git submodule update --init --recursive
+pip install -e ".[dev,beamforming-eval]"
+pip install -e vendor/scene_renderer
+```
+
+submodule を使わず GitHub から直接 `scene_renderer` を入れる場合は、`vendor` extra を使う。
+
+```powershell
+pip install -e ".[dev,beamforming-eval,vendor]"
+```
+
+### 21.4 確認結果
+
+以下を確認した。
+
+- JSON config 指定で 3 秒評価を再実行できること。
+- 軽量 JSON config を用いた pytest が通ること。
+- ruff、compileall、pyright で、今回追加したスクリプトとテストにエラーがないこと。
+- one-sided rFFT bin power の帯域加算 RMS が、外部 config で指定した source RMS と一致すること。

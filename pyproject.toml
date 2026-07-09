@@ -18,8 +18,16 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "matplotlib>=3.7",
+  "pyright>=1.1.380",
   "pytest>=8.0",
   "ruff>=0.6.0",
+]
+beamforming-eval = [
+  "matplotlib>=3.7",
+]
+vendor = [
+  "scene-renderer @ git+https://github.com/februa/scene_renderer.git",
 ]
 
 [tool.setuptools]
@@ -39,3 +47,4 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
+
