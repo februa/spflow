@@ -1318,3 +1318,93 @@ Beamforming Evaluation の分類では、本変更は差分 MVDR の統計推定
 
 評価図や数値に dB を出す場合は、`dB re input RMS`、`dB re fixed beamformer output` など、基準を明示する。
 
+
+## 20. 3 秒 streaming 共分散による 3 方式比較評価
+
+### 20.1 評価スクリプト
+
+3 秒分の入力信号を 256 sample block で streaming 処理し、以下の 3 方式を同一入力で比較する評価を追加した。
+
+- `fixed`: 固定整相重み `w = a / n_ch`。
+- `diff_mvdr_cov256`: 256 sample block の通常共分散を用いる差分 MVDR。
+- `diff_mvdr_beam_sum`: delay table で beam 方向ごとに中心 sample をずらして切り出し、beam 別共分散を合算する差分 MVDR。
+
+実行コマンドは以下である。
+
+```powershell
+.\.venv\Scripts\python.exe .\examples\beamforming\evaluate_streaming_diff_mvdr_covariance_compare.py
+```
+
+出力先は以下である。
+
+| 出力 | パス |
+|---|---|
+| PNG/CSV/NPZ/数式チェック | `artifacts/beamforming/fixed_delay_diff_mvdr/streaming_covariance_compare/` |
+| zip | `artifacts/beamforming/fixed_delay_diff_mvdr/streaming_covariance_compare.zip` |
+
+### 20.2 レベル正規化
+
+256 point rFFT の bin power は Parseval の定理に合わせ、以下の one-sided RMS power として定義する。
+
+\[
+P[k] = \begin{cases}
+|X[k]|^2 / N^2, & k = 0 \text{ または Nyquist} \\
+2|X[k]|^2 / N^2, & \text{その他の片側 bin}
+\end{cases}
+\]
+
+この定義により、解析対象帯域の bin power を線形加算した値は、同じ帯域に入力した時間領域 RMS power と一致する。
+
+\[
+\sum_{k \in B} P[k] = x_B\_{rms}^2
+\]
+
+beam response 図では、対象帯域の出力 power を音源入力の総 power で割ってから dB 化する。
+
+\[
+L_b = 10\log_{10}\left(\frac{\sum_{k \in B} P_{out}[b,k]}{\sum_s rms_s^2}\right)
+\]
+
+このため、狭帯域 tone と広帯域 band のどちらでも、入力した帯域を加算したレベルが入力信号レベルに一致する。
+
+### 20.3 数式チェック
+
+差分 MVDR の内部量は以下として確認した。
+
+\[
+q = w_{fixed} - w_{mvdr}
+\]
+
+最終的な出力重みは `w_fixed - q` であるため、以下が成立することを source band 上で確認した。
+
+\[
+w_{fixed} - q = w_{mvdr}
+\]
+
+また、MVDR の歪みなし制約は以下として確認した。
+
+\[
+w^H a = 1
+\]
+
+全 scenario で、差分重みの戻し誤差は最大でも丸め誤差レベル、fallback 率は 0 であった。入力 RMS の帯域加算値は、単一音源で `1.0`、2 音源で `sqrt(2)` と一致した。
+
+### 20.4 評価パターンと主な結果
+
+| scenario | 入力 RMS 確認 | 主な確認 |
+|---|---:|---|
+| `low_narrow_az030` | 1.000000 | 30 deg で fixed と差分 MVDR の source レベルが 0 dB に一致。 |
+| `low_broadband_az010` | 1.000000 | 10 deg の広帯域加算レベルが 0 dB に一致。 |
+| `high_narrow_az050` | 1.000000 | 50 deg の狭帯域高周波で 0 dB に一致。 |
+| `high_broadband_az180` | 1.000000 | 180 deg の広帯域高周波で 0 dB に一致。 |
+| `near_broadband_high_low_az085_az080` | 1.414214 | 2 音源の総 power 基準で、各 source 単独相当の期待レベルは約 -3.01 dB。 |
+| `near_narrow_high_high_az085_az080` | 1.414214 | 近接 2 音源・別周波数 tone で総 power 基準のレベルを確認。 |
+
+詳細な peak 方位、source beam レベル、数式チェック値は以下に保存する。
+
+- `artifacts/beamforming/fixed_delay_diff_mvdr/streaming_covariance_compare/data/summary_metrics.csv`
+- `artifacts/beamforming/fixed_delay_diff_mvdr/streaming_covariance_compare/data/math_check.md`
+
+### 20.5 評価上の注意
+
+`diff_mvdr_beam_sum` は delay table の整数遅延で snapshot 中心をずらすため、低周波の広い mainlobe では peak 方位が source 方位の近傍へ浅く移動する場合がある。ただし source 方位 beam の歪みなし制約と帯域加算レベルは保持されている。方式差の解釈では、peak 方位だけでなく source beam レベル、帯域加算レベル、条件数、fallback 率を併せて確認する。
