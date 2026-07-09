@@ -41,6 +41,31 @@ class ShortFFTCovarianceUpdateResult:
 
 
 @dataclass(frozen=True)
+class DelayAlignedBeamCovarianceUpdateResult:
+    """遅延中心切り出し型の beam 別共分散更新結果を保持する。
+
+    このクラスは、各 beam・各 channel の整数遅延を反映して切り出した
+    128 sample snapshot から作った共分散を返すための結果型である。
+
+    入力は `DelayAlignedBeamCovarianceAccumulator.process` が処理した
+    `[n_ch, n_sample]` の実時間信号であり、出力は beam 別共分散と
+    MVDR 設計へ渡す beam 合算共分散である。
+
+    MVDR 重み設計、固定整相、差分 FIR 化は責務に含めない。
+    信号処理上は、差分 MVDR の統計ルートにおける共分散積分方式の
+    差し替え候補に位置づく。
+    """
+
+    beam_covariance: NDArray[np.complex128]
+    summed_covariance_ch_ch_bin: NDArray[np.complex128]
+    covariance_for_mvdr: NDArray[np.complex128]
+    frequencies_hz: NDArray[np.float64]
+    update_ready: bool
+    processed_frame_count: int
+    total_frame_count: int
+
+
+@dataclass(frozen=True)
 class LoadedMVDRDesignResult:
     """対角ローディング付き MVDR 重み設計の結果を保持する。
 
@@ -408,6 +433,280 @@ class ShortFFTCovarianceAccumulator:
         self._blocks_since_weight_update += 1
 
 
+def extract_delay_centered_snapshots(
+    y: NDArray[Any],
+    delay_table_sample: NDArray[Any],
+    *,
+    snapshot_length: int = 128,
+    center_sample: int | None = None,
+) -> NDArray[np.float64]:
+    """整数遅延中心の短時間 snapshot を beam/channel 別に切り出す。
+
+    Args:
+        y: 入力実信号。shape は `[n_ch, n_sample]`。
+            axis=0 はセンサチャネル、axis=1 は時間 sample である。
+        delay_table_sample: 整数遅延 sample 表。shape は `[n_ch, n_beam]`。
+            `delay_table_sample[ch, beam]` は基準中心からの中心 sample ずれである。
+        snapshot_length: 切り出す sample 数。単位は sample。標準値は 128。
+        center_sample: 基準中心 sample。`None` の場合は `n_sample // 2` を使う。
+            32768 sample frame では 16384 が基準中心になる。
+
+    Returns:
+        遅延中心切り出し snapshot。shape は `[n_beam, n_ch, snapshot_length]`。
+        axis=0 は beam、axis=1 は sensor channel、axis=2 は短時間 sample である。
+
+    Raises:
+        ValueError: 入力 shape、遅延表 shape、または実信号条件が不正な場合。
+
+    境界条件:
+        `center_sample + delay_table_sample[ch, beam]` を中心に偶数長 snapshot を切り出す。
+        128 sample では `[center-64, center+64)` を採用する。入力範囲外は、
+        存在しない過去・未来 sample を観測していないことを明示するため 0 で埋める。
+    """
+    raw_signal = np.asarray(y)
+    require(raw_signal.ndim == 2, "y must have shape (n_ch, n_sample).")
+    if np.iscomplexobj(raw_signal):
+        require(
+            bool(np.allclose(np.imag(raw_signal), 0.0, rtol=0.0, atol=1.0e-12)),
+            "y must be real-valued for 65-bin rFFT covariance estimation.",
+        )
+    require(bool(np.all(np.isfinite(raw_signal))), "y must contain only finite values.")
+    signal = np.asarray(np.real(raw_signal), dtype=np.float64)
+
+    delay_raw = np.asarray(delay_table_sample)
+    require(delay_raw.ndim == 2, "delay_table_sample must have shape (n_ch, n_beam).")
+    require(delay_raw.shape[0] == signal.shape[0], "delay_table_sample and y must agree on n_ch.")
+    require(
+        bool(np.all(np.isfinite(delay_raw))),
+        "delay_table_sample must contain only finite values.",
+    )
+    require(
+        bool(np.all(delay_raw == np.rint(delay_raw))),
+        "delay_table_sample must contain integer sample delays.",
+    )
+    require_positive_int("snapshot_length", int(snapshot_length))
+
+    n_ch = int(signal.shape[0])
+    n_sample = int(signal.shape[1])
+    n_beam = int(delay_raw.shape[1])
+    if center_sample is None:
+        base_center_sample = n_sample // 2
+    else:
+        base_center_sample = int(center_sample)
+    require(0 <= base_center_sample <= n_sample, "center_sample must be inside or at frame edge.")
+
+    delay = np.asarray(delay_raw, dtype=np.int64)
+    half_before = int(snapshot_length) // 2
+    snapshots = np.zeros((n_beam, n_ch, int(snapshot_length)), dtype=np.float64)
+    for beam_index in range(n_beam):
+        for ch_index in range(n_ch):
+            # center は MATLAB 側の `16384 + delay_table(ch, beam)` に対応する。
+            # 偶数長 128 sample では中心 sample を切り出し後 index 64 に置く規約にする。
+            center = base_center_sample + int(delay[ch_index, beam_index])
+            start = center - half_before
+            stop = start + int(snapshot_length)
+            source_start = max(start, 0)
+            source_stop = min(stop, n_sample)
+            if source_start >= source_stop:
+                # 遅延中心が入力 frame から完全に外れる場合は、未観測区間として全 0 のままにする。
+                continue
+            destination_start = source_start - start
+            destination_stop = destination_start + (source_stop - source_start)
+            snapshots[
+                beam_index,
+                ch_index,
+                destination_start:destination_stop,
+            ] = signal[ch_index, source_start:source_stop]
+    return snapshots
+
+
+class DelayAlignedBeamCovarianceAccumulator:
+    """遅延中心 snapshot から beam 別の 65-bin 共分散を積分する。
+
+    このクラスは、入力実信号 `[n_ch, n_sample]` に対して、各 beam・各 channel の
+    `delay_table_sample[ch, beam]` を中心 sample ずれとして 128 sample を切り出し、
+    rFFT の 65 bin で `R_beam[k] = X_beam[k] X_beam[k]^H` を指数平均する。
+
+    入力は frame 単位の多チャネル実信号、出力は beam 別共分散
+    `[n_beam, n_ch, n_ch, n_bin]` と、MVDR 用に beam 合算した
+    `[n_ch, n_ch, n_bin]` の共分散である。
+
+    MVDR 重み設計、固定整相、差分 FIR 適用は責務に含めない。
+    信号処理上は、従来の連続短 FFT 共分散積分と比較できる差し替え可能な統計ルートである。
+    """
+
+    def __init__(
+        self,
+        *,
+        delay_table_sample: NDArray[Any],
+        fs_hz: float,
+        snapshot_length: int = 128,
+        frame_size: int = 32768,
+        center_sample: int | None = 16384,
+        covariance_time_constant_sec: float = 10.0,
+        frames_per_weight_update: int = 1,
+    ) -> None:
+        """遅延中心切り出し型の共分散推定器を構成する。
+
+        Args:
+            delay_table_sample: 整数遅延 sample 表。shape は `[n_ch, n_beam]`。
+                単位は sample。MATLAB の `int32(tau * fs)` に対応する。
+            fs_hz: サンプリング周波数。単位は Hz。
+            snapshot_length: 各 beam/channel で切り出す sample 数。標準値は 128 sample。
+            frame_size: 1 回の `process` が想定する frame 長。標準値は 32768 sample。
+            center_sample: 基準中心 sample。標準値は 16384 sample。
+                `None` の場合は入力 frame の `n_sample // 2` を使う。
+            covariance_time_constant_sec: frame 単位指数平均の時定数。単位は秒。
+            frames_per_weight_update: MVDR 重み更新 1 回あたりの frame 数。単位は count。
+
+        Raises:
+            ValueError: 各パラメータ、遅延表、または sample 数が不正な場合。
+
+        境界条件:
+            128 sample snapshot の rFFT は実信号を前提にするため、非ゼロ虚部を持つ入力は拒否する。
+            複素 baseband 入力を扱う場合は 65 bin ではなく full FFT 共分散を別方式として定義する。
+        """
+        require_positive_float("fs_hz", float(fs_hz))
+        require_positive_int("snapshot_length", int(snapshot_length))
+        require_positive_int("frame_size", int(frame_size))
+        require_positive_float("covariance_time_constant_sec", float(covariance_time_constant_sec))
+        require_positive_int("frames_per_weight_update", int(frames_per_weight_update))
+        require(int(snapshot_length) % 2 == 0, "snapshot_length must be even.")
+
+        delay_raw = np.asarray(delay_table_sample)
+        require(delay_raw.ndim == 2, "delay_table_sample must have shape (n_ch, n_beam).")
+        require(delay_raw.shape[0] > 0 and delay_raw.shape[1] > 0, "delay_table_sample is empty.")
+        require(bool(np.all(np.isfinite(delay_raw))), "delay_table_sample must be finite.")
+        require(
+            bool(np.all(delay_raw == np.rint(delay_raw))),
+            "delay_table_sample must contain integer sample delays.",
+        )
+
+        self.delay_table_sample = np.asarray(delay_raw, dtype=np.int64)
+        self.n_ch = int(self.delay_table_sample.shape[0])
+        self.n_beam = int(self.delay_table_sample.shape[1])
+        self.fs_hz = float(fs_hz)
+        self.snapshot_length = int(snapshot_length)
+        self.frame_size = int(frame_size)
+        self.center_sample = None if center_sample is None else int(center_sample)
+        self.covariance_time_constant_sec = float(covariance_time_constant_sec)
+        self.frames_per_weight_update = int(frames_per_weight_update)
+        self.n_bin = self.snapshot_length // 2 + 1
+        self.frequencies_hz = np.asarray(
+            np.fft.rfftfreq(self.snapshot_length, d=1.0 / self.fs_hz),
+            dtype=np.float64,
+        )
+
+        frame_duration_sec = float(self.frame_size) / self.fs_hz
+        # R_t = alpha R_{t-1} + (1-alpha) X_t X_t^H。
+        # ここでは 32768 sample frame から 1 個の beam-aligned snapshot 群を作るため、
+        # 忘却係数は frame 時間を時定数で割って決める。
+        self.alpha = float(np.exp(-frame_duration_sec / self.covariance_time_constant_sec))
+        self.beam_covariance = np.zeros(
+            (self.n_beam, self.n_ch, self.n_ch, self.n_bin),
+            dtype=np.complex128,
+        )
+        self.summed_covariance_ch_ch_bin = np.zeros(
+            (self.n_ch, self.n_ch, self.n_bin),
+            dtype=np.complex128,
+        )
+        self._total_frame_count = 0
+        self._frames_since_weight_update = 0
+
+    def reset(self) -> None:
+        """内部共分散と frame counter を破棄する。
+
+        Returns:
+            なし。次回 `process` は初回 frame として処理される。
+
+        境界条件:
+            scene、array geometry、または delay table を切り替える場合、古い beam 別共分散を
+            残すと別方位の統計を MVDR に混入させるため、明示的に初期化する。
+        """
+        self.beam_covariance = np.zeros(
+            (self.n_beam, self.n_ch, self.n_ch, self.n_bin),
+            dtype=np.complex128,
+        )
+        self.summed_covariance_ch_ch_bin = np.zeros(
+            (self.n_ch, self.n_ch, self.n_bin),
+            dtype=np.complex128,
+        )
+        self._total_frame_count = 0
+        self._frames_since_weight_update = 0
+
+    def process(self, y: NDArray[Any]) -> DelayAlignedBeamCovarianceUpdateResult:
+        """1 frame の遅延中心 snapshot から beam 別共分散を更新する。
+
+        Args:
+            y: 入力実信号。shape は `[n_ch, n_sample]`。
+                axis=0 はセンサチャネル、axis=1 は時間 sample である。
+
+        Returns:
+            更新後の beam 別共分散、beam 合算共分散、MVDR 用共分散を返す。
+            `beam_covariance` の shape は `[n_beam, n_ch, n_ch, 65]`、
+            `summed_covariance_ch_ch_bin` の shape は `[n_ch, n_ch, 65]`、
+            `covariance_for_mvdr` の shape は `[65, n_ch, n_ch]` である。
+
+        Raises:
+            ValueError: 入力 shape、実信号条件、または frame 長が不正な場合。
+        """
+        raw_signal = np.asarray(y)
+        require(raw_signal.ndim == 2, "y must have shape (n_ch, n_sample).")
+        require(raw_signal.shape[0] == self.n_ch, "y and delay_table_sample must agree on n_ch.")
+        require(raw_signal.shape[1] == self.frame_size, "y must have frame_size samples.")
+
+        snapshots = extract_delay_centered_snapshots(
+            raw_signal,
+            self.delay_table_sample,
+            snapshot_length=self.snapshot_length,
+            center_sample=self.center_sample,
+        )
+        self._update_one_frame(snapshots)
+        self._total_frame_count += 1
+        self._frames_since_weight_update += 1
+
+        update_ready = self._frames_since_weight_update >= self.frames_per_weight_update
+        if update_ready:
+            self._frames_since_weight_update = 0
+
+        # summed_covariance_ch_ch_bin shape: [n_ch, n_ch, n_bin]。
+        # MVDRWeightDesigner は [n_bin, n_ch, n_ch] 規約なので bin 軸を先頭へ移す。
+        covariance_for_mvdr = np.asarray(
+            np.moveaxis(self.summed_covariance_ch_ch_bin, 2, 0),
+            dtype=np.complex128,
+        )
+        return DelayAlignedBeamCovarianceUpdateResult(
+            beam_covariance=self.beam_covariance.copy(),
+            summed_covariance_ch_ch_bin=self.summed_covariance_ch_ch_bin.copy(),
+            covariance_for_mvdr=covariance_for_mvdr,
+            frequencies_hz=self.frequencies_hz.copy(),
+            update_ready=bool(update_ready),
+            processed_frame_count=1,
+            total_frame_count=int(self._total_frame_count),
+        )
+
+    def _update_one_frame(self, snapshots: NDArray[np.float64]) -> None:
+        """1 frame から得た beam-aligned snapshot 群で共分散を指数平均する。"""
+        # snapshots shape: [n_beam, n_ch, snapshot_length]。
+        # axis=2 は 128 sample の短時間軸であり、rFFT 後は 65 個の片側周波数 bin になる。
+        x_beam_ch_bin = np.fft.rfft(snapshots, n=self.snapshot_length, axis=2)
+
+        # r_inst[beam, ch_i, ch_j, bin] = X[beam, ch_i, bin] conj(X[beam, ch_j, bin])。
+        # beam ごとに遅延中心が異なるため、beam 軸は平均せず保持し、MVDR 直前で合算する。
+        r_inst = np.asarray(
+            np.einsum("bck,bdk->bcdk", x_beam_ch_bin, x_beam_ch_bin.conj(), optimize=True),
+            dtype=np.complex128,
+        )
+        self.beam_covariance = self.alpha * self.beam_covariance + (1.0 - self.alpha) * r_inst
+
+        # beam 合算 R_sum[ch_i, ch_j, k] = Σ_beam R_beam[ch_i, ch_j, k]。
+        # ユーザー指定どおり MVDR 計算時に [n_ch, n_ch, 65] を保持する。
+        self.summed_covariance_ch_ch_bin = np.asarray(
+            np.sum(self.beam_covariance, axis=0),
+            dtype=np.complex128,
+        )
+
+
 class LoadedMVDRWeightDesigner:
     """周波数 bin ごとに対角ローディング付き MVDR 重みを設計する。
 
@@ -572,10 +871,12 @@ class LoadedMVDRWeightDesigner:
 
 
 class DifferenceCorrectionFIRDesigner:
-    """固定整相重みと MVDR 重みの差分を時間領域 FIR 係数へ変換する。
+    """固定整相重みと MVDR 重みの差分を全 FFT bin IFFT で FIR 係数へ変換する。
 
-    このクラスは、`q[k] = w0[k] - w_mvdr[k]` を作り、`w^H x` の共役規約に合わせて
-    実適用用周波数応答 `conj(q[k])` を任意周波数 least-squares FIR として近似する。
+    このクラスは、全 DFT bin で `q[k] = w0[k] - w_mvdr[k]` を作り、`w^H x` の
+    共役規約に合わせた実適用用周波数応答 `conj(q[k])` を IFFT して時間 FIR を得る。
+    `fir_taps` が FFT bin 数より短い場合は、IFFT で得たインパルス応答の先頭
+    `fir_taps` sample を因果 FIR として採用し、切り捨て後の周波数応答を診断する。
 
     入力は `[n_bin, n_ch]` の固定整相重みと MVDR 重みであり、出力は
     `[n_ch, fir_taps]` の補正 FIR 係数である。
@@ -595,11 +896,12 @@ class DifferenceCorrectionFIRDesigner:
 
         Args:
             fir_taps: 補正 FIR の tap 数。単位は sample。
-            frequencies_hz: 設計周波数。shape は `[n_bin]`、単位は Hz。
+            frequencies_hz: 全 DFT bin の設計周波数。shape は `[n_bin]`、単位は Hz。
+                `np.fft.fftfreq(n_bin, d=1/fs_hz)` と同じ signed bin 順序である。
             fs_hz: サンプリング周波数。単位は Hz。
 
         Raises:
-            ValueError: `fir_taps`、`fs_hz`、または周波数軸が不正な場合。
+            ValueError: `fir_taps`、`fs_hz`、周波数軸、または tap 数と bin 数の関係が不正な場合。
         """
         require_positive_int("fir_taps", int(fir_taps))
         require_positive_float("fs_hz", float(fs_hz))
@@ -609,19 +911,23 @@ class DifferenceCorrectionFIRDesigner:
             bool(np.all(np.isfinite(frequencies))),
             "frequencies_hz must contain only finite values.",
         )
+        expected_frequencies = _make_full_fft_bin_frequencies(
+            fft_size=int(frequencies.size),
+            fs_hz=float(fs_hz),
+        )
         require(
-            bool(np.all((0.0 <= frequencies) & (frequencies < float(fs_hz)))),
-            "frequencies_hz must be in [0, fs_hz).",
+            bool(np.allclose(frequencies, expected_frequencies, rtol=0.0, atol=1.0e-9)),
+            "frequencies_hz must be np.fft.fftfreq(n_bin, d=1/fs_hz) in DFT bin order.",
+        )
+        require(
+            int(fir_taps) <= int(frequencies.size),
+            "fir_taps must not exceed the number of full FFT bins.",
         )
 
         self.fir_taps = int(fir_taps)
         self.frequencies_hz = frequencies
         self.fs_hz = float(fs_hz)
-        self._frequency_response_matrix = _make_fir_frequency_response_matrix(
-            frequencies_hz=frequencies,
-            fir_taps=self.fir_taps,
-            fs_hz=self.fs_hz,
-        )
+        self.fft_size = int(frequencies.size)
 
     def compute(
         self,
@@ -643,9 +949,10 @@ class DifferenceCorrectionFIRDesigner:
             ValueError: 入力 shape が一致しない場合。
 
         境界条件:
-            設計周波数数が FIR tap 数より少ない場合は underdetermined になる。
-            その場合も最小ノルム least-squares 解を使い、設計周波数上の
-            `q_reconstruction_error` を必ず評価して採否を判断する。
+            `frequencies_hz` は全 DFT bin なので、`fir_taps == n_bin` では
+            IFFT/FFT の丸め誤差だけが残る。`fir_taps < n_bin` では IFFT 後の
+            インパルス応答を因果側から切り出すため、切り捨て誤差を
+            `q_reconstruction_error` として必ず評価して採否を判断する。
         """
         fixed_weight = np.asarray(w0, dtype=np.complex128)
         mvdr_weight = np.asarray(w_mvdr, dtype=np.complex128)
@@ -670,22 +977,25 @@ class DifferenceCorrectionFIRDesigner:
         # FFT 上の積和が q[k]^H X[k] になる。
         q_apply_freq = np.conj(q_weight_freq)
 
-        # V[k,l] = exp(-j 2π f_k l / fs)。shape は [n_bin, fir_taps]。
-        # 任意の物理周波数 f_k に対し、V @ h が時間領域 FIR の周波数応答になる。
-        frequency_response_matrix = self._frequency_response_matrix
+        # q_apply_freq shape: [n_bin, n_ch]。axis=0 は DFT bin 順序である。
+        # 全 bin 応答を IFFT することで、DFT の定義どおり
+        # q_apply_freq[k,ch] = FFT{h[ch,:]}[k] を満たす時間応答を得る。
+        q_apply_full_impulse_by_bin_channel = np.fft.ifft(q_apply_freq, axis=0)
 
-        # q_apply_taps.T shape: [fir_taps, n_ch]。
-        # 各チャネルについて V h ≈ conj(q) を解き、任意周波数上の補正応答を合わせる。
-        q_apply_taps_by_tap, _, _, _ = np.linalg.lstsq(
-            frequency_response_matrix,
-            q_apply_freq,
-            rcond=None,
+        # q_apply_taps shape: [n_ch, fir_taps]。
+        # IFFT 結果の axis=0 は時間 sample なので、因果 FIR として先頭 tap を採用し、
+        # 時間領域適用部の `[n_ch, fir_taps]` 規約へ transpose する。
+        q_apply_taps = np.asarray(
+            q_apply_full_impulse_by_bin_channel[: self.fir_taps, :].T,
+            dtype=np.complex128,
         )
-        q_apply_taps = np.asarray(q_apply_taps_by_tap.T, dtype=np.complex128)
 
-        # 設計に使った同じ物理周波数で FIR 応答を再評価し、近似誤差を診断する。
+        # fir_taps < n_bin の場合は、切り出した tap をゼロ詰めして FFT し、
+        # 実際に時間領域 FIR として使う応答を全 bin で再評価する。
+        q_apply_taps_padded = np.zeros((self.fft_size, fixed_weight.shape[1]), dtype=np.complex128)
+        q_apply_taps_padded[: self.fir_taps, :] = q_apply_taps.T
         reconstructed_apply_freq = np.asarray(
-            frequency_response_matrix @ q_apply_taps_by_tap,
+            np.fft.fft(q_apply_taps_padded, axis=0),
             dtype=np.complex128,
         )
         reconstructed_q_weight_freq = np.conj(reconstructed_apply_freq)
@@ -707,29 +1017,32 @@ class DifferenceCorrectionFIRDesigner:
         )
 
 
-def _make_fir_frequency_response_matrix(
+def _make_full_fft_bin_frequencies(
     *,
-    frequencies_hz: NDArray[np.float64],
-    fir_taps: int,
+    fft_size: int,
     fs_hz: float,
-) -> NDArray[np.complex128]:
-    """任意周波数における FIR 周波数応答行列を返す。
+) -> NDArray[np.float64]:
+    """全 DFT bin の signed 周波数軸を返す。
 
     Args:
-        frequencies_hz: 設計周波数。shape は `[n_bin]`、単位は Hz。
-        fir_taps: FIR tap 数。単位は sample。
+        fft_size: FFT bin 数。単位は sample。
         fs_hz: サンプリング周波数。単位は Hz。
 
     Returns:
-        応答行列。shape は `[n_bin, fir_taps]`。
-        axis=0 は設計周波数、axis=1 は FIR tap index である。
+        `np.fft.fftfreq(fft_size, d=1/fs_hz)` と同じ周波数軸。
+        shape は `[fft_size]`、単位は Hz。axis=0 は DFT bin 順序である。
+
+    Raises:
+        ValueError: `fft_size` または `fs_hz` が正でない場合。
+
+    境界条件:
+        差分補正 FIR は全 bin 応答を IFFT して設計するため、正周波数だけの
+        rFFT 軸では負周波数側の応答が未定義になる。ここでは FFT/IFFT と同じ
+        signed bin 順序を唯一の正式な周波数軸として扱う。
     """
-    tap_index = np.arange(int(fir_taps), dtype=np.float64)
-    angular_frequency_rad = 2.0 * np.pi * frequencies_hz / float(fs_hz)
-    # H(f_k) = Σ_l h[l] exp(-j 2π f_k l / fs)。
-    # np.fft.ifft は DFT bin 前提になるため、任意 Hz 配列ではこの Vandermonde 行列を使う。
-    response_matrix = np.exp(-1j * angular_frequency_rad[:, np.newaxis] * tap_index[np.newaxis, :])
-    return np.asarray(response_matrix, dtype=np.complex128)
+    require_positive_int("fft_size", int(fft_size))
+    require_positive_float("fs_hz", float(fs_hz))
+    return np.asarray(np.fft.fftfreq(int(fft_size), d=1.0 / float(fs_hz)), dtype=np.float64)
 
 
 class DifferenceCorrectionFIR:
@@ -841,6 +1154,486 @@ class DifferenceCorrectionFIR:
         return output
 
 
+@dataclass(frozen=True)
+class StreamingBlock:
+    """ストリーミング入力 block と同期メタデータを保持する。
+
+    このクラスは、主経路と diff-MVDR 補正枝へ同じ入力サンプル範囲を渡すための
+    immutable な block 表現である。
+
+    入力は多チャネル時間波形 `[n_ch, length]` と block 番号・開始 sample であり、
+    出力は各経路の `ProcessedBlock` に引き継がれるメタデータである。
+
+    FIR 計算、係数更新、経路合成は責務に含めない。
+    信号処理上は、複数経路の sample index を一致させる同期境界に位置づく。
+    """
+
+    array_id: str
+    block_index: int
+    start_sample: int
+    length: int
+    fs_hz: float
+    data: NDArray[Any]
+    valid_mask: NDArray[np.bool_]
+
+
+@dataclass(frozen=True)
+class ProcessedBlock:
+    """ストリーミング経路の出力 block と同期メタデータを保持する。
+
+    このクラスは、主経路または補正枝が出力した `[n_beam, length]` 波形と、
+    合成前に照合すべき block metadata をまとめる。
+
+    入力は各経路の FIR 出力であり、最終加算は `AlignedPathCombiner` が行う。
+    FIR 履歴、係数ラッチ、共分散更新は責務に含めない。
+    信号処理上は、`y_main[n]` と `y_diff[n]` の sample index 一致を検査する単位である。
+    """
+
+    array_id: str
+    path_id: str
+    block_index: int
+    start_sample: int
+    length: int
+    fs_hz: float
+    latency_tag: str
+    coeff_version: int
+    data: NDArray[np.complex128]
+    valid_mask: NDArray[np.bool_]
+
+
+class CausalBlockFIR:
+    """入力履歴付き direct FIR を block 入出力で実行する。
+
+    このクラスは、複数系列の因果 FIR
+    `y_s[n] = sum_{p=0}^{M-1} h_s[p] x_s[n-p]` を同一 block 境界で処理する。
+
+    入力は系列別 block `[n_series, length]` と系列別 FIR `[n_series, tap_length]`、
+    出力は入力 block と同じ sample index を持つ `[n_series, length]` である。
+
+    ビーム合成、diff-MVDR 重み設計、係数更新スケジューリングは責務に含めない。
+    信号処理上は、主経路と補正枝が共有する FIR 切り出し規約そのものである。
+    """
+
+    def __init__(self, *, n_series: int, tap_length: int) -> None:
+        """因果 block FIR を構成する。
+
+        Args:
+            n_series: 独立に FIR を適用する系列数。単位は count。
+            tap_length: FIR tap 数。単位は sample。
+
+        Raises:
+            ValueError: `n_series` または `tap_length` が正でない場合。
+
+        境界条件:
+            初回 block では過去入力がないため、履歴を 0 で初期化する。
+            これにより、出力長を削らずに初期過渡を明示的なゼロ過去入力として扱う。
+        """
+        require_positive_int("n_series", int(n_series))
+        require_positive_int("tap_length", int(tap_length))
+        self.n_series = int(n_series)
+        self.tap_length = int(tap_length)
+        self.history_length = self.tap_length - 1
+        self._history = np.zeros((self.n_series, self.history_length), dtype=np.complex128)
+
+    def reset(self) -> None:
+        """履歴をゼロに戻す。
+
+        Returns:
+            なし。
+
+        境界条件:
+            入力ストリームを切り替える場合、前ストリームの末尾が次ストリームの先頭へ
+            混入しないよう、履歴を明示的に破棄する。
+        """
+        self._history = np.zeros((self.n_series, self.history_length), dtype=np.complex128)
+
+    def process(self, x_block: NDArray[Any], taps: NDArray[Any]) -> NDArray[np.complex128]:
+        """1 block の因果 FIR 出力を返す。
+
+        Args:
+            x_block: 入力系列。shape は `[n_series, length]`。
+                axis=0 は独立系列、axis=1 は時間 sample である。
+            taps: FIR 係数。shape は `[n_series, tap_length]`。
+                axis=0 は系列、axis=1 は tap index `p` である。
+
+        Returns:
+            FIR 出力。shape は `[n_series, length]`。
+            出力 `[:, i]` は入力 block の `[:, i]` と同じ global sample index に対応する。
+
+        Raises:
+            ValueError: 入力 shape が不正な場合、または係数に非有限値が含まれる場合。
+        """
+        signal = np.asarray(x_block, dtype=np.complex128)
+        coefficient = np.asarray(taps, dtype=np.complex128)
+        require(signal.ndim == 2, "x_block must have shape (n_series, length).")
+        require(signal.shape[0] == self.n_series, "x_block and FIR must agree on n_series.")
+        require(
+            coefficient.shape == (self.n_series, self.tap_length),
+            "taps must have shape (n_series, tap_length).",
+        )
+        require(bool(np.all(np.isfinite(coefficient))), "taps must contain only finite values.")
+
+        block_length = int(signal.shape[1])
+        extended = np.concatenate((self._history, signal), axis=1)
+        output = np.empty((self.n_series, block_length), dtype=np.complex128)
+        for series_index in range(self.n_series):
+            # np.convolve の full 出力 index `history_length + i` が、
+            # 因果式 y[n0+i] = Σ_p h[p] x[n0+i-p] に対応する。
+            convolved = np.convolve(extended[series_index], coefficient[series_index], mode="full")
+            output[series_index] = convolved[
+                self.history_length : self.history_length + block_length
+            ]
+
+        if self.history_length > 0:
+            self._history = extended[:, -self.history_length :].copy()
+        else:
+            self._history = np.zeros((self.n_series, 0), dtype=np.complex128)
+        return output
+
+
+class FractionalDelayMainPath:
+    """整数遅延と小数遅延 FIR による主経路を StreamingBlock 単位で処理する。
+
+    このクラスは、`DelayTable` の整数遅延と選択済み小数遅延 FIR を合成した
+    チャネル別因果 FIR を作り、固定整相の主経路出力 `[n_beam, length]` を返す。
+
+    入力は `StreamingBlock`、出力は path_id `main_fractional_delay` の `ProcessedBlock` である。
+
+    diff-MVDR 補正、共分散推定、係数更新判断は責務に含めない。
+    信号処理上は、`y_main[n]` を定義する固定遅延 + 小数 FIR 経路である。
+    """
+
+    def __init__(
+        self,
+        *,
+        delay_table: DelayTable,
+        fractional_filter_bank: FractionalDelayFilterBank,
+        fs_hz: float,
+        array_id: str,
+        latency_tag: str,
+        coeff_version: int = 0,
+        average_channels: bool = True,
+    ) -> None:
+        """主経路 processor を構成する。
+
+        Args:
+            delay_table: 整数遅延と小数遅延フィルタ index。shape は `[n_ch, n_beam]`。
+            fractional_filter_bank: 事前計算済み小数遅延 FIR バンク。
+            fs_hz: サンプリング周波数。単位は Hz。
+            array_id: アレイ識別子。
+            latency_tag: 主経路と補正枝で一致させる遅延基準タグ。
+            coeff_version: block 境界で latch された係数 version。
+            average_channels: `True` の場合は channel 平均、`False` の場合は channel 和。
+
+        Raises:
+            ValueError: delay table が小数遅延 index を持たない、または遅延が不正な場合。
+        """
+        if delay_table.frac_filter_index is None:
+            raise ValueError("delay_table must include frac_filter_index.")
+        require_positive_float("fs_hz", float(fs_hz))
+        delay_int = np.asarray(delay_table.delay_int, dtype=np.int64)
+        frac_index = np.asarray(delay_table.frac_filter_index, dtype=np.int64)
+        require(delay_int.ndim == 2, "delay_int must have shape (n_ch, n_beam).")
+        require(frac_index.shape == delay_int.shape, "frac_filter_index must match delay_int.")
+        require(bool(np.all(delay_int >= 0)), "delay_int must be non-negative for causal FIR.")
+
+        self.delay_table = delay_table
+        self.fs_hz = float(fs_hz)
+        self.array_id = str(array_id)
+        self.latency_tag = str(latency_tag)
+        self.coeff_version = int(coeff_version)
+        self.average_channels = bool(average_channels)
+        self.n_ch = int(delay_table.n_ch)
+        self.n_beam = int(delay_table.n_beam)
+        self._flat_taps = self._build_flat_taps(
+            delay_int=delay_int,
+            frac_filter_index=frac_index,
+            fractional_filter_bank=fractional_filter_bank,
+        )
+        self._fir = CausalBlockFIR(
+            n_series=self.n_beam * self.n_ch,
+            tap_length=int(self._flat_taps.shape[1]),
+        )
+
+    def _build_flat_taps(
+        self,
+        *,
+        delay_int: NDArray[np.int64],
+        frac_filter_index: NDArray[np.int64],
+        fractional_filter_bank: FractionalDelayFilterBank,
+    ) -> NDArray[np.complex128]:
+        filter_taps = np.asarray(fractional_filter_bank.frac_filters, dtype=np.float64)
+        require(
+            bool(np.all((0 <= frac_filter_index) & (frac_filter_index < filter_taps.shape[0]))),
+            "frac_filter_index contains an out-of-range index.",
+        )
+        tap_length = int(np.max(delay_int)) + int(fractional_filter_bank.n_tap)
+        flat_taps = np.zeros((self.n_beam * self.n_ch, tap_length), dtype=np.complex128)
+        for beam_index in range(self.n_beam):
+            for ch_index in range(self.n_ch):
+                row_index = beam_index * self.n_ch + ch_index
+                delay_sample = int(delay_int[ch_index, beam_index])
+                frac_index = int(frac_filter_index[ch_index, beam_index])
+                # combined FIR は h_combined[p] = frac[p - delay_int] であり、
+                # 整数遅延後に小数遅延 FIR を掛ける直列処理と同じ因果応答になる。
+                flat_taps[
+                    row_index,
+                    delay_sample : delay_sample + fractional_filter_bank.n_tap,
+                ] = filter_taps[frac_index]
+        return flat_taps
+
+    def reset(self) -> None:
+        """主経路 FIR 履歴をゼロに戻す。"""
+        self._fir.reset()
+
+    def process(self, block: StreamingBlock) -> ProcessedBlock:
+        """1 block の主経路出力を返す。
+
+        Args:
+            block: 入力 block。`data` shape は `[n_ch, length]`。
+
+        Returns:
+            主経路出力。`data` shape は `[n_beam, length]`。
+
+        Raises:
+            ValueError: block metadata または shape が不正な場合。
+        """
+        signal = _validate_streaming_block(block, expected_array_id=self.array_id, n_ch=self.n_ch)
+        # flat_input shape: [n_beam*n_ch, length]。
+        # beam ごとに同じ channel 入力を使い、combined FIR だけを beam/channel ごとに変える。
+        flat_input = np.broadcast_to(
+            signal[np.newaxis, :, :],
+            (self.n_beam, self.n_ch, block.length),
+        ).reshape(self.n_beam * self.n_ch, block.length)
+        flat_output = self._fir.process(flat_input, self._flat_taps)
+        steered = flat_output.reshape(self.n_beam, self.n_ch, block.length)
+        if self.average_channels:
+            data = np.mean(steered, axis=1, dtype=np.complex128)
+        else:
+            data = np.sum(steered, axis=1, dtype=np.complex128)
+        return ProcessedBlock(
+            array_id=block.array_id,
+            path_id="main_fractional_delay",
+            block_index=block.block_index,
+            start_sample=block.start_sample,
+            length=block.length,
+            fs_hz=block.fs_hz,
+            latency_tag=self.latency_tag,
+            coeff_version=self.coeff_version,
+            data=np.asarray(data, dtype=np.complex128),
+            valid_mask=np.asarray(block.valid_mask.copy(), dtype=np.bool_),
+        )
+
+
+class DiffMVDRCorrectionPath:
+    """diff-MVDR 補正枝 FIR を StreamingBlock 単位で処理する。
+
+    このクラスは、beam/channel 別の補正 FIR 係数を入力 channel に適用し、
+    channel 和で `[n_beam, length]` の補正枝出力を返す。
+
+    入力は `StreamingBlock` と事前に latch 済みの補正 FIR、出力は path_id
+    `diff_mvdr_correction` の `ProcessedBlock` である。
+
+    MVDR 重み設計、主経路 FIR、最終加算は責務に含めない。
+    信号処理上は、`y_out[n] = y_main[n] + y_diff_mvdr[n]` の `y_diff_mvdr[n]` を生成する。
+    """
+
+    def __init__(
+        self,
+        *,
+        correction_taps: NDArray[Any],
+        fs_hz: float,
+        array_id: str,
+        latency_tag: str,
+        coeff_version: int = 0,
+    ) -> None:
+        """補正枝 processor を構成する。
+
+        Args:
+            correction_taps: 補正 FIR。shape は `[n_beam, n_ch, n_tap]`。
+                `y_out = y_main + y_diff_mvdr` の符号で渡す。
+            fs_hz: サンプリング周波数。単位は Hz。
+            array_id: アレイ識別子。
+            latency_tag: 主経路と一致させる遅延基準タグ。
+            coeff_version: block 境界で latch された係数 version。
+
+        Raises:
+            ValueError: 係数 shape または値が不正な場合。
+        """
+        require_positive_float("fs_hz", float(fs_hz))
+        taps = np.asarray(correction_taps, dtype=np.complex128)
+        require(taps.ndim == 3, "correction_taps must have shape (n_beam, n_ch, n_tap).")
+        require(taps.shape[0] > 0 and taps.shape[1] > 0 and taps.shape[2] > 0, "invalid taps.")
+        require(bool(np.all(np.isfinite(taps))), "correction_taps must contain only finite values.")
+        self.n_beam = int(taps.shape[0])
+        self.n_ch = int(taps.shape[1])
+        self.n_tap = int(taps.shape[2])
+        self.fs_hz = float(fs_hz)
+        self.array_id = str(array_id)
+        self.latency_tag = str(latency_tag)
+        self.coeff_version = int(coeff_version)
+        self._flat_taps = taps.reshape(self.n_beam * self.n_ch, self.n_tap)
+        self._fir = CausalBlockFIR(n_series=self.n_beam * self.n_ch, tap_length=self.n_tap)
+
+    def reset(self) -> None:
+        """補正枝 FIR 履歴をゼロに戻す。"""
+        self._fir.reset()
+
+    def process(self, block: StreamingBlock) -> ProcessedBlock:
+        """1 block の補正枝出力を返す。
+
+        Args:
+            block: 入力 block。`data` shape は `[n_ch, length]`。
+
+        Returns:
+            補正枝出力。`data` shape は `[n_beam, length]`。
+
+        Raises:
+            ValueError: block metadata または shape が不正な場合。
+        """
+        signal = _validate_streaming_block(block, expected_array_id=self.array_id, n_ch=self.n_ch)
+        flat_input = np.broadcast_to(
+            signal[np.newaxis, :, :],
+            (self.n_beam, self.n_ch, block.length),
+        ).reshape(self.n_beam * self.n_ch, block.length)
+        flat_output = self._fir.process(flat_input, self._flat_taps)
+        data = np.sum(flat_output.reshape(self.n_beam, self.n_ch, block.length), axis=1)
+        return ProcessedBlock(
+            array_id=block.array_id,
+            path_id="diff_mvdr_correction",
+            block_index=block.block_index,
+            start_sample=block.start_sample,
+            length=block.length,
+            fs_hz=block.fs_hz,
+            latency_tag=self.latency_tag,
+            coeff_version=self.coeff_version,
+            data=np.asarray(data, dtype=np.complex128),
+            valid_mask=np.asarray(block.valid_mask.copy(), dtype=np.bool_),
+        )
+
+
+class AlignedPathCombiner:
+    """主経路と補正枝の block metadata を検証して加算する。
+
+    このクラスは、`start_sample`、`length`、`latency_tag`、`coeff_version` などが
+    一致する場合だけ `y_out[n] = y_main[n] + y_diff[n]` を実行する。
+
+    入力は2つの `ProcessedBlock`、出力は path_id `main_plus_diff_mvdr` の `ProcessedBlock` である。
+
+    FIR 処理や係数更新は責務に含めない。
+    信号処理上は、暗黙の trim / zero padding / sample shift を防ぐ同期検査点である。
+    """
+
+    def add(self, main: ProcessedBlock, diff: ProcessedBlock) -> ProcessedBlock:
+        """主経路と補正枝を metadata 検証後に加算する。
+
+        Args:
+            main: 主経路出力。`data` shape は `[n_beam, length]`。
+            diff: 補正枝出力。`data` shape は `[n_beam, length]`。
+
+        Returns:
+            合成後出力。`data` shape は `[n_beam, length]`。
+
+        Raises:
+            ValueError: 必須 metadata または data shape が一致しない場合。
+        """
+        _require_aligned_blocks(main, diff)
+        return ProcessedBlock(
+            array_id=main.array_id,
+            path_id="main_plus_diff_mvdr",
+            block_index=main.block_index,
+            start_sample=main.start_sample,
+            length=main.length,
+            fs_hz=main.fs_hz,
+            latency_tag=main.latency_tag,
+            coeff_version=main.coeff_version,
+            data=np.asarray(main.data + diff.data, dtype=np.complex128),
+            valid_mask=np.asarray(main.valid_mask & diff.valid_mask, dtype=np.bool_),
+        )
+
+
+class FixedDelayDiffMVDRStreamingProcessor:
+    """主経路と diff-MVDR 補正枝を同一 StreamingBlock から処理する。
+
+    このクラスは、`FractionalDelayMainPath` と `DiffMVDRCorrectionPath` を同じ入力 block に
+    適用し、`AlignedPathCombiner` で同期検証後に最終出力を返す。
+
+    入力は `StreamingBlock`、出力は最終 beam 出力 `[n_beam, length]` を持つ
+    `ProcessedBlock` である。
+
+    共分散更新、係数生成、複数アレイ barrier は責務に含めない。
+    信号処理上は、単一アレイ内の主経路・補正枝同期済み streaming 出力を定義する。
+    """
+
+    def __init__(
+        self,
+        *,
+        main_path: FractionalDelayMainPath,
+        correction_path: DiffMVDRCorrectionPath,
+        combiner: AlignedPathCombiner | None = None,
+    ) -> None:
+        """streaming processor を構成する。
+
+        Args:
+            main_path: 小数遅延 FIR 主経路。
+            correction_path: diff-MVDR FIR 補正枝。
+            combiner: metadata 検証付き合成器。`None` の場合は標準合成器を使う。
+        """
+        self.main_path = main_path
+        self.correction_path = correction_path
+        self.combiner = combiner if combiner is not None else AlignedPathCombiner()
+
+    def reset(self) -> None:
+        """主経路と補正枝の FIR 履歴をゼロに戻す。"""
+        self.main_path.reset()
+        self.correction_path.reset()
+
+    def process(self, block: StreamingBlock) -> ProcessedBlock:
+        """1 block の最終出力を返す。
+
+        Args:
+            block: 主経路と補正枝へ共通に入力する block。
+
+        Returns:
+            合成後出力。`data` shape は `[n_beam, length]`。
+        """
+        main = self.main_path.process(block)
+        diff = self.correction_path.process(block)
+        return self.combiner.add(main, diff)
+
+
+def _validate_streaming_block(
+    block: StreamingBlock,
+    *,
+    expected_array_id: str,
+    n_ch: int,
+) -> NDArray[np.complex128]:
+    """StreamingBlock の shape と metadata を検証し、複素入力配列を返す。"""
+    require(block.array_id == expected_array_id, "block array_id does not match processor.")
+    require_positive_int("block.length", int(block.length))
+    require_positive_float("block.fs_hz", float(block.fs_hz))
+    signal = np.asarray(block.data, dtype=np.complex128)
+    valid_mask = np.asarray(block.valid_mask, dtype=np.bool_)
+    require(signal.shape == (int(n_ch), int(block.length)), "block.data shape is invalid.")
+    require(valid_mask.shape == (int(block.length),), "block.valid_mask shape is invalid.")
+    require(block.start_sample >= 0, "block.start_sample must be non-negative.")
+    require(block.block_index >= 0, "block.block_index must be non-negative.")
+    return signal
+
+
+def _require_aligned_blocks(first: ProcessedBlock, second: ProcessedBlock) -> None:
+    """2つの ProcessedBlock が加算可能な同期 metadata を持つことを検証する。"""
+    require(first.array_id == second.array_id, "array_id mismatch.")
+    require(first.block_index == second.block_index, "block_index mismatch.")
+    require(first.start_sample == second.start_sample, "start_sample mismatch.")
+    require(first.length == second.length, "length mismatch.")
+    require(abs(float(first.fs_hz) - float(second.fs_hz)) <= 1.0e-12, "fs_hz mismatch.")
+    require(first.latency_tag == second.latency_tag, "latency_tag mismatch.")
+    require(first.coeff_version == second.coeff_version, "coeff_version mismatch.")
+    require(first.data.shape == second.data.shape, "data shape mismatch.")
+    require(first.valid_mask.shape == second.valid_mask.shape, "valid_mask shape mismatch.")
+
+
 def _weight_response(
     weights: NDArray[np.complex128],
     steering: NDArray[np.complex128],
@@ -852,6 +1645,16 @@ def _weight_response(
 
 
 __all__ = [
+    "AlignedPathCombiner",
+    "CausalBlockFIR",
+    "extract_delay_centered_snapshots",
+    "DelayAlignedBeamCovarianceUpdateResult",
+    "DelayAlignedBeamCovarianceAccumulator",
+    "DiffMVDRCorrectionPath",
+    "FixedDelayDiffMVDRStreamingProcessor",
+    "FractionalDelayMainPath",
+    "ProcessedBlock",
+    "StreamingBlock",
     "DifferenceCorrectionDesignResult",
     "DifferenceCorrectionDiagnostics",
     "DifferenceCorrectionFIR",

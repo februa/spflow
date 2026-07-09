@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from spflow.beamforming import (
     STANDARD_FRACTIONAL_DELAY_PATTERN_COUNT,
     STANDARD_FRACTIONAL_DELAY_TAP_COUNT,
+    DelayAlignedBeamCovarianceAccumulator,
     DelayTable,
     DifferenceCorrectionFIR,
     DifferenceCorrectionFIRDesigner,
@@ -16,6 +18,7 @@ from spflow.beamforming import (
     design_distortionless_fixed_weights,
     design_fixed_delay_fractional_weights_from_delay_table,
     design_standard_fractional_delay_filter_bank,
+    extract_delay_centered_snapshots,
 )
 
 
@@ -30,6 +33,94 @@ def _unit_steering_table(n_bin: int, n_ch: int) -> np.ndarray:
         n_bin
     )
     return np.exp(1j * phase).astype(np.complex128)
+
+
+def test_extract_delay_centered_snapshots_uses_delay_as_center_offset() -> None:
+    """遅延表を中心 sample ずれとして使い、範囲外を 0 埋めすることを確認する。
+
+    16 sample frame の中心を 8、snapshot 長を 4 に縮小し、128 sample 時の
+    `[center-64, center+64)` と同じ偶数長中心規約を検査する。
+    """
+    signal = np.vstack(
+        [
+            np.arange(16, dtype=np.float64),
+            100.0 + np.arange(16, dtype=np.float64),
+        ]
+    )
+    delay_table = np.array(
+        [
+            [0, 2, -20],
+            [-3, 20, 0],
+        ],
+        dtype=np.int64,
+    )
+
+    snapshots = extract_delay_centered_snapshots(
+        signal,
+        delay_table,
+        snapshot_length=4,
+        center_sample=8,
+    )
+
+    assert snapshots.shape == (3, 2, 4)
+    np.testing.assert_allclose(snapshots[0, 0], np.array([6.0, 7.0, 8.0, 9.0]))
+    np.testing.assert_allclose(snapshots[0, 1], np.array([103.0, 104.0, 105.0, 106.0]))
+    np.testing.assert_allclose(snapshots[1, 0], np.array([8.0, 9.0, 10.0, 11.0]))
+    np.testing.assert_allclose(snapshots[1, 1], np.zeros(4, dtype=np.float64))
+    np.testing.assert_allclose(snapshots[2, 0], np.zeros(4, dtype=np.float64))
+    np.testing.assert_allclose(snapshots[2, 1], np.array([106.0, 107.0, 108.0, 109.0]))
+
+
+def test_delay_aligned_beam_covariance_accumulator_sums_beam_covariance_for_mvdr() -> None:
+    """beam 別に積分した共分散を MVDR 用に `[n_ch, n_ch, 65]` へ合算する。
+
+    2 beam が同じ遅延表を見る条件にし、合算共分散が単一 beam 共分散の 2 倍に
+    なることを確認する。これは変更前の連続短 FFT 方式と比較するための shape 契約である。
+    """
+    signal = np.vstack(
+        [
+            np.arange(16, dtype=np.float64),
+            10.0 + np.arange(16, dtype=np.float64),
+        ]
+    )
+    delay_table = np.zeros((2, 2), dtype=np.int64)
+    accumulator = DelayAlignedBeamCovarianceAccumulator(
+        delay_table_sample=delay_table,
+        fs_hz=16.0,
+        snapshot_length=4,
+        frame_size=16,
+        center_sample=8,
+        covariance_time_constant_sec=1.0e-12,
+        frames_per_weight_update=1,
+    )
+
+    result = accumulator.process(signal)
+
+    snapshots = extract_delay_centered_snapshots(
+        signal,
+        delay_table[:, :1],
+        snapshot_length=4,
+        center_sample=8,
+    )
+    x_ch_bin = np.fft.rfft(snapshots[0], n=4, axis=1)
+    expected_one_beam = np.einsum("ck,dk->cdk", x_ch_bin, x_ch_bin.conj(), optimize=True)
+
+    assert result.beam_covariance.shape == (2, 2, 2, 3)
+    assert result.summed_covariance_ch_ch_bin.shape == (2, 2, 3)
+    assert result.covariance_for_mvdr.shape == (3, 2, 2)
+    assert result.update_ready is True
+    np.testing.assert_allclose(result.beam_covariance[0], expected_one_beam, atol=1.0e-12)
+    np.testing.assert_allclose(result.beam_covariance[1], expected_one_beam, atol=1.0e-12)
+    np.testing.assert_allclose(
+        result.summed_covariance_ch_ch_bin,
+        2.0 * expected_one_beam,
+        atol=1.0e-12,
+    )
+    np.testing.assert_allclose(
+        result.covariance_for_mvdr,
+        np.moveaxis(result.summed_covariance_ch_ch_bin, 2, 0),
+        atol=1.0e-12,
+    )
 
 
 def test_short_fft_covariance_accumulator_updates_blocks_and_ready_flag() -> None:
@@ -108,7 +199,7 @@ def test_loaded_mvdr_preserves_fixed_path_complex_target_response() -> None:
 
     diff_result = DifferenceCorrectionFIRDesigner(
         fir_taps=8,
-        frequencies_hz=np.arange(8, dtype=np.float64),
+        frequencies_hz=np.fft.fftfreq(8, d=1.0 / 8.0),
         fs_hz=8.0,
     ).compute(
         fixed_weight,
@@ -159,7 +250,7 @@ def test_difference_correction_designer_preserves_mvdr_weight_and_blocks_target(
 
     result = DifferenceCorrectionFIRDesigner(
         fir_taps=n_bin,
-        frequencies_hz=np.arange(n_bin, dtype=np.float64),
+        frequencies_hz=np.fft.fftfreq(n_bin, d=1.0 / float(n_bin)),
         fs_hz=float(n_bin),
     ).compute(
         fixed_weight,
@@ -192,48 +283,27 @@ def test_difference_correction_designer_preserves_mvdr_weight_and_blocks_target(
     )
 
 
-def test_difference_correction_designer_matches_arbitrary_physical_frequencies() -> None:
-    """任意 Hz 周波数で差分 FIR の物理周波数応答が一致することを確認する。
+def test_difference_correction_designer_rejects_partial_or_non_dft_frequency_axis() -> None:
+    """差分 FIR 設計器が全 DFT bin 以外の周波数軸を拒否することを確認する。
 
-    `np.fft.ifft` は DFT bin の周波数だけを前提にするため、768 Hz などの任意の
-    評価周波数を直接渡すと物理周波数がずれる。この条件では Vandermonde 行列
-    `exp(-j 2π f_k l / fs)` による設計でなければ `q` を再構成できない。
+    正式方式では `conj(q[k])` を全 DFT bin で定義して IFFT する。
+    source 周波数だけを渡すと負周波数側と非 source bin の応答が未定義になり、
+    時間領域 FIR としての設計式が成立しないため、ここで明示的に失敗させる。
     """
-    frequencies_hz = np.array([300.0, 900.0, 1700.0, 2600.0], dtype=np.float64)
-    fs_hz = 8000.0
-    fir_taps = 6
-    n_ch = 2
-    tap_index = np.arange(fir_taps, dtype=np.float64)
-    response_matrix = np.exp(
-        -1j * 2.0 * np.pi * frequencies_hz[:, np.newaxis] * tap_index[np.newaxis, :] / fs_hz
-    )
-    known_taps = np.array(
-        [
-            [0.25 + 0.10j, -0.05 + 0.03j, 0.02 - 0.01j, 0.01 + 0.00j, 0.0, 0.0],
-            [-0.10 + 0.05j, 0.04 - 0.02j, 0.00 + 0.01j, 0.02 + 0.02j, 0.0, 0.0],
-        ],
-        dtype=np.complex128,
-    )
-    q_apply = response_matrix @ known_taps.T
-    q_weight = np.conj(q_apply)
-    fixed_weight = np.zeros((frequencies_hz.size, n_ch), dtype=np.complex128)
-    mvdr_weight = fixed_weight - q_weight
-    steering = np.ones((frequencies_hz.size, n_ch), dtype=np.complex128)
+    fixed_weight = np.zeros((4, 2), dtype=np.complex128)
+    mvdr_weight = np.zeros((4, 2), dtype=np.complex128)
+    steering = np.ones((4, 2), dtype=np.complex128)
 
-    result = DifferenceCorrectionFIRDesigner(
-        fir_taps=fir_taps,
-        frequencies_hz=frequencies_hz,
-        fs_hz=fs_hz,
-    ).compute(
-        fixed_weight,
-        mvdr_weight,
-        steering,
-    )
-
-    np.testing.assert_allclose(result.reconstructed_q_weight_freq, q_weight, atol=1.0e-12)
-    np.testing.assert_allclose(
-        result.diagnostics.q_reconstruction_error, np.zeros_like(q_weight), atol=1.0e-12
-    )
+    with pytest.raises(ValueError, match="np.fft.fftfreq"):
+        DifferenceCorrectionFIRDesigner(
+            fir_taps=4,
+            frequencies_hz=np.array([300.0, 900.0, 1700.0, 2600.0], dtype=np.float64),
+            fs_hz=8000.0,
+        ).compute(
+            fixed_weight,
+            mvdr_weight,
+            steering,
+        )
 
 
 def test_difference_correction_fir_matches_full_processing_across_chunks() -> None:
