@@ -62,6 +62,16 @@
 - 失敗時の解釈: 表示正規化、BTR 方位軸、FRAZ 周波数軸、または複数音源時の代表 peak の解釈が誤っている。
 - 単位・基準: FRAZ は RMS レベルなら dB re input RMS または dB re 1 uPa RMS、スペクトル密度なら dB re uPa/sqrt(Hz) または dB re uPa/Hz@ch を明記する。BTR 相対表示は dB re frame max。
 
+### abf_like_non_source_suppression: ABF-like non-source sector 抑圧
+
+- 分類: Adaptive BF
+- 目的: 既知 source 方位を source mask として保持し、その guard 外 non-source sector の応答包絡線が下がるかを確認する。
+- metric: source_peak_delta_db, source_azimuth_error_deg, non_source_global_peak_delta_db, non_source_p95_level_delta_db, non_source_integrated_level_delta_db, source_to_non_source_margin_delta_db, false_peak_count, angular_robustness_min_reduction_db, weight_norm_or_wng, condition_number, realtime_factor
+- 推奨図: abf_like_non_source_envelope_overlay.png, source_mask_response_summary.png
+- 判定目安: 採否は exact marker null ではなく、source mask 外の global peak、p95、integrated level、source-to-non-source margin、false peak count で判定する。known source peak は維持する。
+- 失敗時の解釈: 点 null や target beam leakage だけを最適化し、non-source sector へ sidelobe を押し出している可能性が高い。source mask、guard 幅、train/test 方位ずれ、または sector 制約が不足している。
+- 単位・基準: source / non-source level は RMS dB20。絶対値は dB re input RMS、処理前後差は dB re before level として基準を明記する。WNG/weight_norm、condition_number、realtime_factor は無次元比。
+
 ### source_visibility_preservation: 全方位 scan での音源可視性維持
 
 - 分類: SLC/Scan
@@ -207,6 +217,12 @@
 - 説明: 同一方位に複数周波数成分が重なる条件で、周波数軸上の分離と target 成分維持を確認する。
 - 必須: 同一方位の周波数成分分離, メインローブ維持, FRAZ / BTR の表示整合性, 処理後時間波形の健全性
 - 推奨: SLC 共分散・係数の健全性, 入力レベルに対する出力レベル・SN 改善の妥当性
+
+### ABF_like_non_source_suppression: ABF-like non-source sector 抑圧
+
+- 説明: 既知 source 方位を source mask とし、guard 外 non-source sector の包絡線抑圧で固定整相、SLC、LCMV/GSC、STFT/Capon を比較する。
+- 必須: ABF-like non-source sector 抑圧, メインローブ維持, SLC 共分散・係数の健全性, CPU 実時間性
+- 推奨: FRAZ / BTR の表示整合性, 入力レベルに対する出力レベル・SN 改善の妥当性, 処理後時間波形の健全性
 
 ### time_domain_adaptive_mvdr_lcmv_gsc: 時間領域 MVDR / LCMV / GSC
 

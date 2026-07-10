@@ -4,3 +4,4 @@ __pycache__/
 pytest-cache-files-*/
 *.egg-info/
 artifacts/
+artifacts.zip

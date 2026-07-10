@@ -747,6 +747,8 @@ def _plot_slc_bl_overlay(
     境界条件:
         ここでの BL は出力 beam 方位ではなく、保護 target beam を固定した source 方位応答である。
         peak 方位は連続角ではなく、離散 look grid 上の最大値として表示する。
+        marker の数値は最近傍 grid 点で読む。真方位 exact response ではないため、
+        図上で local leakage を判断するときは summary JSON の marker 方位も併記する。
     """
     require_matplotlib()
     import matplotlib.pyplot as plt
@@ -760,6 +762,10 @@ def _plot_slc_bl_overlay(
 
     before_peak_index = int(np.argmax(before_levels))
     after_peak_index = int(np.argmax(after_levels))
+    marker_index = int(np.argmin(np.abs(azimuths - float(marker_azimuth_deg))))
+    marker_before_db20 = float(before_levels[marker_index])
+    marker_after_db20 = float(after_levels[marker_index])
+    marker_reduction_db = float(marker_before_db20 - marker_after_db20)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     fig, ax = plt.subplots(figsize=(10.0, 4.8))
@@ -773,6 +779,24 @@ def _plot_slc_bl_overlay(
     ax.set_title(title)
     ax.grid(True, alpha=0.3)
     ax.legend(loc="best")
+    # 図だけを見たときに「低減」か「悪化」かを誤読しないよう、
+    # marker 最近傍 grid 点の before/after と before-after 差を明示する。
+    annotation = (
+        f"marker grid: {azimuths[marker_index]:.2f} deg\n"
+        f"before: {marker_before_db20:.2f} dB re input RMS\n"
+        f"after: {marker_after_db20:.2f} dB re input RMS\n"
+        f"before-after: {marker_reduction_db:+.2f} dB"
+    )
+    ax.text(
+        0.02,
+        0.98,
+        annotation,
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=8.5,
+        bbox={"boxstyle": "round,pad=0.3", "facecolor": "white", "edgecolor": "0.7", "alpha": 0.9},
+    )
     fig.text(0.03, 0.01, caption, ha="left", va="bottom", fontsize=9)
     fig.tight_layout(rect=(0.03, 0.05, 1.0, 0.96))
     fig.savefig(output_path, dpi=160)
@@ -1311,8 +1335,8 @@ def run_operational_time_domain_slc_leakage_diagnostics(
         marker_label="Target source azimuth",
         title="Protected target-beam BL overlay at target frequency",
         caption=(
-            "SLC の保護 target beam を固定し、source 方位を走査した応答。"
-            "target 周波数で mainlobe 保護を見る。レベルは dB re input RMS。"
+            "target-centric time-domain SLC, L=1。最終有効 SLC 係数を固定した source-response。"
+            "streaming 成分別 RMS とは別評価。target 周波数で mainlobe 保護を見る。"
         ),
         before_label="fixed target beam",
         after_label="SLC target beam",
@@ -1327,8 +1351,8 @@ def run_operational_time_domain_slc_leakage_diagnostics(
         marker_label="Interferer source azimuth",
         title="Protected target-beam BL overlay at interferer frequency",
         caption=(
-            "SLC の保護 target beam を固定し、interferer 周波数の source 方位を走査した応答。"
-            "interferer 方位と target beam への漏れ込み低減を見る。レベルは dB re input RMS。"
+            "target-centric time-domain SLC, L=1。最終有効 SLC 係数を固定した source-response。"
+            "streaming 成分別 RMS とは別評価。interferer 周波数で marker / guard 外応答を見る。"
         ),
         before_label="fixed target beam",
         after_label="SLC target beam",

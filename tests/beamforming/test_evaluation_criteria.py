@@ -30,6 +30,7 @@ def test_evaluation_criteria_ids_are_unique() -> None:
     assert "frequency_component_separation" in criterion_ids
     assert "adaptive_constraint_response" in criterion_ids
     assert "source_visibility_preservation" in criterion_ids
+    assert "abf_like_non_source_suppression" in criterion_ids
 
 
     for criterion in criteria:
@@ -69,6 +70,7 @@ def test_evaluation_pattern_ids_are_unique() -> None:
     assert "slc_same_azimuth_multi_frequency" in pattern_ids
     assert "time_domain_adaptive_mvdr_lcmv_gsc" in pattern_ids
     assert "slc_scan_multi_source_display" in pattern_ids
+    assert "ABF_like_non_source_suppression" in pattern_ids
 
 
 def test_slc_scan_multi_source_display_does_not_require_interferer_cancellation() -> None:
@@ -173,6 +175,28 @@ def test_slc_same_azimuth_multi_frequency_requires_frequency_separation_checks()
     assert "slc_covariance_health" in recommended_ids
     assert "input_output_level_consistency" in recommended_ids
 
+
+
+def test_abf_like_non_source_suppression_requires_sector_metrics() -> None:
+    """ABF-like 評価では source mask 外の包絡線抑圧を採否中心にする。
+
+    SLC の exact marker null は補助指標へ落とし、known source を維持しながら
+    non-source sector の global / percentile / integrated level を下げるかを評価する。
+    """
+    required, recommended = get_evaluation_criteria_for_pattern("ABF_like_non_source_suppression")
+    required_ids = {criterion.criterion_id for criterion in required}
+    criteria = {
+        criterion.criterion_id: criterion
+        for criterion in list_beamforming_evaluation_criteria()
+    }
+    criterion = criteria["abf_like_non_source_suppression"]
+
+    assert "abf_like_non_source_suppression" in required_ids
+    assert "non_source_global_peak_delta_db" in criterion.required_metrics
+    assert "non_source_p95_level_delta_db" in criterion.required_metrics
+    assert "non_source_integrated_level_delta_db" in criterion.required_metrics
+    assert "exact marker" in criterion.pass_guideline
+    assert "fraz_btr_consistency" in {item.criterion_id for item in recommended}
 
 def test_time_domain_adaptive_pattern_requires_constraint_and_runtime_checks() -> None:
     """時間領域 MVDR / LCMV / GSC では制約応答と実時間性を必須評価にする。

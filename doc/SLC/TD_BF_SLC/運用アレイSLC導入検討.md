@@ -136,16 +136,16 @@ artifacts/beamforming/operational_time_domain_slc_diagnostics/10000Hz_151beam_me
 artifacts/beamforming/operational_time_domain_slc_diagnostics/10000Hz_151beam_memory3s_8192Hz_interferer/slc_component_spectrum_overlay.png
 ```
 
-成分別評価:
+成分別評価。これは block ごとの streaming SLC 係数を、実際の target-only / interferer-only 時系列へ適用した RMS である。
 
 ```text
-target_power_delta_db        = -0.0027 dB re before level
-interferer_reduction_db      = +23.0457 dB re before level
-mixed_power_delta_db         = -0.0041 dB re before level
-condition_number             = 2181.72
-weight_norm                  = 1.7136
-realtime_factor              = 0.259
-safety_fallback_required     = false
+target_power_delta_db                    = -0.0027 dB re before level
+streaming_interferer_reduction_db        = +23.0457 dB re before level
+mixed_power_delta_db                     = -0.0041 dB re before level
+condition_number                         = 2181.72
+weight_norm                              = 1.7136
+realtime_factor                          = 0.259
+safety_fallback_required                 = false
 ```
 
 BL 評価:
@@ -166,13 +166,15 @@ interferer frequency:
   first sidelobe peak delta               = +8.470 dB
 ```
 
+BL 図は、最後に有効だった SLC 係数を固定して source 方位を sweep した応答である。一方、`streaming_interferer_reduction_db` は block ごとの SLC 係数を実際の interferer-only 時系列に適用した RMS である。したがって、この 2 つは同じ量ではない。
+
 判定:
 
-- target beam 上の interferer 成分だけを見ると 23.0 dB 低下している。
-- target-only 低下は -0.0027 dB であり、local_leakage_canceller としての target 保護は成立している。
-- ただし SLC 後の protected-target BL は guard 外 peak と first sidelobe が悪化している。
-- このため、現設定は `local_leakage_canceller` としては採用候補、`BL_sidelobe_reducer` としては不採用とする。
-- ユーザ提示時の representative BL は、上記 overlay を使って、局所 leakage 低減と BL envelope 悪化を分けて説明する。
+- target beam 上の streaming interferer 成分 RMS は 23.0 dB 低下している。
+- target-only 低下は -0.0027 dB であり、成分別時系列では target 保護は成立している。
+- ただし representative BL 図では、60.44 deg marker が 10.149 dB 悪化し、guard 外 peak と first sidelobe も悪化している。
+- この図単体からは、interferer 方位の local leakage 低減や第一副極低減は確認できない。
+- 現設定は `local_leakage_canceller` としては保留、`BL_sidelobe_reducer` としては不採用とする。
 
 ---
 
@@ -186,8 +188,8 @@ role = source_preserving_scan:
   interferer 自体の低減は要求しないため、この用途では不採用とはしない。
 
 role = local_leakage_canceller:
-  time-domain L=1 target-centric SLC は、10000 Hz target beam に混入した 8192 Hz interferer 成分を低減している。
-  target 保護、成分別 leakage 低減、runtime の観点では採用候補とする。
+  time-domain L=1 target-centric SLC は、streaming 成分別 RMS では 8192 Hz interferer 成分を低減している。
+  ただし final fixed-weight BL の interferer marker は悪化しており、図示する local leakage 低減方式としては保留にする。
 
 role = BL_sidelobe_reducer:
   time-domain L=1 target-centric SLC は、guard 外 peak と first sidelobe が悪化するため不採用。
@@ -206,5 +208,88 @@ SLC の採否は role で決める。別信号として観測したい interfere
 2. `max_reference_beams=48` の narrowband scan SLC では全 beam が `LIMITED_REFERENCE` になるため、snapshot 数、block 長、reference 数の組み合わせを再評価する。
 3. target absent / training 区間を使い、desired target を含まない共分散推定で同一周波数条件を再評価する。
 4. `local_leakage_canceller` の safety gate は target-only 保護、interferer-only leakage 低減、mixed 出力の過大変化で判定する。BL 悪化は `BL_sidelobe_reducer` role の不合格理由として分けて記録する。
-5. `tap_len=3` の時間タップ付き SLC を、同じ 10000 Hz target / 8192 Hz interferer 条件で再評価する。
-6. 低域 `f < 200 Hz` の全 CH 使用条件では、別途 BL/FRAZ/BTR を生成し、長開口時の SLC reference 選定を確認する。
+5. streaming 成分別 RMS と final fixed-weight BL marker の符号が一致しない原因を、block-wise BL、exact 60 deg 応答、最終係数と時間平均係数の差で切り分ける。
+6. `tap_len=3` の時間タップ付き SLC を、同じ 10000 Hz target / 8192 Hz interferer 条件で再評価する。
+7. 低域 `f < 200 Hz` の全 CH 使用条件では、別途 BL/FRAZ/BTR を生成し、長開口時の SLC reference 選定を確認する。
+
+## 8. 2026-07-05 ABF-like non-source suppression への再定義
+
+目的を `local_leakage_canceller` から `ABF_like_non_source_suppression` へ切り替える。
+既知 source 方位は target / interferer とも source mask とし、source mask guard 外を non-source sector と定義する。
+SLC の exact marker reduction は補助指標に落とし、採否は non-source sector の包絡線抑圧で判定する。
+
+必須指標は次である。
+
+```text
+source_peak_delta_db
+source_azimuth_error_deg
+non_source_global_peak_delta_db
+non_source_p95_level_delta_db
+non_source_integrated_level_delta_db
+source_to_non_source_margin_delta_db
+false_peak_count
+angular_robustness_min_reduction_db over source/interferer +/-0.5 deg and +/-1.0 deg
+WNG または weight_norm
+condition_number
+realtime_factor
+```
+
+比較対象は次とする。
+
+```text
+fixed_fractional_delay
+beam_domain_slc_l1
+time_domain_lcmv
+time_domain_gsc
+stft_capon
+```
+
+train/test 分離は次で固定する。
+
+```text
+train source azimuth:
+  target     = 90.0 deg
+  interferer = nominal interferer azimuth
+
+test source azimuth:
+  target     = 90.0 deg
+  interferer = nominal interferer azimuth + offgrid_deg
+
+source mask:
+  test source 方位を中心に guard を取る。
+  known source peak は sidelobe / false peak として数えない。
+```
+
+sweep 条件は次である。
+
+```text
+target_frequency_hz     = 6144 / 8192 / 10000
+interferer_frequency_hz = 6144 / 8192 / 10000
+interferer_azimuth_deg  = 30 / 45 / 60 / 75 / 105 / 120 / 150
+offgrid_deg             = 0.0 / 0.25 / 0.5
+```
+
+判定規則は次とする。
+
+```text
+ABF_like_non_source_suppression pass:
+  source_peak_delta_db が許容内で、source_azimuth_error_deg が小さい。
+  non_source_global_peak_delta_db、non_source_p95_level_delta_db、
+  non_source_integrated_level_delta_db がすべて負、または許容範囲内。
+  source_to_non_source_margin_delta_db が非負。
+  false_peak_count が増えない。
+  angular_robustness_min_reduction_db が一点 null だけの改善になっていない。
+  condition_number / weight_norm / realtime_factor が運用可能範囲。
+
+fail:
+  known source を落とす、non-source sector global / p95 / integrated が悪化する、
+  false peak を増やす、または off-grid で抑圧が崩れる。
+
+hold:
+  一部条件だけ改善するが、train/test off-grid、周波数組み合わせ、runtime、
+  condition_number のいずれかで追加確認が必要。
+```
+
+この再定義により、従来の `raw_interferer_reduction_db` や exact 60 deg marker reduction は採否主指標ではなくなる。
+代表条件で exact 60.0 deg が大きく下がっても、60.44 deg grid や non-source sector 包絡線が悪化する方式は pass にしない。
+
