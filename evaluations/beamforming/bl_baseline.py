@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
@@ -19,6 +20,26 @@ from spflow.beamforming import build_source_sector_mask_from_azimuths, design_cb
 from spflow.beamforming.diagnostic_plotting import plot_bl_response
 
 
+def parse_args() -> argparse.Namespace:
+    """BL評価条件をcommand lineから取得する。
+
+    Returns:
+        `frequency_hz`、`sampling_frequency_hz`、`output_dir`を持つ引数。
+
+    境界条件:
+        toneはFFT binへ一致させる必要があり、`main()`で不一致を検出する。
+    """
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--frequency-hz", type=float, default=1500.0)
+    parser.add_argument("--sampling-frequency-hz", type=float, default=12000.0)
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("artifacts/beamforming/bl_metric_baseline"),
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
     """単一sourceのwaiting-beam BL、NPZ、現行特徴量JSONを生成する。
 
@@ -34,18 +55,24 @@ def main() -> None:
         toneを整数FFT binへ置き、leakageをBL形状へ混入させない。
         現行特徴量は校正前の観測値であり、採否判定には使用しない。
     """
+    args = parse_args()
     sound_speed_m_per_s = 1500.0
-    sampling_frequency_hz = 12000.0
+    sampling_frequency_hz = float(args.sampling_frequency_hz)
     sample_count = 4096
-    tone_bin_index = 512
+    requested_frequency_hz = float(args.frequency_hz)
+    tone_bin_index = int(round(requested_frequency_hz * sample_count / sampling_frequency_hz))
     tone_frequency_hz = tone_bin_index * sampling_frequency_hz / sample_count
+    if not np.isclose(tone_frequency_hz, requested_frequency_hz, rtol=0.0, atol=1.0e-12):
+        raise ValueError(
+            "frequency_hz must coincide with an FFT bin for the configured sample count."
+        )
     source_level_db_re_input_rms = 0.0
     source_azimuth_deg = 65.0
     channel_count = 8
     sensor_spacing_m = 0.25
     source_guard_deg = 10.0
     display_floor_db = -80.0
-    output_dir = Path("artifacts/beamforming/bl_metric_baseline")
+    output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # sensor_positions_m shape: [n_channel,3]。axis=0はchannel、axis=1はx/y/z [m]。
@@ -115,12 +142,32 @@ def main() -> None:
         level_reference_label="dB re input RMS",
     )
     component_evaluation = BlComponentEvaluation(target_only=target_only_metrics)
+    wavelength_m = sound_speed_m_per_s / tone_frequency_hz
+    spacing_to_wavelength_ratio = sensor_spacing_m / wavelength_m
+    source_direction_cosine = float(np.cos(source_azimuth_rad))
+    theoretical_alias_azimuths_deg: list[float] = []
+    # ULAの同一空間位相条件はu_alias=u_source+m*lambda/dである。
+    # m!=0のうち可視方向余弦[-1,1]に入る方位だけを理論grating-lobe候補として保存する。
+    for alias_order in range(-channel_count, channel_count + 1):
+        if alias_order == 0:
+            continue
+        alias_direction_cosine = source_direction_cosine + alias_order / spacing_to_wavelength_ratio
+        if -1.0 <= alias_direction_cosine <= 1.0:
+            theoretical_alias_azimuths_deg.append(
+                float(np.rad2deg(np.arccos(alias_direction_cosine)))
+            )
     metrics = component_evaluation.as_dict()
     metrics.update(
         {
             "source_azimuth_deg": source_azimuth_deg,
             "source_frequency_hz": tone_frequency_hz,
+            "sampling_frequency_hz": sampling_frequency_hz,
             "source_level_db_re_input_rms": source_level_db_re_input_rms,
+            "wavelength_m": wavelength_m,
+            "sensor_spacing_m": sensor_spacing_m,
+            "spacing_to_wavelength_ratio": spacing_to_wavelength_ratio,
+            "aperture_length_m": (channel_count - 1) * sensor_spacing_m,
+            "theoretical_alias_azimuths_deg": theoretical_alias_azimuths_deg,
             "source_guard_deg": source_guard_deg,
             "display_floor_db": display_floor_db,
             "evaluation_pattern": "fixed_beam_single_source",
@@ -160,6 +207,10 @@ def main() -> None:
         level_unit_label="dB re input RMS",
         source_guard_deg=source_guard_deg,
         level_limits_db=(display_floor_db, 3.0),
+        diagnostic_peak_points=[
+            (peak.azimuth_deg, "Grating-lobe candidate")
+            for peak in target_only_metrics.grating_lobe_candidates
+        ],
     )
     print(json.dumps(metrics, ensure_ascii=False, indent=2))
 

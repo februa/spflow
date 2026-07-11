@@ -268,6 +268,7 @@ def plot_bl_response(
     level_unit_label: str = "dB re input RMS",
     source_guard_deg: float | None = None,
     level_limits_db: tuple[float, float] | None = None,
+    diagnostic_peak_points: Sequence[tuple[float, str]] | None = None,
 ) -> None:
     """BL, すなわち指定周波数でのビーム応答を保存する。
 
@@ -287,6 +288,8 @@ def plot_bl_response(
             `None`の場合は表示しない。
         level_limits_db: y軸下限・上限。単位は`level_unit_label`が示すdB reference。
             `None`の場合はmatplotlibの自動範囲を使う。
+        diagnostic_peak_points: `(方位[deg], label)`の列。grating-lobe候補など、
+            target/peak以外にレビューすべき局所peakを表示する。
 
     Raises:
         ValueError: guard幅またはlevel範囲が不正な場合。
@@ -320,6 +323,15 @@ def plot_bl_response(
         linewidth=1.0,
         label="Peak azimuth",
     )
+    if diagnostic_peak_points is not None:
+        for point_index, (azimuth_deg, label) in enumerate(diagnostic_peak_points):
+            axis.axvline(
+                float(azimuth_deg),
+                color="tab:orange",
+                linestyle="-.",
+                linewidth=1.0,
+                label=str(label) if point_index == 0 else "_nolegend_",
+            )
     axis.set_xlabel("Azimuth [deg]")
     # dB は比率表現であり単位そのものではないため、軸ラベルには必ず基準量を含める。
     axis.set_ylabel(f"RMS Level [{level_unit_label}]")
