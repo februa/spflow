@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "vendor" / "scene_r
 from scene_renderer import (
     AcousticSource,
     ConstantEnvelope,
+    Environment,
     FreeField,
     LinearArray,
     Receiver,
@@ -37,6 +38,7 @@ from spflow import (
     integration_blocks_from_integration_time,
     make_directions,
     recommended_integration_time_for_independent_samples,
+    relative_arrival_delay,
 )
 
 
@@ -109,15 +111,20 @@ def _direction_from_source(receiver: Receiver, source: AcousticSource) -> np.nda
     return receiver_pose.world_vector_to_array(direction_world)
 
 
-def _steering_from_dir3d(receiver: Receiver, environment: FreeField, fft_size: int, fs: float, dir3d: np.ndarray) -> np.ndarray:
+def _steering_from_dir3d(receiver: Receiver, environment: Environment, fft_size: int, fs: float, dir3d: np.ndarray) -> np.ndarray:
     """`_steering_from_dir3d` を実行する。"""
-    tau = receiver.array.positions() @ dir3d / environment.c
+    # direction列ごとの物理到達遅延arrival_delay=-r・u/cをspflow共通部品で生成する。
+    tau = relative_arrival_delay(
+        receiver.array.positions(),
+        np.moveaxis(dir3d, 0, 1),
+        sound_speed_m_per_s=environment.c,
+    )
     freqs = np.fft.fftfreq(fft_size, d=1.0 / fs)
     steering = np.exp(-1j * 2.0 * np.pi * freqs[np.newaxis, :, np.newaxis] * tau[:, np.newaxis, :])
     return np.moveaxis(steering, -1, 1)
 
 
-def _make_target_beam_steering(receiver: Receiver, source: AcousticSource, environment: FreeField, fft_size: int, fs: float):
+def _make_target_beam_steering(receiver: Receiver, source: AcousticSource, environment: Environment, fft_size: int, fs: float):
     """`_make_target_beam_steering` を実行する。"""
     direction = _direction_from_source(receiver, source)
     az_deg = float(np.rad2deg(np.arctan2(direction[1], direction[0])))
@@ -186,6 +193,9 @@ def test_scene_renderer_polyphase_mvdr_improves_target_reconstruction_over_cbf()
 
     fb = PolyphaseDFTFilterBank(fft_size=fft_size)
     X = fb.analysis(x)
+    if interferer is None:
+        # include_interferer=Trueの試験条件が崩れた場合、Optionalを後段へ流さず原因を明示する。
+        raise AssertionError("interferer must exist when include_interferer=True")
     steering_target, axis_az, axis_el = _make_target_beam_steering(receiver, target, environment, fft_size, fs)
     steering_interferer, _, _ = _make_target_beam_steering(receiver, interferer, environment, fft_size, fs)
     cbf_weights = design_cbf_weights(steering_target)

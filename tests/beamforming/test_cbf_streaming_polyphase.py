@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "vendor" / "scene_r
 from scene_renderer import (
     AcousticSource,
     ConstantEnvelope,
+    Environment,
     FreeField,
     LinearArray,
     Receiver,
@@ -25,7 +26,14 @@ from scene_renderer import (
     ToneSpectrum,
 )
 
-from spflow import CBFOverlapSaveBeamformer, PolyphaseDFTFilterBank, apply_beamformer_bands, beam_response_rms_db, design_cbf_weights
+from spflow import (
+    CBFOverlapSaveBeamformer,
+    PolyphaseDFTFilterBank,
+    apply_beamformer_bands,
+    beam_response_rms_db,
+    design_cbf_weights,
+    relative_arrival_delay,
+)
 
 
 def _signal_peak_amplitude(level_db20: float) -> float:
@@ -74,14 +82,19 @@ def _render_target_scene(*, fs, freq, n_samples, n_ch, spacing_m, bearing_deg, s
     return x, reference, receiver, source, scene.environment
 
 
-def _make_steering_from_scene(receiver: Receiver, source: AcousticSource, environment: FreeField, fft_size: int, fs: float) -> np.ndarray:
+def _make_steering_from_scene(receiver: Receiver, source: AcousticSource, environment: Environment, fft_size: int, fs: float) -> np.ndarray:
     """`_make_steering_from_scene` を実行する。"""
     receiver_pose = receiver.trajectory.pose(0.0)
     source_pos = source.trajectory.position(0.0)
     direction_world = source_pos - receiver_pose.position_world
     direction_world = direction_world / np.linalg.norm(direction_world)
     direction_array = receiver_pose.world_vector_to_array(direction_world)
-    tau = receiver.array.positions() @ direction_array / environment.c
+    # spflow共通規約arrival_delay=-r・u/cを使い、scene_rendererの物理到達遅延と揃える。
+    tau = relative_arrival_delay(
+        receiver.array.positions(),
+        direction_array,
+        sound_speed_m_per_s=environment.c,
+    )
     freqs = np.fft.fftfreq(fft_size, d=1.0 / fs)
     steering = np.exp(-1j * 2.0 * np.pi * freqs[np.newaxis, :] * tau[:, np.newaxis])
     return steering[:, np.newaxis, :]

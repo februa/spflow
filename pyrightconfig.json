@@ -1,0 +1,7 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "include": ["src", "tests", "evaluations", "examples"],
+  "exclude": [".venv", "artifacts", "build", "dist", "vendor"],
+  "extraPaths": ["src", "vendor/scene_renderer"]
+}
