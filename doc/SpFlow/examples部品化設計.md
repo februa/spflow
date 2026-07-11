@@ -520,3 +520,47 @@ BLはsource条件を固定し、waiting beamごとのdelay-and-sum出力tone RMS
 - p95/p99もguard定義と方位samplingに依存するため、現時点では校正前の観測値である。
 
 したがって、これらの値を方式の採否へ使わない。次段では、mainlobe境界をfirst-null、局所極小、方向余弦幅のどれで定義するかを整理し、同じBL図に対する人間評価との対応を測る。
+
+### 12.4 視覚評価で確認する物理量
+
+BL評価は、`target-only`、`noise-only`、`target+noise`を分ける。一つのmixed BLだけから、source由来の副極とnoise floorを分類しない。
+
+#### Target-only BL
+
+1. mainlobe peak方位とsource truthの誤差を確認する。
+2. mainlobe peak levelと入力SLの誤差を確認する。distortionlessに正規化したCBF/ABFなら、指向性補正がない限り入力SLに近似する。
+3. peakの左右にある最初の局所極小をfirst null候補とし、mainlobe境界を定義する。
+4. mainlobe境界の外側で左右それぞれ最初の局所極大を第一副極候補とする。
+5. 一様重み有限ULAのarray factorは厳密にはDirichlet型であり、多素子ではsincへ近似する。第一副極の約`-13.26 dB re mainlobe peak`をCBFのsanity referenceとする。
+6. ABFでは第一副極低下だけでなく、他の副極、局所悪化、別方位へのenergy押し出しを確認する。
+7. mainlobe外でmainlobeに近い大peakがある場合はgrating-lobe候補とする。
+
+`-13 dB`はすべてのアレイへの固定合否閾値ではない。sensor数、shading、sparse/nonuniform配置、endfire付近、方位gridにより有限ULAの第一副極は変化するため、同じアレイ条件の理論array factorと比較する。
+
+#### Noise-only BL
+
+CBFにもABFにもnoise floorは存在する。ABFだけに現れる量として扱わない。
+
+beam重み`w`とchannel noise covariance`R_n`に対し、出力noise powerは次で予測する。
+
+```text
+P_noise_out = w^H R_n w
+```
+
+channel間で無相関、等分散`σ_n^2`の白色雑音なら次になる。
+
+```text
+P_noise_out = σ_n^2 * sum_ch |w_ch|^2
+```
+
+矩形・distortionless正規化CBFでは`w_ch=1/N`であるため、target levelを保存しながらnoise powerは`1/N`になり、SNRは`10log10(N)` dB改善する。これは空間アレイゲインであり、FFT bin幅、帯域制限、時間平均による改善とは分けて扱う。
+
+ABFではwaiting beamごとに`w^H R_n w`とnoise-only BLを比較し、CBF比の改善量とnoise増幅方位を記録する。
+
+#### Target+noise BL
+
+mixed BLは運用上のsource visibility確認に使う。targetとnoiseが無相関ならmixed powerがtarget-only powerとnoise-only powerの和で説明できるか確認する。target sidelobeをnoise floorと呼ばず、noiseの局所変動を決定論的な副極と呼ばない。
+
+#### Grating lobe
+
+ULAのgrating lobe発生は、主にsensor間隔と波長の比`d/λ`、steering方向、可視方向余弦範囲で決まる。開口長`D`は主にmainlobe幅とnull間隔を決める。候補peakが見つかった場合は、信号周波数から`λ=c/f`を求め、空間位相alias条件と候補方位が一致するか確認する。

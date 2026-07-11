@@ -46,6 +46,13 @@ Use this skill to choose and document evaluation criteria for beamforming and SL
 
 12. For BL metric calibration, render every method with the same azimuth axis, y-axis limits, dB reference, dynamic range, source markers, and mask display. Record numerical features and structured human rankings, pairwise preferences, or labeled decisions. Validate candidate metrics with rank correlation, pairwise agreement, classification performance, and held-out scenarios. Once a metric reaches the documented agreement target, use it for sweeps. Preserve disagreement cases as counterexamples for metric revision.
 
+13. Decompose BL evidence into `target-only`, `noise-only`, and `target+noise` outputs before interpreting the curve:
+   - Target-only: peak azimuth error, mainlobe level error relative to input SL, first-null mainlobe boundaries, first sidelobe level relative to the peak, remaining sidelobe peaks, and grating lobes.
+   - Noise-only: observed output noise level versus `w^H R_n w`; for spatially white equal-variance noise use `sigma_n^2*sum(abs(w)^2)`. A rectangular normalized CBF preserves target level and improves SNR by `10log10(N)` dB.
+   - Target+noise: confirm that the predicted target and noise components explain the displayed source visibility.
+   - A uniform finite ULA has a Dirichlet-type array factor, approximating sinc for many sensors. Its first sidelobe is near `-13 dB re mainlobe peak`; do not require an exact sinc curve.
+   - Grating-lobe onset is governed primarily by sensor spacing relative to wavelength and steering direction. Aperture length primarily controls mainlobe width and null spacing.
+
 ## spflow-Specific Hooks
 
 When working in the `spflow` repository:

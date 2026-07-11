@@ -50,6 +50,52 @@ Use structured visual data to calibrate candidate numerical metrics. Suitable va
 
 When numerical and visual rankings disagree, preserve the scenario, plot arrays, rendered figures, numerical rankings, visual rankings, and reasons given by reviewers. Treat the case as a counterexample for redesigning the evaluation method. Do not force agreement by changing plot limits per method or by selecting only the metric that matches the preferred conclusion.
 
+## BL Component Decomposition
+
+Do not infer target sidelobes and noise floor from one mixed BL curve. Generate or retain three component views with the same waiting-beam axis and level reference.
+
+### Target-only BL
+
+Check:
+
+- peak azimuth error relative to source truth,
+- mainlobe peak level error relative to input source RMS level,
+- left and right first-null azimuths,
+- -3 dB width and first-null width,
+- first sidelobe peak level in each side region, expressed as `dB re mainlobe peak`,
+- remaining local sidelobe peaks and maximum local worsening,
+- grating-lobe candidates outside the mainlobe.
+
+For a uniformly weighted finite ULA, the exact array factor is Dirichlet-type rather than an exact sinc. With enough uniformly spaced sensors, the first sidelobe approaches approximately `-13.26 dB re mainlobe peak`. Use this as a CBF sanity reference, not as a universal threshold for small arrays, shading, sparse arrays, endfire steering, or nonuniform grids. ABF should reduce the intended sidelobes, but it must also preserve the mainlobe and avoid moving energy into other azimuth sectors.
+
+### Noise-only BL
+
+Noise floor exists for CBF and ABF. Do not interpret it as an ABF-specific feature.
+
+For beam weight `w` and channel-noise covariance `R_n`:
+
+```text
+P_noise,out = w^H R_n w
+```
+
+For spatially white, channel-uncorrelated noise with equal per-channel variance `sigma_n^2`:
+
+```text
+P_noise,out = sigma_n^2 * sum_ch |w_ch|^2
+```
+
+A normalized rectangular CBF uses `w_ch=1/N`, preserves a distortionless target level, reduces output noise power by `1/N`, and improves SNR by `10log10(N)` dB. This is spatial array gain; keep it separate from FFT-bin width, band integration, and temporal averaging gains.
+
+For ABF, compare the observed noise-only BL with `w^H R_n w` per waiting beam. Report both the improvement relative to the fixed CBF and any azimuth where noise is amplified.
+
+### Target-plus-noise BL
+
+Use the mixed curve to judge operational source visibility only after target-only and noise-only components explain its level. The mixed power should be consistent with the component powers when target and noise are uncorrelated. Do not label a target sidelobe as noise floor or a noise fluctuation as a deterministic sidelobe.
+
+### Grating Lobes
+
+For a ULA, grating-lobe existence is governed primarily by spacing-to-wavelength ratio `d/lambda`, steering direction, and visible direction-cosine range. Aperture length `D` primarily determines mainlobe width and null spacing. When a grating-lobe candidate is detected, compare its direction with the spatial phase-alias condition; do not explain it from aperture length alone.
+
 ## dB Reference Rules
 
 - Never write dB as if it were a standalone physical unit.
