@@ -5,6 +5,7 @@ import numpy as np
 from spflow.beamforming import (
     DirectionMatchedCovarianceAccumulator,
     build_two_second_covariance_snapshot_schedule,
+    calculate_maximum_spatial_correlation_table,
 )
 
 
@@ -96,3 +97,26 @@ def test_direction_matched_accumulator_updates_each_selected_direction_once() ->
     assert bool(np.any(np.abs(accumulator.direction_covariance[5:]) > 0.0))
     # 共有90度だけは両segmentで同じ積分先へ入り、2回目のEMA更新を受ける。
     assert bool(np.any(accumulator.direction_covariance[4] != covariance_after_first[4]))
+
+
+def test_maximum_spatial_correlation_excludes_diagonal_and_handles_zero_power() -> None:
+    """最大相関が非対角pairだけを使い、無power binを0とすることを確認する。"""
+
+    covariance = np.zeros((2, 3, 3, 2), dtype=np.complex64)
+    covariance[:, :, :, 0] = np.eye(3, dtype=np.complex64)[np.newaxis, :, :]
+    covariance[0, 0, 1, 0] = np.complex64(0.6 + 0.0j)
+    covariance[0, 1, 0, 0] = np.complex64(0.6 + 0.0j)
+    covariance[0, 1, 2, 0] = np.complex64(0.8 + 0.0j)
+    covariance[0, 2, 1, 0] = np.complex64(0.8 + 0.0j)
+    covariance[1, 0, 2, 0] = np.complex64(0.4 + 0.0j)
+    covariance[1, 2, 0, 0] = np.complex64(0.4 + 0.0j)
+
+    result = calculate_maximum_spatial_correlation_table(
+        covariance,
+        np.array([0.0, 90.0], dtype=np.float32),
+        fs_hz=2.0,
+    )
+
+    assert result.maximum_correlation.shape == (2, 2)
+    np.testing.assert_allclose(result.maximum_correlation[:, 0], [0.8, 0.4], atol=1.0e-6)
+    np.testing.assert_array_equal(result.maximum_correlation[:, 1], [0.0, 0.0])

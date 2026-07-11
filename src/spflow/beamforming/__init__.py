@@ -43,7 +43,9 @@ from .covariance_snapshot_schedule import (
     CovarianceSnapshotCenterSchedule,
     DirectionMatchedCovarianceAccumulator,
     DirectionMatchedCovarianceUpdate,
+    MaximumSpatialCorrelationTable,
     build_two_second_covariance_snapshot_schedule,
+    calculate_maximum_spatial_correlation_table,
 )
 from .diagnostic_plotting import (
     BeamDiagnosticPlotUsageNotes,
@@ -238,7 +240,9 @@ __all__ = [
     "CovarianceSnapshotCenterSchedule",
     "DirectionMatchedCovarianceAccumulator",
     "DirectionMatchedCovarianceUpdate",
+    "MaximumSpatialCorrelationTable",
     "build_two_second_covariance_snapshot_schedule",
+    "calculate_maximum_spatial_correlation_table",
     "BeamDiagnosticPlotUsageNotes",
     "build_beam_diagnostic_plot_usage_notes",
     "write_beam_diagnostic_plot_usage_notes",

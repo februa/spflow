@@ -117,6 +117,91 @@ class DirectionMatchedCovarianceUpdate:
     processed_second_count: int
 
 
+@dataclass(frozen=True)
+class MaximumSpatialCorrelationTable:
+    """方位・周波数ごとの最大非対角正規化相関を保持する。
+
+    Attributes:
+        azimuth_deg: 全方位軸。shapeは`[n_direction]`、単位はdeg。
+        frequency_hz: rFFT周波数軸。shapeは`[n_bin]`、単位はHz。
+        maximum_correlation: 最大相関。shapeは`[n_direction,n_bin]`、範囲は`[0,1]`。
+    """
+
+    azimuth_deg: FloatArray
+    frequency_hz: FloatArray
+    maximum_correlation: NDArray[np.float32]
+
+
+def calculate_maximum_spatial_correlation_table(
+    direction_covariance: NDArray[Any],
+    azimuth_deg: NDArray[Any],
+    *,
+    fs_hz: float,
+    denominator_floor: float = 1.0e-20,
+) -> MaximumSpatialCorrelationTable:
+    """方位別共分散から各周波数ビンの最大非対角相関を計算する。
+
+    Args:
+        direction_covariance: 方位別共分散。shapeは`[n_direction,n_ch,n_ch,n_bin]`。
+        azimuth_deg: 方位軸。shapeは`[n_direction]`、単位はdeg。
+        fs_hz: サンプリング周波数。単位はHz。
+        denominator_floor: `Rii*Rjj`の最小許容power二乗。これ以下は相関0とする。
+
+    Returns:
+        `[方位,周波数]`の最大相関テーブルと軸。
+
+    Raises:
+        ValueError: shape、Hermitian共分散の対角power、単位、またはchannel数が不正な場合。
+
+    境界条件:
+        対角成分は自己相関1になるため必ず除外する。無信号binで分母が小さいpairは、
+        数値雑音を高相関と誤認しないよう0とする。
+    """
+
+    covariance = np.asarray(direction_covariance, dtype=np.complex64)
+    azimuth = np.asarray(azimuth_deg, dtype=np.float32)
+    sample_rate = float(fs_hz)
+    floor_value = float(denominator_floor)
+    require_positive_float("fs_hz", sample_rate)
+    require_positive_float("denominator_floor", floor_value)
+    require(covariance.ndim == 4, "direction_covariance must have shape (n_direction, n_ch, n_ch, n_bin).")
+    require(covariance.shape[1] == covariance.shape[2], "covariance channel axes must be square.")
+    require(covariance.shape[1] >= 2, "maximum off-diagonal correlation requires at least two channels.")
+    require(azimuth.shape == (covariance.shape[0],), "azimuth_deg must match n_direction.")
+
+    # diagonal shapeは`[n_direction,n_ch,n_bin]`。Hermitian共分散の対角は実powerなので実部を使う。
+    diagonal_power = np.real(np.diagonal(covariance, axis1=1, axis2=2)).transpose(0, 2, 1)
+    require(bool(np.all(diagonal_power >= -np.finfo(np.float32).eps)), "covariance diagonal power must be non-negative.")
+    diagonal_power = np.maximum(diagonal_power, np.float32(0.0))
+    maximum_correlation = np.zeros((covariance.shape[0], covariance.shape[3]), dtype=np.float32)
+
+    # 全pair相関`[n_direction,n_ch,n_ch,n_bin]`を追加生成せず、上三角pairを逐次走査する。
+    for first_channel in range(covariance.shape[1] - 1):
+        for second_channel in range(first_channel + 1, covariance.shape[1]):
+            denominator_power = diagonal_power[:, first_channel, :] * diagonal_power[:, second_channel, :]
+            valid = denominator_power > np.float32(floor_value)
+            pair_correlation = np.zeros_like(maximum_correlation)
+            pair_correlation[valid] = np.asarray(
+                np.abs(covariance[:, first_channel, second_channel, :][valid])
+                / np.sqrt(denominator_power[valid]),
+                dtype=np.float32,
+            )
+            maximum_correlation = np.maximum(maximum_correlation, pair_correlation)
+
+    # 丸め誤差で1を僅かに超える場合だけ物理範囲へ戻す。大幅超過は共分散生成側の異常である。
+    require(bool(np.all(maximum_correlation <= 1.0 + 1.0e-4)), "normalized correlation exceeds its physical range.")
+    maximum_correlation = np.clip(maximum_correlation, 0.0, 1.0).astype(np.float32, copy=False)
+    frequency_hz = np.asarray(
+        np.fft.rfftfreq(2 * (covariance.shape[3] - 1), d=1.0 / sample_rate),
+        dtype=np.float32,
+    )
+    return MaximumSpatialCorrelationTable(
+        azimuth_deg=azimuth.copy(),
+        frequency_hz=frequency_hz,
+        maximum_correlation=maximum_correlation,
+    )
+
+
 class DirectionMatchedCovarianceAccumulator:
     """1秒ごとに中心表と方位一致表を切り替え、同一方位だけを指数積分する。
 
