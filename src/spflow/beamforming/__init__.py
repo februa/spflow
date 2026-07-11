@@ -40,6 +40,13 @@ from .diagnostic_plotting import (
     write_beam_diagnostic_plot_usage_notes,
 )
 from .directions import make_directions
+from .evaluation_arrays import (
+    BeamLevelDisplayArrays,
+    BlShapeFeatures,
+    build_beam_level_display_arrays,
+    calculate_bl_shape_features,
+    calculate_btr_relative_level_db,
+)
 from .evaluation_criteria import (
     BeamformingEvaluationCriterion,
     BeamformingEvaluationPattern,
@@ -78,6 +85,11 @@ from .fractional_delay_performance import (
     run_fractional_delay_performance_report,
 )
 from .fractional_delay_slc_diagnostics import run_fractional_delay_slc_diagnostics
+from .geometry import (
+    relative_arrival_delay,
+    steering_from_relative_delay,
+    unit_direction_from_positions,
+)
 from .mvdr_filter import (
     MVDRFilter,
     MVDROverlapSaveBeamformer,
@@ -183,6 +195,8 @@ from .time_domain_adaptive import (
 
 # ここに列挙した識別子だけを公開 API と見なし、探索補助用の内部関数は外部契約に含めない。
 __all__ = [
+    "BeamLevelDisplayArrays",
+    "BlShapeFeatures",
     "AbfLikeMetricDecision",
     "AbfLikeNonSourceMetrics",
     "BandwiseArrayDesign",
@@ -225,6 +239,9 @@ __all__ = [
     "build_reference_blocking_matrix",
     "build_source_sector_mask",
     "build_source_sector_mask_from_azimuths",
+    "build_beam_level_display_arrays",
+    "calculate_bl_shape_features",
+    "calculate_btr_relative_level_db",
     "OperationalArrayFractionalDelayPerformanceConfig",
     "run_operational_array_fractional_delay_performance_report",
     "OperationalSparseArrayDesignConfig",
@@ -285,6 +302,9 @@ __all__ = [
     "FractionalDelayPerformanceConfig",
     "run_fractional_delay_performance_report",
     "run_fractional_delay_slc_diagnostics",
+    "relative_arrival_delay",
+    "steering_from_relative_delay",
+    "unit_direction_from_positions",
     "AlignedPathCombiner",
     "CausalBlockFIR",
     "DelayAlignedBeamCovarianceAccumulator",

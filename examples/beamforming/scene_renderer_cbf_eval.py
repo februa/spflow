@@ -11,10 +11,10 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / 'src'))
-sys.path.insert(0, str(ROOT / 'vendor' / 'scene_renderer'))
+sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "vendor" / "scene_renderer"))
 
-from scene_renderer import (
+from scene_renderer import (  # noqa: E402
     AcousticSource,
     ConstantEnvelope,
     FreeField,
@@ -26,16 +26,22 @@ from scene_renderer import (
     StaticPose,
     ToneSpectrum,
 )
-from spflow import CBFBeamformer, DFT_FilterBank, FrameBuffer, design_cbf_weights
-from spflow.beamforming import apply_beamformer
+
+from spflow import (  # noqa: E402
+    DFT_FilterBank,
+    FrameBuffer,
+    design_cbf_weights,
+    relative_arrival_delay,
+    steering_from_relative_delay,
+    tone_rms_level_db_to_peak_amplitude,
+    unit_direction_from_positions,
+)
+from spflow.beamforming import apply_beamformer  # noqa: E402
 
 
-def signal_peak_amplitude(level_db20: float) -> float:
-    """振幅レベル dB20 を正弦波のピーク振幅へ変換する。"""
-    return float(np.sqrt(2.0) * (10.0 ** (level_db20 / 20.0)))
-
-
-def render_target_scene(fs, freq, n_samples, n_ch, spacing_m, bearing_deg, sound_speed, signal_level_db20):
+def render_target_scene(
+    fs, freq, n_samples, n_ch, spacing_m, bearing_deg, sound_speed, signal_level_db20
+):
     """単一 target シーンをレンダリングし、観測信号と参照信号を返す。"""
     receiver = Receiver(
         trajectory=StaticPose(position_world=[0.0, 0.0, 0.0], heading_deg=0.0),
@@ -44,7 +50,7 @@ def render_target_scene(fs, freq, n_samples, n_ch, spacing_m, bearing_deg, sound
     component = SourceComponent(
         spectrum=ToneSpectrum(freq),
         envelope=ConstantEnvelope(),
-        amplitude=signal_peak_amplitude(signal_level_db20),
+        amplitude=tone_rms_level_db_to_peak_amplitude(signal_level_db20),
     )
     source = AcousticSource.from_relative_bearing(
         bearing_deg=bearing_deg,
@@ -65,12 +71,15 @@ def make_steering(receiver, source, environment, fft_size, fs):
     """target 方位に向けた steering ベクトルを構成する。"""
     receiver_pose = receiver.trajectory.pose(0.0)
     source_pos = source.trajectory.position(0.0)
-    direction_world = source_pos - receiver_pose.position_world
-    direction_world = direction_world / np.linalg.norm(direction_world)
+    direction_world = unit_direction_from_positions(receiver_pose.position_world, source_pos)
     direction_array = receiver_pose.world_vector_to_array(direction_world)
-    tau = receiver.array.positions() @ direction_array / environment.c
+    tau = relative_arrival_delay(
+        receiver.array.positions(),
+        direction_array,
+        sound_speed_m_per_s=environment.c,
+    )
     freqs = np.fft.rfftfreq(fft_size, d=1.0 / fs)
-    return np.exp(-1j * 2.0 * np.pi * freqs[np.newaxis, :] * tau[:, np.newaxis])[:, np.newaxis, :]
+    return steering_from_relative_delay(tau, freqs)[:, np.newaxis, :]
 
 
 def apply_fixed(x, weights, fb, chunk_size, active_band):
@@ -81,7 +90,9 @@ def apply_fixed(x, weights, fb, chunk_size, active_band):
         for frame in buffer.process(x[:, start : start + chunk_size]):
             spec = np.fft.rfft(frame * fb.prototype, axis=-1)
             yb = np.zeros((spec.shape[1],), dtype=np.complex64)
-            yb[active_band] = apply_beamformer(spec[:, active_band][:, None], weights[:, :, active_band])[0, 0]
+            yb[active_band] = apply_beamformer(
+                spec[:, active_band][:, None], weights[:, :, active_band]
+            )[0, 0]
             frames.append(yb)
     Y = np.stack(frames, axis=-1)
     y = fb.synthesis(Y, length=x.shape[-1])
@@ -113,7 +124,9 @@ def main() -> None:
 
     fb = DFT_FilterBank(fft_size=fft_size, hop_size=hop_size)
     steering = make_steering(receiver, source, environment, fft_size, fs)
-    weights = np.zeros((steering.shape[0], steering.shape[1], steering.shape[2]), dtype=np.complex64)
+    weights = np.zeros(
+        (steering.shape[0], steering.shape[1], steering.shape[2]), dtype=np.complex64
+    )
     weights[:, :, target_bin] = design_cbf_weights(steering[:, :, target_bin])
 
     y, Y = apply_fixed(x, weights, fb, chunk_size, target_bin)
@@ -132,15 +145,15 @@ def main() -> None:
     responses = np.asarray(responses)
 
     err = y - reference
-    print(f'target_response_db={resp_db:.12f}')
-    print(f'target_scan_level_db={responses[np.argmin(np.abs(angles-target_deg))]:.12f}')
-    print(f'peak_angle_deg={angles[int(np.argmax(responses))]:.3f}')
-    print(f'peak_level_db={np.max(responses):.12f}')
-    print(f'max_subband_reanalysis_error={np.max(np.abs(rean - Y)):.12e}')
-    print(f'rms_subband_reanalysis_error={np.sqrt(np.mean(np.abs(rean - Y)**2)):.12e}')
-    print(f'rms_time_error_to_reference={np.sqrt(np.mean(err**2)):.12e}')
-    print(f'max_time_error_to_reference={np.max(np.abs(err)):.12e}')
+    print(f"target_response_db={resp_db:.12f}")
+    print(f"target_scan_level_db={responses[np.argmin(np.abs(angles - target_deg))]:.12f}")
+    print(f"peak_angle_deg={angles[int(np.argmax(responses))]:.3f}")
+    print(f"peak_level_db={np.max(responses):.12f}")
+    print(f"max_subband_reanalysis_error={np.max(np.abs(rean - Y)):.12e}")
+    print(f"rms_subband_reanalysis_error={np.sqrt(np.mean(np.abs(rean - Y) ** 2)):.12e}")
+    print(f"rms_time_error_to_reference={np.sqrt(np.mean(err**2)):.12e}")
+    print(f"max_time_error_to_reference={np.max(np.abs(err)):.12e}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

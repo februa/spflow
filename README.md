@@ -125,6 +125,15 @@ It demonstrates:
 - `FrameBuffer` for overlapped framing
 - `Flow` for propagating zero, one, or many outputs
 
+A deterministic fixed delay-and-sum example without an external scene renderer is also available:
+
+```bash
+python -m examples.beamforming.fixed_delay_and_sum
+```
+
+This example uses the shared level, geometry, steering, BL-array, and BL-shape-feature components.
+The printed BL features are calibration observations and do not make an adoption decision.
+
 Core example:
 
 ```python
