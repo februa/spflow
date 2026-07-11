@@ -39,28 +39,33 @@ except ImportError:  # pragma: no cover - 実行環境依存。
     plt = None
 
 
-FS_HZ = 32768.0
+FS_HZ = 8192.0
 SOUND_SPEED_M_S = 1500.0
 PROCESS_DURATION_S = 60
 INTEGRATION_TIME_S = 10.0
 DISPLAY_SNAPSHOT_SECONDS = (1, 2, 5, 10, 20, 40, 60)
-N_CH = 9
-SPACING_M = 0.25
+N_CH = 64
+SPACING_M = 0.5
 SNAPSHOT_LENGTH = 128
 N_BEAM_PER_HALF = 159
 SOURCE_BEARING_DEG = 40.0
-SOURCE_BAND_LOW_HZ = 1000.0
-SOURCE_BAND_HIGH_HZ = 4000.0
+SOURCE_BAND_LOW_HZ = 128.0
+SOURCE_BAND_HIGH_HZ = 1024.0
 SOURCE_LEVEL_DB_RE_INPUT_RMS = 0.0
 NOISE_LEVEL_DB_RE_INPUT_RMS_PER_SQRT_HZ = -32.0
-OUTPUT_DIR = ROOT / "artifacts" / "beamforming" / "method3_maximum_correlation"
+OUTPUT_DIR = ROOT / "artifacts" / "beamforming" / "method3_low_frequency_64ch"
+
+# 等間隔ULAの空間alias回避基準`d <= lambda/2`から、基準周波数は`c/(2d)`となる。
+# 信号上限1024 Hzをこの基準1500 Hzより低くし、grating lobeではなく低周波広帯域の相関形成を観測する。
+SPATIAL_ALIAS_REFERENCE_HZ = SOUND_SPEED_M_S / (2.0 * SPACING_M)
+ARRAY_APERTURE_M = (N_CH - 1) * SPACING_M
 
 
 def _render_evaluation_scene(receiver: Receiver) -> np.ndarray:
-    """scene_rendererで広帯域sourceとCH無相関背景雑音を10秒生成する。
+    """scene_rendererで低周波広帯域sourceとCH無相関背景雑音を生成する。
 
     Args:
-        receiver: 9ch対称ULA受波器。
+        receiver: 64ch対称ULA受波器。受波器間隔は低周波帯域に合わせて0.5 mとする。
 
     Returns:
         受信信号。shapeは`[n_ch,PROCESS_DURATION_S*fs]`、dtypeは`float32`。
@@ -166,7 +171,7 @@ def _write_time_evolution_png(
         )
         axis.axvline(SOURCE_BEARING_DEG, color="tab:red", linewidth=0.8, linestyle="--")
         axis.set_title(f"processed {second} s")
-        axis.set_ylim(0.0, 5000.0)
+        axis.set_ylim(0.0, 1500.0)
     for axis in axes[-1, :]:
         if axis.get_visible():
             axis.set_xlabel("Azimuth [deg]")
@@ -231,6 +236,14 @@ def main() -> None:
 
     processing_times = np.asarray(processing_elapsed_by_second, dtype=np.float64)
     correlation_times = np.asarray(correlation_elapsed_by_second, dtype=np.float64)
+    maximum_correlation_by_time = np.stack(maximum_correlation_snapshots, axis=0).astype(np.float32)
+    signal_band_mask = (frequency_hz >= SOURCE_BAND_LOW_HZ) & (frequency_hz <= SOURCE_BAND_HIGH_HZ)
+    comparison_band_mask = (frequency_hz > SOURCE_BAND_HIGH_HZ) & (frequency_hz <= SPATIAL_ALIAS_REFERENCE_HZ)
+    # source近傍はbeam間隔より十分広い±2度、遠方はmainlobe混入を避けるため20度以上離れた方位とする。
+    # ここでの値は採否閾値ではなく、最大pair相関が方位選択性を持つかを観測する比較領域である。
+    source_neighborhood_mask = np.abs(schedule.global_direction_azimuth_deg - SOURCE_BEARING_DEG) <= 2.0
+    far_direction_mask = np.abs(schedule.global_direction_azimuth_deg - SOURCE_BEARING_DEG) >= 20.0
+    covariance_storage_bytes = int(accumulator.direction_covariance.nbytes)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         OUTPUT_DIR / "method3_maximum_correlation_table.npz",
@@ -238,7 +251,7 @@ def main() -> None:
         frequency_hz=frequency_hz,
         maximum_correlation=current_maximum_correlation,
         processed_seconds=np.arange(1, PROCESS_DURATION_S + 1, dtype=np.int32),
-        maximum_correlation_by_time=np.stack(maximum_correlation_snapshots, axis=0).astype(np.float32),
+        maximum_correlation_by_time=maximum_correlation_by_time,
         direction_update_coef=accumulator.direction_update_coef,
         processing_elapsed_seconds=processing_times,
         correlation_elapsed_seconds=correlation_times,
@@ -254,7 +267,7 @@ def main() -> None:
         schedule.global_direction_azimuth_deg,
         frequency_hz,
         np.asarray(DISPLAY_SNAPSHOT_SECONDS, dtype=np.int32),
-        np.stack(maximum_correlation_snapshots, axis=0),
+        maximum_correlation_by_time,
     )
     summary = {
         "method": 3,
@@ -266,6 +279,8 @@ def main() -> None:
         "frequency_resolution_hz": FS_HZ / SNAPSHOT_LENGTH,
         "n_ch": N_CH,
         "spacing_m": SPACING_M,
+        "array_aperture_m": ARRAY_APERTURE_M,
+        "spatial_alias_reference_hz": SPATIAL_ALIAS_REFERENCE_HZ,
         "n_beam_per_half": N_BEAM_PER_HALF,
         "source_bearing_deg": SOURCE_BEARING_DEG,
         "source_band_hz": [SOURCE_BAND_LOW_HZ, SOURCE_BAND_HIGH_HZ],
@@ -276,6 +291,19 @@ def main() -> None:
         "shared_90deg_update_rate_per_second": 1.0,
         "shared_90deg_coef": float(accumulator.direction_update_coef[N_BEAM_PER_HALF - 1]),
         "maximum_correlation_shape": list(current_maximum_correlation.shape),
+        "direction_covariance_storage_bytes": covariance_storage_bytes,
+        "final_signal_band_mean_maximum_correlation": float(
+            np.mean(current_maximum_correlation[:, signal_band_mask])
+        ),
+        "final_comparison_band_mean_maximum_correlation": float(
+            np.mean(current_maximum_correlation[:, comparison_band_mask])
+        ),
+        "final_source_neighborhood_signal_band_mean_maximum_correlation": float(
+            np.mean(current_maximum_correlation[source_neighborhood_mask][:, signal_band_mask])
+        ),
+        "final_far_direction_signal_band_mean_maximum_correlation": float(
+            np.mean(current_maximum_correlation[far_direction_mask][:, signal_band_mask])
+        ),
         "scene_render_elapsed_seconds": render_elapsed_seconds,
         "processing_elapsed_seconds_total": float(np.sum(processing_times)),
         "processing_elapsed_seconds_median_per_input_second": float(np.median(processing_times)),
