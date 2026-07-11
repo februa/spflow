@@ -99,6 +99,51 @@ class CovarianceSnapshotCenterSchedule:
         # advanced indexing後`[n_ch,n_beam,N]`から、FFT用の`[n_ch,N,n_beam]`へaxisを移す。
         return np.asarray(np.moveaxis(snapshots_ch_beam_sample, 2, 1))
 
+    def extract_snapshot_chunk(
+        self,
+        signal: NDArray[Any],
+        *,
+        azimuth_segment_index: int,
+        beam_start_index: int,
+        beam_stop_index: int,
+    ) -> NDArray[Any]:
+        """連続するbeam範囲だけをbatched snapshotとして切り出す。
+
+        Args:
+            signal: 1秒信号。shapeは`[n_ch,n_sample]`。
+            azimuth_segment_index: 使用する90度区間。`0`または`1`。
+            beam_start_index: 先頭local beam index。inclusive。
+            beam_stop_index: 終端local beam index。exclusive。
+
+        Returns:
+            snapshot chunk。shapeは`[n_ch,N,n_chunk_beam]`。
+
+        Raises:
+            ValueError: 入力shape、segment、またはbeam範囲が不正な場合。
+
+        境界条件:
+            全159 beamの瞬時共分散を一括生成すると`[159,n_ch,n_ch,n_bin]`が巨大になるため、
+            共分散更新では本メソッドで作業領域を制限する。
+        """
+
+        input_signal = np.asarray(signal)
+        segment_index = int(azimuth_segment_index)
+        beam_start = int(beam_start_index)
+        beam_stop = int(beam_stop_index)
+        samples_per_second = int(round(self.fs_hz))
+        require(segment_index in (0, 1), "azimuth_segment_index must be 0 or 1.")
+        require(0 <= beam_start < beam_stop <= self.n_beam, "beam chunk range is invalid.")
+        require(input_signal.shape == (self.n_ch, samples_per_second), "signal must match (n_ch, one_second_samples).")
+
+        snapshot_length = int(self.snapshot_length_samples)
+        left_extent = snapshot_length // 2
+        offsets = np.arange(snapshot_length, dtype=np.int32) - np.int32(left_extent)
+        centers = self.channel_center_samples[segment_index, :, beam_start:beam_stop]
+        sample_indices = centers[:, :, np.newaxis] + offsets[np.newaxis, np.newaxis, :]
+        channel_indices = np.arange(self.n_ch, dtype=np.int32)[:, np.newaxis, np.newaxis]
+        snapshots_ch_beam_sample = input_signal[channel_indices, sample_indices]
+        return np.asarray(np.moveaxis(snapshots_ch_beam_sample, 2, 1))
+
 
 @dataclass(frozen=True)
 class DirectionMatchedCovarianceUpdate:
@@ -138,6 +183,7 @@ def calculate_maximum_spatial_correlation_table(
     *,
     fs_hz: float,
     denominator_floor: float = 1.0e-20,
+    pair_chunk_size: int = 256,
 ) -> MaximumSpatialCorrelationTable:
     """方位別共分散から各周波数ビンの最大非対角相関を計算する。
 
@@ -146,6 +192,7 @@ def calculate_maximum_spatial_correlation_table(
         azimuth_deg: 方位軸。shapeは`[n_direction]`、単位はdeg。
         fs_hz: サンプリング周波数。単位はHz。
         denominator_floor: `Rii*Rjj`の最小許容power二乗。これ以下は相関0とする。
+        pair_chunk_size: 一括処理する非対角channel pair数。
 
     Returns:
         `[方位,周波数]`の最大相関テーブルと軸。
@@ -162,8 +209,10 @@ def calculate_maximum_spatial_correlation_table(
     azimuth = np.asarray(azimuth_deg, dtype=np.float32)
     sample_rate = float(fs_hz)
     floor_value = float(denominator_floor)
+    chunk_size = int(pair_chunk_size)
     require_positive_float("fs_hz", sample_rate)
     require_positive_float("denominator_floor", floor_value)
+    require_positive_int("pair_chunk_size", chunk_size)
     require(covariance.ndim == 4, "direction_covariance must have shape (n_direction, n_ch, n_ch, n_bin).")
     require(covariance.shape[1] == covariance.shape[2], "covariance channel axes must be square.")
     require(covariance.shape[1] >= 2, "maximum off-diagonal correlation requires at least two channels.")
@@ -175,18 +224,27 @@ def calculate_maximum_spatial_correlation_table(
     diagonal_power = np.maximum(diagonal_power, np.float32(0.0))
     maximum_correlation = np.zeros((covariance.shape[0], covariance.shape[3]), dtype=np.float32)
 
-    # 全pair相関`[n_direction,n_ch,n_ch,n_bin]`を追加生成せず、上三角pairを逐次走査する。
-    for first_channel in range(covariance.shape[1] - 1):
-        for second_channel in range(first_channel + 1, covariance.shape[1]):
-            denominator_power = diagonal_power[:, first_channel, :] * diagonal_power[:, second_channel, :]
-            valid = denominator_power > np.float32(floor_value)
-            pair_correlation = np.zeros_like(maximum_correlation)
-            pair_correlation[valid] = np.asarray(
-                np.abs(covariance[:, first_channel, second_channel, :][valid])
-                / np.sqrt(denominator_power[valid]),
-                dtype=np.float32,
-            )
-            maximum_correlation = np.maximum(maximum_correlation, pair_correlation)
+    first_pair_channels, second_pair_channels = np.triu_indices(covariance.shape[1], k=1)
+    # 46,360 pairをPythonで1組ずつ処理せず、chunk内を`[direction,pair,bin]`でベクトル化する。
+    # 全pair一括は305chで数GBになるため、pair chunkにより一時配列を制限する。
+    for pair_start in range(0, first_pair_channels.size, chunk_size):
+        pair_stop = min(pair_start + chunk_size, first_pair_channels.size)
+        first_channels = first_pair_channels[pair_start:pair_stop]
+        second_channels = second_pair_channels[pair_start:pair_stop]
+        denominator_power = (
+            diagonal_power[:, first_channels, :] * diagonal_power[:, second_channels, :]
+        )
+        valid = denominator_power > np.float32(floor_value)
+        pair_correlation = np.zeros(denominator_power.shape, dtype=np.float32)
+        cross_power = np.abs(covariance[:, first_channels, second_channels, :])
+        pair_correlation[valid] = np.asarray(
+            cross_power[valid] / np.sqrt(denominator_power[valid]),
+            dtype=np.float32,
+        )
+        maximum_correlation = np.maximum(
+            maximum_correlation,
+            np.max(pair_correlation, axis=1),
+        )
 
     # 丸め誤差で1を僅かに超える場合だけ物理範囲へ戻す。大幅超過は共分散生成側の異常である。
     require(bool(np.all(maximum_correlation <= 1.0 + 1.0e-4)), "normalized correlation exceeds its physical range.")
@@ -212,21 +270,53 @@ class DirectionMatchedCovarianceAccumulator:
     相関閾値による採否、beam方向集約、MVDR重み設計は責務に含めない。
     """
 
-    def __init__(self, schedule: CovarianceSnapshotCenterSchedule, *, coef: float) -> None:
+    def __init__(
+        self,
+        schedule: CovarianceSnapshotCenterSchedule,
+        *,
+        coef: float | None = None,
+        integration_time_seconds: float | None = None,
+        beam_chunk_size: int = 8,
+    ) -> None:
         """再利用するscheduleと瞬時共分散の更新係数を設定する。
 
         Args:
             schedule: 中心表と方位一致表。frame間で同じインスタンスを再利用する。
-            coef: `R_next=(1-coef)R_previous+coef*R_instantaneous`の更新係数。
+            coef: 全方位共通の更新係数。`integration_time_seconds`と同時指定不可。
+            integration_time_seconds: 等価積分時間。単位はs。方位一致表から各global方位の
+                実更新rateを求め、`coef=2/(1+rate*T)`を方位ごとに設定する。
+            beam_chunk_size: FFTと瞬時共分散を一括処理するbeam数。
 
         Raises:
-            ValueError: `coef`が`(0,1]`外の場合。
+            ValueError: 係数指定が排他的でない、または範囲外の場合。
         """
 
-        update_coef = float(coef)
-        require(0.0 < update_coef <= 1.0, "coef must satisfy 0 < coef <= 1.")
+        require(
+            (coef is None) != (integration_time_seconds is None),
+            "specify exactly one of coef or integration_time_seconds.",
+        )
         self.schedule = schedule
-        self.coef = update_coef
+        self.beam_chunk_size = int(beam_chunk_size)
+        require_positive_int("beam_chunk_size", self.beam_chunk_size)
+        n_direction = int(schedule.global_direction_azimuth_deg.size)
+        if integration_time_seconds is not None:
+            integration_time = float(integration_time_seconds)
+            require_positive_float("integration_time_seconds", integration_time)
+            # 2秒周期内に各global方位が何回現れるかを数え、実際の更新rate[update/s]へ変換する。
+            update_count_per_cycle = np.bincount(
+                schedule.direction_match_indices.reshape(-1),
+                minlength=n_direction,
+            ).astype(np.float32)
+            update_rate_per_second = update_count_per_cycle / np.float32(2.0)
+            require(bool(np.all(update_rate_per_second > 0.0)), "every global direction must have an update rate.")
+            self.direction_update_coef = np.minimum(
+                np.float32(2.0) / (np.float32(1.0) + update_rate_per_second * np.float32(integration_time)),
+                np.float32(1.0),
+            ).astype(np.float32, copy=False)
+        else:
+            update_coef = float(coef) if coef is not None else 0.0
+            require(0.0 < update_coef <= 1.0, "coef must satisfy 0 < coef <= 1.")
+            self.direction_update_coef = np.full(n_direction, update_coef, dtype=np.float32)
         self.n_bin = schedule.snapshot_length_samples // 2 + 1
         self.direction_covariance = np.zeros(
             (
@@ -265,32 +355,45 @@ class DirectionMatchedCovarianceAccumulator:
         require(not np.iscomplexobj(input_signal), "signal must be real-valued.")
         segment_index = self._processed_second_count % 2
         direction_indices = self.schedule.direction_match_indices[segment_index]
-        snapshots = self.schedule.extract_snapshots(
-            input_signal,
-            azimuth_segment_index=segment_index,
-        )
-        # snapshots `[n_ch,N,n_beam]`をaxis=1でrFFTし、`X[ch,bin,beam]`へ変換する。
-        spectrum = np.asarray(
-            np.fft.rfft(snapshots, n=self.schedule.snapshot_length_samples, axis=1),
-            dtype=np.complex64,
-        )
-        # beamごとの瞬時共分散`R[beam,i,j,k]=X[i,k,beam]conj(X[j,k,beam])`を作る。
-        instantaneous_covariance = np.asarray(
-            np.einsum("ikb,jkb->bijk", spectrum, spectrum.conj(), optimize=True),
-            dtype=np.complex64,
-        )
-        previous_covariance = self.direction_covariance[direction_indices]
-        updated_covariance = np.asarray(
-            (1.0 - self.coef) * previous_covariance + self.coef * instantaneous_covariance,
-            dtype=np.complex64,
-        )
-        self.direction_covariance[direction_indices] = updated_covariance
+        for beam_start in range(0, self.schedule.n_beam, self.beam_chunk_size):
+            beam_stop = min(beam_start + self.beam_chunk_size, self.schedule.n_beam)
+            snapshots = self.schedule.extract_snapshot_chunk(
+                input_signal,
+                azimuth_segment_index=segment_index,
+                beam_start_index=beam_start,
+                beam_stop_index=beam_stop,
+            )
+            # chunk `[n_ch,N,n_chunk]`をaxis=1でrFFTし、`X[ch,bin,n_chunk]`へ変換する。
+            spectrum = np.asarray(
+                np.fft.rfft(snapshots, n=self.schedule.snapshot_length_samples, axis=1),
+                dtype=np.complex64,
+            )
+            instantaneous_covariance = np.asarray(
+                np.einsum("ikb,jkb->bijk", spectrum, spectrum.conj(), optimize=True),
+                dtype=np.complex64,
+            )
+            chunk_direction_indices = direction_indices[beam_start:beam_stop]
+            previous_covariance = self.direction_covariance[chunk_direction_indices]
+            active_coef = self.direction_update_coef[
+                chunk_direction_indices,
+                np.newaxis,
+                np.newaxis,
+                np.newaxis,
+            ]
+            updated_chunk = np.asarray(
+                (1.0 - active_coef) * previous_covariance + active_coef * instantaneous_covariance,
+                dtype=np.complex64,
+            )
+            self.direction_covariance[chunk_direction_indices] = updated_chunk
 
         self._processed_second_count += 1
         return DirectionMatchedCovarianceUpdate(
             azimuth_segment_index=segment_index,
             global_direction_indices=np.asarray(direction_indices.copy(), dtype=np.int32),
-            active_direction_covariance=updated_covariance.copy(),
+            active_direction_covariance=np.asarray(
+                self.direction_covariance[direction_indices].copy(),
+                dtype=np.complex64,
+            ),
             processed_second_count=self._processed_second_count,
         )
 

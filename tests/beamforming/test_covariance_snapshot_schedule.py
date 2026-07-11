@@ -65,6 +65,13 @@ def test_extract_snapshots_returns_n_ch_by_128_by_159_and_reuses_table() -> None
     second_snapshots = schedule.extract_snapshots(signal + np.int32(1), azimuth_segment_index=1)
     assert id(schedule.channel_center_samples) == center_table_identity
     np.testing.assert_array_equal(second_snapshots, snapshots + np.int32(1))
+    snapshot_chunk = schedule.extract_snapshot_chunk(
+        signal,
+        azimuth_segment_index=0,
+        beam_start_index=20,
+        beam_stop_index=28,
+    )
+    np.testing.assert_array_equal(snapshot_chunk, snapshots[:, :, 20:28])
 
 
 def test_direction_matched_accumulator_updates_each_selected_direction_once() -> None:
@@ -120,3 +127,30 @@ def test_maximum_spatial_correlation_excludes_diagonal_and_handles_zero_power() 
     assert result.maximum_correlation.shape == (2, 2)
     np.testing.assert_allclose(result.maximum_correlation[:, 0], [0.8, 0.4], atol=1.0e-6)
     np.testing.assert_array_equal(result.maximum_correlation[:, 1], [0.0, 0.0])
+    chunked_result = calculate_maximum_spatial_correlation_table(
+        covariance,
+        np.array([0.0, 90.0], dtype=np.float32),
+        fs_hz=2.0,
+        pair_chunk_size=1,
+    )
+    np.testing.assert_array_equal(chunked_result.maximum_correlation, result.maximum_correlation)
+
+
+def test_ten_second_integration_uses_actual_direction_update_rate() -> None:
+    """通常方位0.5回/sと共有90度1回/sで10秒coefを分ける。"""
+
+    schedule = build_two_second_covariance_snapshot_schedule(
+        np.zeros((1, 3), dtype=np.float32),
+        fs_hz=1024.0,
+        sound_speed_m_s=1500.0,
+        snapshot_length_samples=128,
+        beams_per_half=5,
+    )
+    accumulator = DirectionMatchedCovarianceAccumulator(
+        schedule,
+        integration_time_seconds=10.0,
+    )
+
+    # 通常方位は2秒周期に1回なのでrate=0.5/s、共有90度は2回なのでrate=1/s。
+    np.testing.assert_allclose(accumulator.direction_update_coef[[0, 8]], [2.0 / 6.0, 2.0 / 6.0])
+    np.testing.assert_allclose(accumulator.direction_update_coef[4], 2.0 / 11.0)
