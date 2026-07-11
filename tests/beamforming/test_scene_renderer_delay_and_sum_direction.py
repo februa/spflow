@@ -11,21 +11,26 @@ from numpy.typing import NDArray
 
 from scene_renderer import (
     AcousticSource,
+    AmbientField,
+    BandLimitedNoiseSpectrum,
     ConstantEnvelope,
     FreeField,
     Receiver,
     Scene,
     SceneRenderer,
+    SourceComponent,
     StaticPose,
     tone_component_from_rms_level_db,
 )
 from scene_renderer.receiver import ArrayGeometry
 from spflow import (
     design_cbf_weights,
+    integrate_one_sided_band_rms_power,
+    one_sided_rfft_bin_rms_power,
     relative_arrival_delay,
     steering_from_relative_delay,
 )
-from spflow.beamforming import apply_beamformer
+from spflow.beamforming import apply_beamformer, apply_beamformer_bands
 
 
 @dataclass(frozen=True)
@@ -202,3 +207,299 @@ def test_scene_renderer_single_source_is_steered_to_requested_azimuth_and_elevat
     assert abs(observed_elevation_deg - source_elevation_deg) <= 1.0e-9
     # 矩形DASは所望方向で無歪応答を持つため、SL=0 dB re input RMSをRMS=1として復元する。
     np.testing.assert_allclose(float(beam_rms[peak_index]), 1.0, atol=2.0e-6)
+
+
+def _volumetric_sensor_positions_m() -> NDArray[np.float64]:
+    """空間aliasを避けた3x3x3受波器位置を返す。"""
+
+    coordinate_m = np.array([-0.12, 0.0, 0.12], dtype=np.float64)
+    return np.asarray(
+        [[x, y, z] for x in coordinate_m for y in coordinate_m for z in coordinate_m],
+        dtype=np.float64,
+    )
+
+
+def _operational_scan_directions() -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+    """等θ水平beamと俯仰preset、極方向から走査候補を作る。
+
+    Returns:
+        `(directions, azimuth_deg, elevation_deg)`。directions shapeは[n_direction,3]。
+        極方向のazimuth表記は0 degだが、極の評価には方向ベクトルだけを使う。
+    """
+
+    azimuth_axis_deg = np.arange(-180.0, 180.0, 20.0, dtype=np.float64)
+    elevation_presets_deg = np.array([-60.0, -30.0, 0.0, 30.0, 60.0], dtype=np.float64)
+    azimuth_grid, elevation_grid = np.meshgrid(
+        azimuth_axis_deg,
+        elevation_presets_deg,
+        indexing="xy",
+    )
+    regular_azimuth = azimuth_grid.reshape(-1)
+    regular_elevation = elevation_grid.reshape(-1)
+    # 真上・真下では水平射影が0となりazimuthは物理的に定義されないため、各極を1候補だけ追加する。
+    all_azimuth = np.concatenate([regular_azimuth, np.array([0.0, 0.0])])
+    all_elevation = np.concatenate([regular_elevation, np.array([90.0, -90.0])])
+    return (
+        _direction_from_azimuth_elevation(all_azimuth, all_elevation),
+        all_azimuth,
+        all_elevation,
+    )
+
+
+def _direction_angular_error_deg(
+    observed_direction: NDArray[Any], expected_direction: NDArray[Any]
+) -> float:
+    """2つの単位方向ベクトル間の角距離をdegで返す。"""
+
+    observed = np.asarray(observed_direction, dtype=np.float64)
+    expected = np.asarray(expected_direction, dtype=np.float64)
+    cosine = float(np.clip(np.dot(observed, expected), -1.0, 1.0))
+    return float(np.rad2deg(np.arccos(cosine)))
+
+
+@pytest.mark.parametrize(
+    ("receiver_heading_deg", "source_azimuth_deg", "source_elevation_deg"),
+    [
+        (45.0, 80.0, 30.0),
+        (123.0, -100.0, -30.0),
+        (270.0, 160.0, 60.0),
+        (30.0, 0.0, 90.0),
+        (210.0, 120.0, -90.0),
+    ],
+)
+def test_tone_das_preserves_array_frame_direction_for_heading_and_poles(
+    receiver_heading_deg: float,
+    source_azimuth_deg: float,
+    source_elevation_deg: float,
+) -> None:
+    """heading回転後も相対方向へ整相し、極では方向ベクトル誤差が0になる。"""
+
+    fs = 8192.0
+    n_sample = 4096
+    frequency_hz = 2048.0
+    sound_speed = 1500.0
+    positions = _volumetric_sensor_positions_m()
+    receiver = Receiver(
+        StaticPose([0.0, 0.0, 0.0], heading_deg=receiver_heading_deg),
+        VolumetricArray(positions),
+    )
+    source = AcousticSource.from_relative_bearing(
+        source_azimuth_deg,
+        1000.0,
+        receiver.trajectory.pose(0.0),
+        [tone_component_from_rms_level_db(frequency_hz, 0.0, ConstantEnvelope())],
+        elevation_deg=source_elevation_deg,
+    )
+    rendered = np.real(
+        SceneRenderer().render(
+            Scene([source], [], FreeField(sound_speed)),
+            receiver,
+            np.arange(n_sample, dtype=np.float64) / fs,
+        )
+    )
+    tone_bin = int(round(frequency_hz * n_sample / fs))
+    snapshot = np.fft.rfft(rendered, axis=1)[:, tone_bin, np.newaxis]
+    scan_directions, _, _ = _operational_scan_directions()
+    delays = relative_arrival_delay(positions, scan_directions, sound_speed_m_per_s=sound_speed)
+    steering = steering_from_relative_delay(delays, np.array([frequency_hz]))[:, :, 0]
+    beam = apply_beamformer(snapshot, design_cbf_weights(steering))[:, 0]
+    observed_direction = scan_directions[int(np.argmax(np.abs(beam)))]
+    expected_direction = _direction_from_azimuth_elevation(
+        np.array([source_azimuth_deg]), np.array([source_elevation_deg])
+    )[0]
+    assert _direction_angular_error_deg(observed_direction, expected_direction) <= 1.0e-6
+
+
+@pytest.mark.parametrize(
+    ("source_azimuth_deg", "source_elevation_deg"),
+    [(-140.0, 30.0), (-60.0, 60.0), (20.0, -30.0), (100.0, 60.0), (160.0, 0.0)],
+)
+def test_broadband_das_band_power_peaks_at_requested_direction(
+    source_azimuth_deg: float,
+    source_elevation_deg: float,
+) -> None:
+    """俯仰presetを使う広帯域DASのband積分powerが入力方向で最大になる。"""
+
+    fs = 4096.0
+    n_sample = 4096
+    f_low_hz = 500.0
+    f_high_hz = 1500.0
+    sound_speed = 1500.0
+    positions = _volumetric_sensor_positions_m()
+    receiver = Receiver(StaticPose([0.0, 0.0, 0.0]), VolumetricArray(positions))
+    source = AcousticSource.from_relative_bearing(
+        source_azimuth_deg,
+        1000.0,
+        receiver.trajectory.pose(0.0),
+        [
+            SourceComponent(
+                BandLimitedNoiseSpectrum(f_low_hz, f_high_hz),
+                ConstantEnvelope(),
+                amplitude=1.0,
+                noise_seed=444,
+                noise_filter_length=257,
+            )
+        ],
+        elevation_deg=source_elevation_deg,
+    )
+    rendered = np.real(
+        SceneRenderer().render(
+            Scene([source], [], FreeField(sound_speed)),
+            receiver,
+            np.arange(n_sample, dtype=np.float64) / fs,
+        )
+    )
+    frequencies_hz = np.fft.rfftfreq(n_sample, d=1.0 / fs)
+    band_mask = (frequencies_hz >= f_low_hz) & (frequencies_hz <= f_high_hz)
+    band_frequencies_hz = frequencies_hz[band_mask]
+    channel_band_spectrum = np.fft.rfft(rendered, axis=1)[:, band_mask]
+    scan_directions, _, _ = _operational_scan_directions()
+    delays = relative_arrival_delay(positions, scan_directions, sound_speed_m_per_s=sound_speed)
+    steering = steering_from_relative_delay(delays, band_frequencies_hz)
+    beam_band_spectrum = apply_beamformer_bands(
+        channel_band_spectrum,
+        design_cbf_weights(steering),
+    )
+    # band内はDC/Nyquistを含まないため、one-sided RMS powerは2|Y/N|^2である。
+    beam_band_power = np.sum(
+        2.0 * np.abs(beam_band_spectrum / float(n_sample)) ** 2,
+        axis=1,
+    )
+    observed_direction = scan_directions[int(np.argmax(beam_band_power))]
+    expected_direction = _direction_from_azimuth_elevation(
+        np.array([source_azimuth_deg]), np.array([source_elevation_deg])
+    )[0]
+    assert _direction_angular_error_deg(observed_direction, expected_direction) <= 1.0e-6
+    np.testing.assert_allclose(float(np.sqrt(np.max(beam_band_power))), 1.0, rtol=0.03)
+
+
+def _das_band_output_rms(
+    signal: NDArray[Any],
+    positions_m: NDArray[np.float64],
+    direction: NDArray[np.float64],
+    *,
+    sampling_frequency_hz: float,
+    sound_speed_m_per_s: float,
+    f_low_hz: float,
+    f_high_hz: float,
+) -> float:
+    """周波数依存DASを適用し、指定帯域の出力RMSを返す。"""
+
+    signal_array = np.asarray(signal, dtype=np.float64)
+    n_sample = int(signal_array.shape[1])
+    frequencies_hz = np.fft.rfftfreq(n_sample, d=1.0 / sampling_frequency_hz)
+    band_mask = (frequencies_hz >= f_low_hz) & (frequencies_hz <= f_high_hz)
+    channel_spectrum = np.fft.rfft(signal_array, axis=1)
+    delays = relative_arrival_delay(
+        positions_m,
+        direction,
+        sound_speed_m_per_s=sound_speed_m_per_s,
+    )
+    steering = steering_from_relative_delay(delays, frequencies_hz[band_mask])[:, np.newaxis, :]
+    beam_spectrum = apply_beamformer_bands(
+        channel_spectrum[:, band_mask],
+        design_cbf_weights(steering),
+    )[0]
+    # 全rFFT格子へ戻して既存のone-sided power部品と同じDC/Nyquist規約で積分する。
+    full_beam_spectrum = np.zeros(frequencies_hz.size, dtype=np.complex128)
+    full_beam_spectrum[band_mask] = beam_spectrum
+    bin_power = one_sided_rfft_bin_rms_power(full_beam_spectrum, sample_count=n_sample)
+    return float(
+        np.sqrt(integrate_one_sided_band_rms_power(bin_power, band_mask))
+    )
+
+
+def test_noise_only_das_matches_white_noise_array_gain() -> None:
+    """空間白色雑音のDAS出力がw^H Rwと10log10(N) array gainへ一致する。"""
+
+    fs = 4096.0
+    n_sample = 65536
+    f_low_hz = 500.0
+    f_high_hz = 1500.0
+    sound_speed = 1500.0
+    positions = _volumetric_sensor_positions_m()
+    receiver = Receiver(StaticPose([0.0, 0.0, 0.0]), VolumetricArray(positions))
+    field = AmbientField.from_asd_level_db(
+        BandLimitedNoiseSpectrum(f_low_hz, f_high_hz),
+        -40.0,
+        noise_seed=500,
+        noise_filter_length=513,
+    )
+    noise = np.real(
+        SceneRenderer().render(
+            Scene([], [field], FreeField(sound_speed)),
+            receiver,
+            np.arange(n_sample, dtype=np.float64) / fs,
+        )
+    )
+    target_direction = _direction_from_azimuth_elevation(np.array([40.0]), np.array([30.0]))[0]
+    output_rms = _das_band_output_rms(
+        noise,
+        positions,
+        target_direction,
+        sampling_frequency_hz=fs,
+        sound_speed_m_per_s=sound_speed,
+        f_low_hz=f_low_hz,
+        f_high_hz=f_high_hz,
+    )
+    expected_channel_rms = 10.0 ** (-40.0 / 20.0) * np.sqrt(f_high_hz - f_low_hz)
+    expected_output_rms = expected_channel_rms / np.sqrt(float(positions.shape[0]))
+    np.testing.assert_allclose(output_rms, expected_output_rms, rtol=0.06)
+    observed_array_gain_db = 20.0 * np.log10(expected_channel_rms / output_rms)
+    np.testing.assert_allclose(observed_array_gain_db, 10.0 * np.log10(positions.shape[0]), atol=0.5)
+
+
+def test_target_plus_noise_das_power_is_explained_by_separated_components() -> None:
+    """target+noise出力powerが同じDASの分離成分power和で説明できる。"""
+
+    fs = 4096.0
+    n_sample = 65536
+    f_low_hz = 500.0
+    f_high_hz = 1500.0
+    tone_frequency_hz = 1024.0
+    sound_speed = 1500.0
+    positions = _volumetric_sensor_positions_m()
+    receiver = Receiver(StaticPose([0.0, 0.0, 0.0]), VolumetricArray(positions))
+    target_azimuth_deg = 40.0
+    target_elevation_deg = 30.0
+    target_direction = _direction_from_azimuth_elevation(
+        np.array([target_azimuth_deg]), np.array([target_elevation_deg])
+    )[0]
+    source = AcousticSource.from_relative_bearing(
+        target_azimuth_deg,
+        1000.0,
+        receiver.trajectory.pose(0.0),
+        [tone_component_from_rms_level_db(tone_frequency_hz, 0.0, ConstantEnvelope())],
+        elevation_deg=target_elevation_deg,
+        identifier="target",
+        role="target",
+    )
+    field = AmbientField.from_asd_level_db(
+        BandLimitedNoiseSpectrum(f_low_hz, f_high_hz),
+        -40.0,
+        noise_seed=600,
+        noise_filter_length=513,
+        identifier="ambient",
+        role="noise",
+    )
+    rendered = SceneRenderer().render_components(
+        Scene([source], [field], FreeField(sound_speed)),
+        receiver,
+        np.arange(n_sample, dtype=np.float64) / fs,
+    )
+    target = np.real(rendered.sum_by_role("target"))
+    noise = np.real(rendered.sum_by_role("noise"))
+    mixed = np.real(rendered.mixed)
+    common_args = {
+        "sampling_frequency_hz": fs,
+        "sound_speed_m_per_s": sound_speed,
+        "f_low_hz": f_low_hz,
+        "f_high_hz": f_high_hz,
+    }
+    target_rms = _das_band_output_rms(target, positions, target_direction, **common_args)
+    noise_rms = _das_band_output_rms(noise, positions, target_direction, **common_args)
+    mixed_rms = _das_band_output_rms(mixed, positions, target_direction, **common_args)
+    predicted_mixed_power = target_rms**2 + noise_rms**2
+    np.testing.assert_allclose(mixed_rms**2, predicted_mixed_power, rtol=0.03)
+    np.testing.assert_allclose(target_rms, 1.0, rtol=0.01)
+    assert target_rms > noise_rms * 10.0

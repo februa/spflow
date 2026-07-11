@@ -5,11 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from spflow.beamforming import (
     OperationalTimeDomainAdaptiveComparisonConfig,
     SlcConfig,
     run_operational_time_domain_adaptive_comparison,
 )
+from spflow.beamforming.operational_sparse_array import OperationalSparseArrayDefinition
+from spflow.beamforming.time_delay import design_fractional_delay_filter_bank
 
 
 def _require_mapping(value: object, name: str) -> dict[str, Any]:
@@ -26,30 +30,53 @@ def _require_number(value: object, name: str) -> float:
     return float(value)
 
 
-def test_operational_time_domain_adaptive_comparison_reports_before_after_bl_metrics() -> None:
+def test_operational_time_domain_adaptive_comparison_reports_before_after_bl_metrics(tmp_path: Path) -> None:
     """SLC baseline と MVDR/LCMV/GSC の before/after BL 改善量を比較できることを確認する。
 
     方式比較では、固定整相前後のビーム応答重ね書きがないと改善量を判断できない。
     そのため summary には各方式の target/interferer 周波数 BL 指標と PNG パスを必須にする。
     """
+    positions_m = np.zeros((9, 3), dtype=np.float64)
+    positions_m[:, 0] = np.linspace(-0.2, 0.2, 9, dtype=np.float64)
+    active_indices = np.arange(9, dtype=np.int64)
+
+    # この試験の責務は適応方式の summary 契約であり、事前に生成された運用 artifact の有無ではない。
+    # 全周波数で同じ 9 CH を使う小規模 ULA を一時領域へ保存し、単独実行でも同じ条件を再現できるようにする。
+    array_definition = OperationalSparseArrayDefinition(
+        schema_version=1,
+        fs_hz=8192.0,
+        sound_speed_m_s=1500.0,
+        valid_frequency_hz_min=512.0,
+        maximum_frequency_hz=2048.0,
+        positions_m=positions_m,
+        design_frequencies_hz=np.array([0.0, 2048.0], dtype=np.float64),
+        active_channel_indices_by_frequency=(active_indices, active_indices),
+        records=(),
+        formula={},
+    )
+    array_path = tmp_path / "array.json"
+    array_definition.save_json(array_path)
+
+    # 17 相×31 tap は回帰試験時間を抑えつつ、小数遅延整相を整数遅延へ退化させない最小限の試験条件である。
+    filter_bank_path = tmp_path / "fractional_delay_bank.npz"
+    design_fractional_delay_filter_bank(n_frac_filter=17, n_tap=31).save_npz(filter_bank_path)
+
     summary = run_operational_time_domain_adaptive_comparison(
         config=OperationalTimeDomainAdaptiveComparisonConfig(
-            output_dir=Path("artifacts/beamforming/test_time_domain_adaptive_comparison"),
-            operational_array_definition_path=Path(
-                "artifacts/beamforming/operational_sparse_array/operational_sparse_array_fs32768.json"
-            ),
-            fractional_delay_filter_bank_path=Path("artifacts/beamforming/fractional_delay_filter_bank_65x63.npz"),
-            processing_frequency_hz=10000.0,
+            output_dir=tmp_path / "comparison",
+            operational_array_definition_path=array_path,
+            fractional_delay_filter_bank_path=filter_bank_path,
+            processing_frequency_hz=1536.0,
             target_azimuth_deg=90.0,
             interferer_azimuth_deg=60.0,
-            interferer_frequency_hz=8192.0,
+            interferer_frequency_hz=1024.0,
             target_level_db20=0.0,
             interferer_level_db20=-6.0,
-            duration_s=0.5,
-            n_beam_az_real=31,
+            duration_s=0.25,
+            n_beam_az_real=21,
             tap_len=2,
             diagonal_loading=3.0e-2,
-            btr_block_size=1024,
+            btr_block_size=256,
         ),
         slc_config=SlcConfig(
             guard=2,

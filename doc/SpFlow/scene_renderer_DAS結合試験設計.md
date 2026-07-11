@@ -30,6 +30,12 @@ elevation: -60, -30, 0, 30, 60 deg
 ```
 
 入力方位は水平四象限、背面、正負俯仰へ分散し、全点を別々に描画する。
+実運用で俯仰をpresetまたは直接値として指定することを反映し、真上`+90 deg`と真下`-90 deg`は
+水平beam gridへ重複配置せず、それぞれ1つの直接指定候補として追加する。極ではazimuthが定義されないため、
+azimuth誤差ではなく真値・推定値の単位方向ベクトル間角距離を評価する。
+
+receiver headingは`0, 30, 45, 123, 210, 270 deg`を含め、WorldFrame上の向きが変わっても
+ArrayFrame相対方向へ同じDAS steeringで集束することを確認する。
 
 ## 4. DASと評価指標
 
@@ -42,6 +48,24 @@ spflowの`relative_arrival_delay()`、`steering_from_relative_delay()`、`design
 - peak elevation error: 走査grid上で0 deg
 - 所望方向の出力RMS: 1.0
 - 所望方向の出力level: 0 dB re input RMS
+
+広帯域入力では500～1500 Hzの帯域制限雑音音源を各方向へ個別に配置し、周波数binごとのDAS出力を
+one-sided RMS powerとして帯域積分する。band-integrated power最大方向の方向ベクトル角距離を評価し、
+所望方向の出力band RMSが入力RMS 1を保存することを確認する。
+
+noise-onlyでは空間白色背景雑音を入力し、矩形DASの理論値
+
+```text
+P_out = sigma_in^2 * sum_ch |w_ch|^2 = sigma_in^2 / N
+array gain = 10log10(N)
+```
+
+と観測出力を比較する。target+noiseでは同一DAS重みをtarget-only、noise-only、mixedへ適用し、
+無相関成分について`P_mixed ≈ P_target + P_noise`となることを確認する。
+
+このnoise-only結合試験により、scene_rendererが`seed+channel`をsample indexへ直接XORしていた実装で
+CH間相関が残ることを検出した。seed自体をSplitMix64でhashしてからsample indexと混合するよう修正し、
+scene_renderer単体試験でもcovariance未指定時の非対角相関を監視する。
 
 本試験は方式比較、parameter sweep、採否判定を扱わない。DASを基準器として、scene_rendererとspflowの
 方位・位相契約が閉じていることを検証する結合試験である。
