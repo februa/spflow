@@ -27,10 +27,10 @@ def test_direction_delay_and_steering_follow_declared_fourier_convention() -> No
     steering = steering_from_relative_delay(delays_s, frequencies_hz, phase_sign=-1)
 
     np.testing.assert_allclose(direction, np.array([0.6, 0.8, 0.0]))
-    np.testing.assert_allclose(delays_s, np.array([0.0, 0.5]))
+    np.testing.assert_allclose(delays_s, np.array([0.0, -0.5]))
     assert steering.shape == (2, 2)
     np.testing.assert_allclose(steering[:, 0], np.ones(2, dtype=np.complex128))
-    np.testing.assert_allclose(steering[1, 1], -1j, atol=1.0e-15)
+    np.testing.assert_allclose(steering[1, 1], 1j, atol=1.0e-15)
 
 
 def test_multiple_direction_delays_keep_channel_and_direction_axes() -> None:
@@ -47,4 +47,4 @@ def test_multiple_direction_delays_keep_channel_and_direction_axes() -> None:
 
     assert delays_s.shape == (2, 2)
     assert steering.shape == (2, 2, 1)
-    np.testing.assert_allclose(delays_s[1], np.array([0.5, 0.0]))
+    np.testing.assert_allclose(delays_s[1], np.array([-0.5, 0.0]))

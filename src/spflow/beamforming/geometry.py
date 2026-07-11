@@ -56,15 +56,15 @@ def relative_arrival_delay(
         sound_speed_m_per_s: 伝搬速度。単位は m/s。
 
     Returns:
-        相対遅延 `tau = position dot direction / c`。単一方向では shape `[n_channel]`、
+        相対遅延 `tau = -position dot direction / c`。単一方向では shape `[n_channel]`、
         複数方向では `[n_channel, n_direction]`、単位は s。
 
     Raises:
         ValueError: shape、有限性、単位方向、伝搬速度が不正な場合。
 
     境界条件:
-        原点センサの遅延は 0 s となる。符号は source 方向への位置投影が正のセンサほど
-        到来が早いという幾何量を表し、補償位相の符号は steering 関数で明示する。
+        原点センサの遅延は 0 s となる。source 方向への位置投影が正のセンサほど
+        source に近く早着するため、基準点に対する到達遅延は負になる。
     """
     positions = np.asarray(sensor_positions_m, dtype=np.float64)
     directions = np.asarray(arrival_direction, dtype=np.float64)
@@ -87,11 +87,11 @@ def relative_arrival_delay(
         "arrival_direction rows must be unit vectors.",
     )
 
-    # position・direction の内積は source 方向に沿った距離差 [m] であり、
-    # sound speed [m/s] で割ることで基準点に対する相対到達時間差 [s] になる。
+    # position・direction の内積は source へ近づく距離 [m] である。
+    # 近づいたセンサでは伝搬時間が短くなるため負号を付け、基準点に対する相対到達遅延 [s] にする。
     if directions.ndim == 1:
-        return np.asarray(positions @ directions / sound_speed, dtype=np.float64)
-    return np.asarray(positions @ directions.T / sound_speed, dtype=np.float64)
+        return np.asarray(-(positions @ directions) / sound_speed, dtype=np.float64)
+    return np.asarray(-(positions @ directions.T) / sound_speed, dtype=np.float64)
 
 
 def steering_from_relative_delay(

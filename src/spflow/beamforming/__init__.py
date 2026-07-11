@@ -162,6 +162,7 @@ from .sparse_single_side_array_design import (
     build_sparse_single_side_array_design,
     run_sparse_single_side_array_design,
 )
+from .synthetic_signal import PlaneWaveTone, synthesize_plane_wave_tone
 from .time_delay import (
     DelayTable,
     FractionalDelayAndSumBeamformer,
@@ -197,6 +198,7 @@ from .time_domain_adaptive import (
 __all__ = [
     "BeamLevelDisplayArrays",
     "BlShapeFeatures",
+    "PlaneWaveTone",
     "AbfLikeMetricDecision",
     "AbfLikeNonSourceMetrics",
     "BandwiseArrayDesign",
@@ -305,6 +307,7 @@ __all__ = [
     "relative_arrival_delay",
     "steering_from_relative_delay",
     "unit_direction_from_positions",
+    "synthesize_plane_wave_tone",
     "AlignedPathCombiner",
     "CausalBlockFIR",
     "DelayAlignedBeamCovarianceAccumulator",
