@@ -39,6 +39,12 @@ from .covariance import (
     integration_blocks_from_integration_time,
     recommended_integration_time_for_independent_samples,
 )
+from .covariance_snapshot_schedule import (
+    CovarianceSnapshotCenterSchedule,
+    DirectionMatchedCovarianceAccumulator,
+    DirectionMatchedCovarianceUpdate,
+    build_two_second_covariance_snapshot_schedule,
+)
 from .diagnostic_plotting import (
     BeamDiagnosticPlotUsageNotes,
     build_beam_diagnostic_plot_usage_notes,
@@ -229,6 +235,10 @@ __all__ = [
     "integrate_band_covariances",
     "forgetting_factor_from_integration_time",
     "CovarianceEstimator",
+    "CovarianceSnapshotCenterSchedule",
+    "DirectionMatchedCovarianceAccumulator",
+    "DirectionMatchedCovarianceUpdate",
+    "build_two_second_covariance_snapshot_schedule",
     "BeamDiagnosticPlotUsageNotes",
     "build_beam_diagnostic_plot_usage_notes",
     "write_beam_diagnostic_plot_usage_notes",
