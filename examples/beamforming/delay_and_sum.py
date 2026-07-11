@@ -42,7 +42,9 @@ def main() -> None:
     sample_count = 4096
     tone_bin_index = 512
     tone_frequency_hz = tone_bin_index * sampling_frequency_hz / sample_count
-    tone_level_db_re_input_rms = -6.0
+    # SL=0 dB re input RMS は tone の RMS amplitude=1 を意味する。
+    # 実 cos 波へ渡す peak amplitude は信号生成部品内で sqrt(2) に変換される。
+    tone_level_db_re_input_rms = 0.0
     source_azimuth_deg = 65.0
     channel_count = 8
     sensor_spacing_m = 0.25

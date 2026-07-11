@@ -10,6 +10,26 @@ from numpy.typing import NDArray
 from ._validation import require, require_positive_float, require_positive_int
 
 
+def level_db_to_rms_amplitude(level_db_re_rms: float) -> float:
+    """RMS level を線形 RMS amplitude へ変換する。
+
+    Args:
+        level_db_re_rms: RMS level。単位は `dB re reference RMS`。
+
+    Returns:
+        `10^(level/20)` で得る RMS amplitude。基準量が 1 RMS のとき、0 dB は 1。
+
+    Raises:
+        ValueError: level が有限値でない場合。
+
+    境界条件:
+        戻り値は RMS amplitude であり、実 cos 波へ直接渡す peak amplitude ではない。
+    """
+    level = float(level_db_re_rms)
+    require(bool(np.isfinite(level)), "level_db_re_rms must be finite.")
+    return float(10.0 ** (level / 20.0))
+
+
 def tone_rms_level_db_to_peak_amplitude(level_db_re_rms: float) -> float:
     """実正弦波の RMS level を時間波形の peak amplitude へ変換する。
 
@@ -26,9 +46,36 @@ def tone_rms_level_db_to_peak_amplitude(level_db_re_rms: float) -> float:
         0 dB は RMS=1、peak=`sqrt(2)` とする。実正弦波の
         `RMS = peak / sqrt(2)` に対応し、複素指数信号には適用しない。
     """
-    level = float(level_db_re_rms)
-    require(bool(np.isfinite(level)), "level_db_re_rms must be finite.")
-    return float(np.sqrt(2.0) * 10.0 ** (level / 20.0))
+    return float(np.sqrt(2.0) * level_db_to_rms_amplitude(level_db_re_rms))
+
+
+def noise_asd_level_db_to_band_rms(
+    level_db_re_rms_per_sqrt_hz: float,
+    *,
+    bandwidth_hz: float,
+) -> float:
+    """one-sided 白色雑音 ASD level を指定帯域内の RMS amplitude へ変換する。
+
+    Args:
+        level_db_re_rms_per_sqrt_hz: one-sided ASD level。
+            単位は `dB re reference RMS/sqrt(Hz)`。
+        bandwidth_hz: 積分する one-sided 帯域幅。単位は Hz。
+
+    Returns:
+        `10^(NL/20) * sqrt(bandwidth_hz)` で得る帯域内 RMS amplitude。
+
+    Raises:
+        ValueError: level が有限値でない、または帯域幅が正でない場合。
+
+    境界条件:
+        bandwidth は FFT bin 数ではなく Hz で与える。1 bin の RMS が必要な場合は、
+        `bandwidth_hz=frequency_resolution_hz` とする。
+    """
+    level = float(level_db_re_rms_per_sqrt_hz)
+    bandwidth = float(bandwidth_hz)
+    require(bool(np.isfinite(level)), "level_db_re_rms_per_sqrt_hz must be finite.")
+    require_positive_float("bandwidth_hz", bandwidth)
+    return float(10.0 ** (level / 20.0) * np.sqrt(bandwidth))
 
 
 def noise_asd_level_db_to_sample_rms(
@@ -53,11 +100,12 @@ def noise_asd_level_db_to_sample_rms(
         実信号の one-sided bandwidth を `fs/2` Hz とし、ASD の二乗を帯域積分する。
         したがって sample RMS は `ASD * sqrt(fs/2)` となる。
     """
-    level = float(level_db_re_rms_per_sqrt_hz)
     fs_hz = float(sampling_frequency_hz)
-    require(bool(np.isfinite(level)), "level_db_re_rms_per_sqrt_hz must be finite.")
     require_positive_float("sampling_frequency_hz", fs_hz)
-    return float(10.0 ** (level / 20.0) * np.sqrt(fs_hz / 2.0))
+    return noise_asd_level_db_to_band_rms(
+        level_db_re_rms_per_sqrt_hz,
+        bandwidth_hz=fs_hz / 2.0,
+    )
 
 
 def one_sided_rfft_bin_rms_power(

@@ -38,6 +38,10 @@ Use this skill to choose and document evaluation criteria for beamforming and SL
 
 10. For SL/NL input normalization, define whether each level is RMS tone level or one-sided noise amplitude spectral density before generating signals. Verify both in the frequency spectrum, not only in time-domain RMS.
 
+   - `10^(SL/20)` is tone RMS amplitude. A real cosine requires peak amplitude `sqrt(2)*10^(SL/20)`.
+   - Noise RMS in a one-sided bandwidth `B` Hz is `10^(NL/20)*sqrt(B)`.
+   - One FFT bin uses `B=delta_f`; dividing by `sqrt(M)` means selecting one of `M` equal-width partitions of a previously integrated bandwidth, not setting a resolution of `M` Hz.
+
 11. For narrowband and broadband output-level checks, use the same band-integrated RMS-power rule: convert the one-sided FFT bins to RMS power, sum the bins over the input signal band, and compare that sum with the input RMS power. Do not treat narrowband and broadband as different level conventions once the input band is integrated.
 
 12. For BL metric calibration, render every method with the same azimuth axis, y-axis limits, dB reference, dynamic range, source markers, and mask display. Record numerical features and structured human rankings, pairwise preferences, or labeled decisions. Validate candidate metrics with rank correlation, pairwise agreement, classification performance, and held-out scenarios. Once a metric reaches the documented agreement target, use it for sweeps. Preserve disagreement cases as counterexamples for metric revision.

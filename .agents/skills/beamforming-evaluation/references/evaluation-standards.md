@@ -81,6 +81,18 @@ Amp_NL = 10^(NL / 20) * sqrt(fs / 2)
 
 Use `Amp_SL` as the peak amplitude of a real sinusoid. Use `Amp_NL` as the time-domain sample standard deviation of real channel-uncorrelated white noise. Do not pass `10^(NL/20)` directly as the time-domain noise RMS when `NL` is an amplitude spectral-density level.
 
+Keep these amplitude meanings separate:
+
+```text
+tone RMS amplitude                  = 10^(SL/20)
+real-cosine peak amplitude          = sqrt(2) * 10^(SL/20)
+noise RMS in one-sided band B [Hz]  = 10^(NL/20) * sqrt(B)
+noise RMS in one FFT bin            = 10^(NL/20) * sqrt(delta_f)
+delta_f                             = fs / N_FFT
+```
+
+Do not call `10^(NL/20)*sqrt(fs/2)/sqrt(M)` an `M Hz resolution` amplitude. It is the RMS in one of `M` equal-width partitions of the full one-sided bandwidth, whose width is `(fs/2)/M` Hz. It equals the RMS of a `delta_f`-wide FFT bin only when `delta_f=(fs/2)/M`.
+
 Tone spectrum check:
 
 ```text

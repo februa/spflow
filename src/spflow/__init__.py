@@ -148,6 +148,8 @@ from .option import Option
 from .scheduler import StepScheduler
 from .spectral_level import (
     integrate_one_sided_band_rms_power,
+    level_db_to_rms_amplitude,
+    noise_asd_level_db_to_band_rms,
     noise_asd_level_db_to_sample_rms,
     one_sided_rfft_bin_rms_power,
     rms_amplitude_to_level_db,
@@ -169,6 +171,8 @@ __all__ = [
     "DoubleBufferCallback",
     "PlaneWaveTone",
     "tone_rms_level_db_to_peak_amplitude",
+    "level_db_to_rms_amplitude",
+    "noise_asd_level_db_to_band_rms",
     "noise_asd_level_db_to_sample_rms",
     "one_sided_rfft_bin_rms_power",
     "integrate_one_sided_band_rms_power",
