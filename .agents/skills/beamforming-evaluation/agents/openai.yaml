@@ -1,0 +1,4 @@
+interface:
+  display_name: "Beamforming Evaluation"
+  short_description: "Beamforming metrics, dB references, and SL/NL normalization"
+  default_prompt: "Use $beamforming-evaluation to review BL/FRAZ/BTR, SLC, SL/NL spectrum normalization, and dB reference criteria."

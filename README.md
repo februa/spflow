@@ -111,12 +111,12 @@ print(frames[0])
 
 ## Example
 
-A runnable example is included in [examples/basic_pipeline.py](examples/basic_pipeline.py).
+A runnable example is included in [examples/streaming/basic_pipeline.py](examples/streaming/basic_pipeline.py).
 
 Run it after installation:
 
 ```bash
-python -m examples.basic_pipeline
+python -m examples.streaming.basic_pipeline
 ```
 
 It demonstrates:
@@ -163,4 +163,3 @@ def process_frame(x, env):
         .to_list()
     )
 ```
-
