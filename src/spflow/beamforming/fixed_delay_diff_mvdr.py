@@ -79,8 +79,8 @@ class LoadedMVDRDesignResult:
     信号処理上は、周波数 bin ごとの最小分散制約付き重み設計に位置づく。
     """
 
-    weights: NDArray[np.complex128]
-    loaded_condition_number: NDArray[np.float64]
+    weights: NDArray[np.complex64]
+    loaded_condition_number: NDArray[np.float32]
     fallback_mask: NDArray[np.bool_]
 
 
@@ -815,8 +815,9 @@ class LoadedMVDRWeightDesigner:
 
         self._previous_weights = weights.copy()
         return LoadedMVDRDesignResult(
-            weights=weights,
-            loaded_condition_number=condition_number,
+            # solve と条件数評価はcomplex128/float64で安定化し、運用保持する重みと診断系列だけ32bitへ戻す。
+            weights=weights.astype(np.complex64),
+            loaded_condition_number=condition_number.astype(np.float32),
             fallback_mask=fallback_mask,
         )
 
@@ -1075,8 +1076,8 @@ class DifferenceCorrectionFIR:
         require_positive_int("fir_taps", int(fir_taps))
         self.n_ch = int(n_ch)
         self.fir_taps = int(fir_taps)
-        self.taps = np.zeros((self.n_ch, self.fir_taps), dtype=np.complex128)
-        self._state = np.zeros((self.n_ch, max(self.fir_taps - 1, 0)), dtype=np.complex128)
+        self.taps = np.zeros((self.n_ch, self.fir_taps), dtype=np.complex64)
+        self._state = np.zeros((self.n_ch, max(self.fir_taps - 1, 0)), dtype=np.complex64)
 
     def reset(self) -> None:
         """FIR 履歴をゼロに戻す。
@@ -1088,7 +1089,7 @@ class DifferenceCorrectionFIR:
             入力系列を切り替える場合、前系列の末尾 sample を履歴に残すと
             次系列の先頭へ人工的な漏れ込みが出るため、明示的にゼロへ戻す。
         """
-        self._state = np.zeros((self.n_ch, max(self.fir_taps - 1, 0)), dtype=np.complex128)
+        self._state = np.zeros((self.n_ch, max(self.fir_taps - 1, 0)), dtype=np.complex64)
 
     def update_coefficients(self, taps: NDArray[Any]) -> None:
         """補正 FIR 係数を更新する。
@@ -1106,7 +1107,7 @@ class DifferenceCorrectionFIR:
         境界条件:
             NaN/inf 係数は 1 sample で出力全体へ伝搬するため、更新時点で拒否する。
         """
-        coefficient = np.asarray(taps, dtype=np.complex128)
+        coefficient = np.asarray(taps, dtype=np.complex64)
         require(
             coefficient.shape == (self.n_ch, self.fir_taps),
             "taps must have shape (n_ch, fir_taps).",
@@ -1114,7 +1115,7 @@ class DifferenceCorrectionFIR:
         require(bool(np.all(np.isfinite(coefficient))), "taps must contain only finite values.")
         self.taps = coefficient.copy()
 
-    def process(self, x: NDArray[Any]) -> NDArray[np.complex128]:
+    def process(self, x: NDArray[Any]) -> NDArray[np.complex64]:
         """入力 chunk に差分補正 FIR を適用する。
 
         Args:
@@ -1131,7 +1132,7 @@ class DifferenceCorrectionFIR:
             chunk 分割に依存しない出力にするため、末尾 `fir_taps - 1` sample を
             次回用履歴として保持する。`fir_taps == 1` では履歴は空配列である。
         """
-        input_signal = np.asarray(x, dtype=np.complex128)
+        input_signal = np.asarray(x, dtype=np.complex64)
         require(input_signal.ndim == 2, "x must have shape (n_ch, n_sample).")
         require(input_signal.shape[0] == self.n_ch, "x and FIR must agree on n_ch.")
 
@@ -1139,7 +1140,7 @@ class DifferenceCorrectionFIR:
         # 先頭側に過去 sample を置き、各出力時刻で現在 sample までの tap 窓を取り出す。
         x_ext = np.concatenate([self._state, input_signal], axis=1)
         n_sample = int(input_signal.shape[1])
-        output = np.zeros(n_sample, dtype=np.complex128)
+        output = np.zeros(n_sample, dtype=np.complex64)
         reversed_taps = self.taps[:, ::-1]
         for sample_index in range(n_sample):
             segment = x_ext[:, sample_index : sample_index + self.fir_taps]
@@ -1150,7 +1151,7 @@ class DifferenceCorrectionFIR:
         if self.fir_taps > 1:
             self._state = x_ext[:, -(self.fir_taps - 1) :].copy()
         else:
-            self._state = np.zeros((self.n_ch, 0), dtype=np.complex128)
+            self._state = np.zeros((self.n_ch, 0), dtype=np.complex64)
         return output
 
 
@@ -1197,7 +1198,7 @@ class ProcessedBlock:
     fs_hz: float
     latency_tag: str
     coeff_version: int
-    data: NDArray[np.complex128]
+    data: NDArray[np.complex64]
     valid_mask: NDArray[np.bool_]
 
 
@@ -1233,7 +1234,7 @@ class CausalBlockFIR:
         self.n_series = int(n_series)
         self.tap_length = int(tap_length)
         self.history_length = self.tap_length - 1
-        self._history = np.zeros((self.n_series, self.history_length), dtype=np.complex128)
+        self._history = np.zeros((self.n_series, self.history_length), dtype=np.complex64)
 
     def reset(self) -> None:
         """履歴をゼロに戻す。
@@ -1245,9 +1246,9 @@ class CausalBlockFIR:
             入力ストリームを切り替える場合、前ストリームの末尾が次ストリームの先頭へ
             混入しないよう、履歴を明示的に破棄する。
         """
-        self._history = np.zeros((self.n_series, self.history_length), dtype=np.complex128)
+        self._history = np.zeros((self.n_series, self.history_length), dtype=np.complex64)
 
-    def process(self, x_block: NDArray[Any], taps: NDArray[Any]) -> NDArray[np.complex128]:
+    def process(self, x_block: NDArray[Any], taps: NDArray[Any]) -> NDArray[np.complex64]:
         """1 block の因果 FIR 出力を返す。
 
         Args:
@@ -1263,8 +1264,8 @@ class CausalBlockFIR:
         Raises:
             ValueError: 入力 shape が不正な場合、または係数に非有限値が含まれる場合。
         """
-        signal = np.asarray(x_block, dtype=np.complex128)
-        coefficient = np.asarray(taps, dtype=np.complex128)
+        signal = np.asarray(x_block, dtype=np.complex64)
+        coefficient = np.asarray(taps, dtype=np.complex64)
         require(signal.ndim == 2, "x_block must have shape (n_series, length).")
         require(signal.shape[0] == self.n_series, "x_block and FIR must agree on n_series.")
         require(
@@ -1275,7 +1276,7 @@ class CausalBlockFIR:
 
         block_length = int(signal.shape[1])
         extended = np.concatenate((self._history, signal), axis=1)
-        output = np.empty((self.n_series, block_length), dtype=np.complex128)
+        output = np.empty((self.n_series, block_length), dtype=np.complex64)
         for series_index in range(self.n_series):
             # np.convolve の full 出力 index `history_length + i` が、
             # 因果式 y[n0+i] = Σ_p h[p] x[n0+i-p] に対応する。
@@ -1287,7 +1288,7 @@ class CausalBlockFIR:
         if self.history_length > 0:
             self._history = extended[:, -self.history_length :].copy()
         else:
-            self._history = np.zeros((self.n_series, 0), dtype=np.complex128)
+            self._history = np.zeros((self.n_series, 0), dtype=np.complex64)
         return output
 
 
@@ -1331,8 +1332,8 @@ class FractionalDelayMainPath:
         if delay_table.frac_filter_index is None:
             raise ValueError("delay_table must include frac_filter_index.")
         require_positive_float("fs_hz", float(fs_hz))
-        delay_int = np.asarray(delay_table.delay_int, dtype=np.int64)
-        frac_index = np.asarray(delay_table.frac_filter_index, dtype=np.int64)
+        delay_int = np.asarray(delay_table.delay_int, dtype=np.int32)
+        frac_index = np.asarray(delay_table.frac_filter_index, dtype=np.int32)
         require(delay_int.ndim == 2, "delay_int must have shape (n_ch, n_beam).")
         require(frac_index.shape == delay_int.shape, "frac_filter_index must match delay_int.")
         require(bool(np.all(delay_int >= 0)), "delay_int must be non-negative for causal FIR.")
@@ -1358,17 +1359,17 @@ class FractionalDelayMainPath:
     def _build_flat_taps(
         self,
         *,
-        delay_int: NDArray[np.int64],
-        frac_filter_index: NDArray[np.int64],
+        delay_int: NDArray[np.int32],
+        frac_filter_index: NDArray[np.int32],
         fractional_filter_bank: FractionalDelayFilterBank,
-    ) -> NDArray[np.complex128]:
-        filter_taps = np.asarray(fractional_filter_bank.frac_filters, dtype=np.float64)
+    ) -> NDArray[np.complex64]:
+        filter_taps = np.asarray(fractional_filter_bank.frac_filters, dtype=np.float32)
         require(
             bool(np.all((0 <= frac_filter_index) & (frac_filter_index < filter_taps.shape[0]))),
             "frac_filter_index contains an out-of-range index.",
         )
         tap_length = int(np.max(delay_int)) + int(fractional_filter_bank.n_tap)
-        flat_taps = np.zeros((self.n_beam * self.n_ch, tap_length), dtype=np.complex128)
+        flat_taps = np.zeros((self.n_beam * self.n_ch, tap_length), dtype=np.complex64)
         for beam_index in range(self.n_beam):
             for ch_index in range(self.n_ch):
                 row_index = beam_index * self.n_ch + ch_index
@@ -1408,9 +1409,9 @@ class FractionalDelayMainPath:
         flat_output = self._fir.process(flat_input, self._flat_taps)
         steered = flat_output.reshape(self.n_beam, self.n_ch, block.length)
         if self.average_channels:
-            data = np.mean(steered, axis=1, dtype=np.complex128)
+            data = np.mean(steered, axis=1, dtype=np.complex64)
         else:
-            data = np.sum(steered, axis=1, dtype=np.complex128)
+            data = np.sum(steered, axis=1, dtype=np.complex64)
         return ProcessedBlock(
             array_id=block.array_id,
             path_id="main_fractional_delay",
@@ -1420,7 +1421,7 @@ class FractionalDelayMainPath:
             fs_hz=block.fs_hz,
             latency_tag=self.latency_tag,
             coeff_version=self.coeff_version,
-            data=np.asarray(data, dtype=np.complex128),
+            data=np.asarray(data, dtype=np.complex64),
             valid_mask=np.asarray(block.valid_mask.copy(), dtype=np.bool_),
         )
 
@@ -1461,7 +1462,7 @@ class DiffMVDRCorrectionPath:
             ValueError: 係数 shape または値が不正な場合。
         """
         require_positive_float("fs_hz", float(fs_hz))
-        taps = np.asarray(correction_taps, dtype=np.complex128)
+        taps = np.asarray(correction_taps, dtype=np.complex64)
         require(taps.ndim == 3, "correction_taps must have shape (n_beam, n_ch, n_tap).")
         require(taps.shape[0] > 0 and taps.shape[1] > 0 and taps.shape[2] > 0, "invalid taps.")
         require(bool(np.all(np.isfinite(taps))), "correction_taps must contain only finite values.")
@@ -1507,7 +1508,7 @@ class DiffMVDRCorrectionPath:
             fs_hz=block.fs_hz,
             latency_tag=self.latency_tag,
             coeff_version=self.coeff_version,
-            data=np.asarray(data, dtype=np.complex128),
+            data=np.asarray(data, dtype=np.complex64),
             valid_mask=np.asarray(block.valid_mask.copy(), dtype=np.bool_),
         )
 
@@ -1547,7 +1548,7 @@ class AlignedPathCombiner:
             fs_hz=main.fs_hz,
             latency_tag=main.latency_tag,
             coeff_version=main.coeff_version,
-            data=np.asarray(main.data + diff.data, dtype=np.complex128),
+            data=np.asarray(main.data + diff.data, dtype=np.complex64),
             valid_mask=np.asarray(main.valid_mask & diff.valid_mask, dtype=np.bool_),
         )
 
@@ -1607,12 +1608,12 @@ def _validate_streaming_block(
     *,
     expected_array_id: str,
     n_ch: int,
-) -> NDArray[np.complex128]:
+) -> NDArray[np.complex64]:
     """StreamingBlock の shape と metadata を検証し、複素入力配列を返す。"""
     require(block.array_id == expected_array_id, "block array_id does not match processor.")
     require_positive_int("block.length", int(block.length))
     require_positive_float("block.fs_hz", float(block.fs_hz))
-    signal = np.asarray(block.data, dtype=np.complex128)
+    signal = np.asarray(block.data, dtype=np.complex64)
     valid_mask = np.asarray(block.valid_mask, dtype=np.bool_)
     require(signal.shape == (int(n_ch), int(block.length)), "block.data shape is invalid.")
     require(valid_mask.shape == (int(block.length),), "block.valid_mask shape is invalid.")

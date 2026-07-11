@@ -3,8 +3,30 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
 
 import numpy as np
+
+
+class PRAnalysisBankProtocol(Protocol):
+    """PR確認に必要な解析バンク契約。"""
+
+    def analysis(self, x: np.ndarray) -> np.ndarray:
+        """時間信号をsubbandへ変換する。"""
+        ...
+
+
+class PRSynthesisBankProtocol(Protocol):
+    """PR確認に必要な合成バンク契約。"""
+
+    @property
+    def decimation(self) -> int:
+        """間引き率を返す。"""
+        ...
+
+    def synthesis(self, subbands: np.ndarray, *, length: int | None = None) -> np.ndarray:
+        """subbandから時間信号を再構成する。"""
+        ...
 
 
 @dataclass(frozen=True)
@@ -223,7 +245,7 @@ class PrototypeSynthesisDFTFilterBank(_PrototypeBankBase):
 class PRChecker:
     """再構成誤差とプロトタイプ応答指標を評価する。"""
 
-    def __init__(self, analysis_bank: PrototypeAnalysisDFTFilterBank, synthesis_bank: PrototypeSynthesisDFTFilterBank) -> None:
+    def __init__(self, analysis_bank: PRAnalysisBankProtocol, synthesis_bank: PRSynthesisBankProtocol) -> None:
         self.analysis_bank = analysis_bank
         self.synthesis_bank = synthesis_bank
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Callable
 from typing import Literal, TypeVar
 
 import numpy as np
@@ -43,7 +44,8 @@ class NonuniformLeafProcessorConfig:
     short_fft_size: int
     short_fft_hop_size: int
     beamformer_mode: BeamformerMode = "mvdr"
-    output_path_mode: LeafOutputPathMode = "leaf_independent_one_sided"
+    # 外部設定から不正文字列が来た場合も __post_init__ で明示的な ValueError にするため、入力型は str とする。
+    output_path_mode: str = "leaf_independent_one_sided"
     integration_time: float = 0.0
     weight_update_period: float = 0.0
     diag_load: float = 1e-3
@@ -52,12 +54,12 @@ class NonuniformLeafProcessorConfig:
         """設定値を正規化し、正式 one-side OLS 構造の前提を固定する。"""
 
         # 入力正規化
-        used = np.asarray(self.used_channels, dtype=np.int64)
+        used = np.asarray(self.used_channels, dtype=np.int32)
         steering = np.asarray(self.steering, dtype=np.complex64)
 
         # 入力検証
         require(used.ndim == 1 and used.size > 0, "used_channels must be a non-empty 1D array.")
-        require(np.all(used >= 0), "used_channels must be non-negative.")
+        require(bool(np.all(used >= 0)), "used_channels must be non-negative.")
         require(np.unique(used).size == used.size, "used_channels must not contain duplicates.")
         require_positive_int("long_fft_frame_size", self.long_fft_frame_size)
         require_positive_int("long_fft_valid_size", self.long_fft_valid_size)
@@ -372,7 +374,8 @@ class NonuniformLeafProcessor:
     @property
     def output_path_mode(self) -> LeafOutputPathMode:
         """正式実装の output path 名を返す。"""
-        return self.config.output_path_mode
+        # config 初期化時にこの値以外を拒否しているため、公開値は固定Literalとして返す。
+        return "leaf_independent_one_sided"
 
     @property
     def uses_shared_frame_fft(self) -> bool:
@@ -463,10 +466,11 @@ class NonuniformLeafProcessor:
             self._reset_after_flush(reset_formal_state=False)
             return []
 
+        formal_input_template = self._formal_input_template
         outputs = self._flush_shared_fft_chunks(
-            lambda frame_fft: self._emit_output_frame_formal_from_fft(frame_fft, self._formal_input_template),
+            lambda frame_fft: self._emit_output_frame_formal_from_fft(frame_fft, formal_input_template),
         )
-        final_packet = self._finalize_output_delay_formal_packet(self._formal_input_template)
+        final_packet = self._finalize_output_delay_formal_packet(formal_input_template)
         if final_packet is not None:
             outputs.append(final_packet)
         self._reset_after_flush(reset_formal_state=True)
@@ -475,7 +479,7 @@ class NonuniformLeafProcessor:
     def _process_shared_fft_chunks(
         self,
         selected: np.ndarray,
-        emit_frame: callable,
+        emit_frame: Callable[[np.ndarray], PacketT | None],
     ) -> list[PacketT]:
         """共有 frame FFT 1 本で output path と statistics path を同時に進める。"""
 
@@ -489,7 +493,7 @@ class NonuniformLeafProcessor:
                 self._update_statistics_from_frame_fft(frame_fft)
         return outputs
 
-    def _flush_shared_fft_chunks(self, emit_frame: callable) -> list[PacketT]:
+    def _flush_shared_fft_chunks(self, emit_frame: Callable[[np.ndarray], PacketT | None]) -> list[PacketT]:
         """共有 frame FFT 経路の末尾状態を flush する。"""
 
         outputs: list[PacketT] = []

@@ -79,7 +79,7 @@ def test_make_directions_left_side_flips_y_sign():
     np.testing.assert_allclose(left_dir3d[2], right_dir3d[2], atol=1e-6)
 
 
-def test_make_directions_side_array_requires_0_to_180_azimuth_range():
+def test_make_directions_left_side_requires_0_to_180_azimuth_range():
     """方向ベクトル生成について side-array モードでは 0..180 度の方位範囲だけを受け付けることを確認する。"""
     try:
         make_directions(
@@ -379,4 +379,3 @@ def test_cbf_overlap_save_beamformer_matches_pointwise_projection_for_length1_fi
     expected = apply_beamformer(X[:, 0, :], design_cbf_weights(steering[:, :, 0]))
 
     np.testing.assert_allclose(out[0, 0, : X.shape[-1]], expected[0], atol=1e-6)
-

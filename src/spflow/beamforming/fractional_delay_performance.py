@@ -188,7 +188,7 @@ def _plot_margin_summary(
     plt.close(fig)
 
 
-def run_fractional_delay_performance_report(config: FractionalDelayPerformanceConfig) -> dict[str, object]:
+def run_fractional_delay_performance_report(config: FractionalDelayPerformanceConfig) -> dict[str, Any]:
     """整数遅延と小数遅延の固定整相性能比較レポートを保存する。
 
     Args:

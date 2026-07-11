@@ -45,6 +45,16 @@ def test_delay_table_from_geometry_matches_expected_integer_delays_and_fractiona
         fractional_filter_bank=fractional_filter_bank,
     )
 
+    # 実運用の遅延表は座標・遅延をfloat32、添字をint32で保持し、長時間常駐時のメモリ量を抑える。
+    assert delay_table.arrival_delay_sec.dtype == np.float32
+    assert delay_table.steering_delay_sample.dtype == np.float32
+    assert delay_table.delay_frac.dtype == np.float32
+    assert delay_table.delay_int.dtype == np.int32
+    assert delay_table.frac_filter_index is not None
+    assert delay_table.frac_filter_index.dtype == np.int32
+    assert fractional_filter_bank.frac_grid.dtype == np.float32
+    assert fractional_filter_bank.frac_filters.dtype == np.float32
+
     np.testing.assert_allclose(
         delay_table.arrival_delay_sec,
         np.array(
@@ -78,7 +88,7 @@ def test_delay_table_from_geometry_matches_expected_integer_delays_and_fractiona
         ),
     )
     np.testing.assert_allclose(delay_table.delay_frac, 0.0, atol=1e-12)
-    np.testing.assert_array_equal(delay_table.frac_filter_index, np.full((3, 2), 2, dtype=np.int64))
+    np.testing.assert_array_equal(delay_table.frac_filter_index, np.full((3, 2), 2, dtype=np.int32))
 
 
 def test_fractional_delay_filter_bank_save_and_load_round_trips():
@@ -126,3 +136,5 @@ def test_integer_delay_and_sum_beamformer_aligns_impulses_to_common_beam_peak():
 
     np.testing.assert_allclose(steered_channel_output, expected_steered, atol=1e-6)
     np.testing.assert_allclose(beam_output, expected_beam, atol=1e-6)
+    assert steered_channel_output.dtype == np.float32
+    assert beam_output.dtype == np.float32

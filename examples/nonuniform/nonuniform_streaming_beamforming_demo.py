@@ -9,6 +9,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -16,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'src'))
 
+plt: Any
 try:
     import matplotlib.pyplot as plt
 except ImportError:  # pragma: no cover - 実行環境依存
@@ -38,15 +40,15 @@ from spflow.filterbank.formal_nonuniform_tree import FormalNonuniformTreeFilterB
 class NumpyEncoder(json.JSONEncoder):
     """numpy 型を summary JSON へ落とす encoder。"""
 
-    def default(self, obj):
+    def default(self, o: object) -> object:
         """numpy 配列と numpy scalar を JSON 化可能な Python 型へ変換する。"""
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        if isinstance(obj, np.floating):
-            return float(obj)
-        if isinstance(obj, np.integer):
-            return int(obj)
-        return super().default(obj)
+        if isinstance(o, np.ndarray):
+            return o.tolist()
+        if isinstance(o, np.floating):
+            return float(o)
+        if isinstance(o, np.integer):
+            return int(o)
+        return super().default(o)
 
 
 
@@ -948,4 +950,3 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-

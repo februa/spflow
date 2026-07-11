@@ -3,10 +3,37 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
 
 import numpy as np
 
 from .prototype_bank import PrototypeFilter
+
+
+class AnalysisBankProtocol(Protocol):
+    """有限長PR評価に必要な解析バンク契約。"""
+
+    @property
+    def transient_length(self) -> int:
+        """解析過渡長を返す。"""
+        ...
+
+    def analysis(self, x: np.ndarray) -> np.ndarray:
+        """入力のsubband表現を返す。"""
+        ...
+
+
+class SynthesisBankProtocol(Protocol):
+    """有限長PR評価に必要な合成バンク契約。"""
+
+    @property
+    def transient_length(self) -> int:
+        """合成過渡長を返す。"""
+        ...
+
+    def synthesis(self, subbands: np.ndarray, *, length: int | None = None) -> np.ndarray:
+        """subband表現から時間波形を再構成する。"""
+        ...
 
 
 @dataclass(frozen=True)
@@ -164,7 +191,7 @@ class PRDFTSynthesisBank(_ModulatedBankBase):
 class FiniteLengthPRChecker:
     """明示 padding/crop/valid-region 規約で有限長 PR を評価する。"""
 
-    def __init__(self, analysis_bank: object, synthesis_bank: object) -> None:
+    def __init__(self, analysis_bank: AnalysisBankProtocol, synthesis_bank: SynthesisBankProtocol) -> None:
         self.analysis_bank = analysis_bank
         self.synthesis_bank = synthesis_bank
 

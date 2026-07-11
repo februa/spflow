@@ -61,9 +61,13 @@ class OverlapSaveBuffer:
         if self._pending is None:
             self._pending = moved.copy()
         else:
-            if self._pending.ndim != moved.ndim or self._pending.shape[:-1] != moved.shape[:-1]:
+            previous_pending = self._pending
+            if not isinstance(previous_pending, np.ndarray):
+                # _pending は ndarray または None だけを保持する。ここは else 分岐の型契約を実行時にも固定する。
+                raise RuntimeError("overlap-save pending state must be an ndarray.")
+            if previous_pending.ndim != moved.ndim or previous_pending.shape[:-1] != moved.shape[:-1]:
                 raise ValueError("Input shape mismatch except along processing axis.")
-            self._pending = np.concatenate([self._pending, moved], axis=-1)
+            self._pending = np.concatenate([previous_pending, moved], axis=-1)
 
         if self._history is None:
             history_shape = moved.shape[:-1] + (self.overlap_size,)
@@ -72,18 +76,25 @@ class OverlapSaveBuffer:
             self._history = np.zeros(history_shape, dtype=moved.dtype)
 
         frames: list[np.ndarray] = []
-        while self._pending.shape[-1] >= self.valid_size:
-            block = self._pending[..., : self.valid_size]
+        pending = self._pending
+        history = self._history
+        if not isinstance(pending, np.ndarray) or not isinstance(history, np.ndarray):
+            # 上の初期化後は両状態が必ず ndarray でなければ overlap-save frame を構成できない。
+            raise RuntimeError("overlap-save state initialization failed.")
+        while pending.shape[-1] >= self.valid_size:
+            block = pending[..., : self.valid_size]
             # frame shape: [..., frame_size]
             # 末尾 `valid_size` サンプルが今回の新規有効区間、先頭 `overlap_size`
             # サンプルが直前フレーム末尾の履歴に対応する。
-            frame = np.concatenate([self._history, block], axis=-1)
+            frame = np.concatenate([history, block], axis=-1)
             frames.append(np.moveaxis(frame.copy(), -1, work_axis))
             if self.overlap_size > 0:
                 # 次フレームに必要なのは現在フレーム末尾 `overlap_size` サンプルだけである。
                 # overlap-save の重複区間をそのまま履歴として保持する。
-                self._history = frame[..., -self.overlap_size :].copy()
-            self._pending = self._pending[..., self.valid_size :]
+                history = frame[..., -self.overlap_size :].copy()
+            pending = pending[..., self.valid_size :]
+        self._history = history
+        self._pending = pending
         return frames
 
     def process(self, x: np.ndarray) -> list[np.ndarray]:

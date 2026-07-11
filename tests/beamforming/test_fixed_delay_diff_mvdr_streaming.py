@@ -79,7 +79,7 @@ def test_causal_block_fir_matches_one_shot_across_impulse_boundaries() -> None:
 
 def test_aligned_path_combiner_rejects_latency_mismatch() -> None:
     """latency_tag が一致しない経路を暗黙に加算しないことを確認する。"""
-    data = np.ones((1, 4), dtype=np.complex128)
+    data = np.ones((1, 4), dtype=np.complex64)
     valid = np.ones(4, dtype=np.bool_)
     main = ProcessedBlock(
         array_id="array0",

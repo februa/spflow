@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Sequence
 
 import numpy as np
 
@@ -210,7 +211,7 @@ class BandwiseArrayDesign:
         *,
         channel_positions_m: np.ndarray | list[float] | list[list[float]],
         n_band: int,
-        active_indices_per_band: list[np.ndarray | list[int]],
+        active_indices_per_band: Sequence[np.ndarray | Sequence[int]],
     ) -> "BandwiseArrayDesign":
         """帯域ごとの使用チャネル index から shading table を組み立てる。"""
         positions = np.asarray(channel_positions_m, dtype=np.float32)
@@ -228,7 +229,8 @@ class BandwiseArrayDesign:
 
         shading_table = np.zeros((n_ch, n_band), dtype=np.float32)
         for band_index, active_indices in enumerate(active_indices_per_band):
-            index_array = np.asarray(active_indices, dtype=np.int64)
+            # 運用時のチャネル番号は int32 で保持し、NumPy の添字利用時だけ内部で整数として解釈させる。
+            index_array = np.asarray(active_indices, dtype=np.int32)
             require(index_array.ndim == 1, "active channel indices must be 1D.")
             require(index_array.size > 0, "each band must select at least one channel.")
             require(

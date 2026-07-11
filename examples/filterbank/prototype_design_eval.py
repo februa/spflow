@@ -200,10 +200,12 @@ def evaluate_candidate(
     eval_cases: list[tuple[int, int]],
     args: argparse.Namespace,
     pair_designer: PrototypePairDesigner | PolyphasePRPairDesigner,
-    pair_context: object,
+    pair_context: tuple[np.ndarray, int, int] | np.ndarray,
 ) -> PrototypeCandidateResult:
     """候補 1 件を評価し、指標と候補オブジェクトを返す。"""
     if structure == 'explicit_modulation':
+        if not isinstance(pair_designer, PrototypePairDesigner) or not isinstance(pair_context, tuple):
+            raise TypeError('explicit_modulation requires PrototypePairDesigner and cascade context.')
         analysis = PRDFTAnalysisBank(prototype=analysis_prototype)
         synthesis = PRDFTSynthesisBank(prototype=synthesis_prototype, delay_compensation=delay)
         pair_error = pair_designer.evaluate_pair_residual(
@@ -213,6 +215,8 @@ def evaluate_candidate(
             cascade_matrix=pair_context,
         )
     else:
+        if not isinstance(pair_designer, PolyphasePRPairDesigner) or not isinstance(pair_context, np.ndarray):
+            raise TypeError('polyphase structure requires PolyphasePRPairDesigner and branch context.')
         analysis = PolyphasePRDFTAnalysisBank(prototype=analysis_prototype)
         synthesis = PolyphasePRDFTSynthesisBank(
             prototype=synthesis_prototype,
@@ -283,6 +287,7 @@ def optimize_prototype(args: argparse.Namespace) -> tuple[list[PrototypeCandidat
     best_synthesis = candidate_specs[0][1]
     best_score = -np.inf
 
+    pair_designer: PrototypePairDesigner | PolyphasePRPairDesigner
     if args.structure == 'explicit_modulation':
         pair_designer = PrototypePairDesigner(args.n_band, args.decimation)
         delay_grid = list(range(args.delay_start, args.delay_stop + 1, args.delay_step))
@@ -299,9 +304,15 @@ def optimize_prototype(args: argparse.Namespace) -> tuple[list[PrototypeCandidat
     for name, analysis_prototype in candidate_specs:
         for synthesis_length in synthesis_lengths:
             if args.structure == 'explicit_modulation':
-                pair_context = pair_designer.build_cascade_matrix(analysis_prototype)
+                if not isinstance(pair_designer, PrototypePairDesigner):
+                    raise TypeError('explicit_modulation requires PrototypePairDesigner.')
+                pair_context: tuple[np.ndarray, int, int] | np.ndarray = pair_designer.build_cascade_matrix(analysis_prototype)
+                if not isinstance(pair_context, tuple):
+                    raise TypeError('explicit modulation cascade context must be a tuple.')
                 max_delay = pair_context[1] - pair_context[2]
             else:
+                if not isinstance(pair_designer, PolyphasePRPairDesigner):
+                    raise TypeError('polyphase structure requires PolyphasePRPairDesigner.')
                 pair_context = pair_designer.build_branch_matrices(
                     analysis_prototype,
                     synthesis_prototype_length=synthesis_length,
@@ -311,13 +322,19 @@ def optimize_prototype(args: argparse.Namespace) -> tuple[list[PrototypeCandidat
             for delay in valid_delays:
                 for regularization in args.regularization_list:
                     if args.structure == 'explicit_modulation':
-                        synthesis_prototype = pair_designer.design_synthesis_prototype(
+                        if not isinstance(pair_designer, PrototypePairDesigner) or not isinstance(pair_context, tuple):
+                            raise TypeError('explicit_modulation design context is invalid.')
+                        explicit_designer: PrototypePairDesigner = pair_designer
+                        synthesis_prototype = PrototypePairDesigner.design_synthesis_prototype(
+                            explicit_designer,
                             analysis_prototype,
                             delay_samples=delay,
                             cascade_matrix=pair_context,
                             regularization=regularization,
                         )
                     else:
+                        if not isinstance(pair_designer, PolyphasePRPairDesigner) or not isinstance(pair_context, np.ndarray):
+                            raise TypeError('polyphase design context is invalid.')
                         synthesis_prototype = pair_designer.design_synthesis_prototype(
                             analysis_prototype,
                             delay_blocks=delay,

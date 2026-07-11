@@ -6,6 +6,7 @@ import csv
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -94,7 +95,7 @@ class SparseSingleSideArrayDesignConfig:
         )
         if outer_indices.size > 0:
             require(
-                np.all(np.diff(outer_indices) > 0),
+                bool(np.all(np.diff(outer_indices) > 0)),
                 "outer_positive_sensor_indices must be strictly increasing.",
             )
             require(
@@ -108,11 +109,11 @@ class SparseSingleSideArrayDesignConfig:
             "design_frequency_grid_hz must be a non-empty 1-D sequence.",
         )
         require(
-            np.all(np.isfinite(design_frequency_grid_hz)),
+            bool(np.all(np.isfinite(design_frequency_grid_hz))),
             "design_frequency_grid_hz must contain only finite values.",
         )
         require(
-            np.all(np.diff(design_frequency_grid_hz) > 0.0),
+            bool(np.all(np.diff(design_frequency_grid_hz) > 0.0)),
             "design_frequency_grid_hz must be strictly increasing.",
         )
         require_non_negative_float("minimum design frequency", float(design_frequency_grid_hz[0]))
@@ -860,7 +861,7 @@ def _write_record_csv(path: Path, records: list[dict[str, object]]) -> None:
 
 def run_sparse_single_side_array_design(
     config: SparseSingleSideArrayDesignConfig,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     """片舷スパースアレイを設計し、設計表と評価図を保存する。
 
     Args:
@@ -930,7 +931,5 @@ __all__ = [
     "build_sparse_single_side_array_design",
     "run_sparse_single_side_array_design",
 ]
-
-
 
 

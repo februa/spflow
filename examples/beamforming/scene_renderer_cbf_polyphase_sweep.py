@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / 'vendor' / 'scene_renderer'))
 from scene_renderer import (
     AcousticSource,
     ConstantEnvelope,
+    Environment,
     FreeField,
     LinearArray,
     Receiver,
@@ -78,7 +79,7 @@ def render_target_scene(*, fs, freq, n_samples, n_ch, spacing_m, bearing_deg, so
     return x, reference, receiver, source, scene.environment
 
 
-def make_steering(receiver: Receiver, source: AcousticSource, environment: FreeField, fft_size: int, fs: float) -> np.ndarray:
+def make_steering(receiver: Receiver, source: AcousticSource, environment: Environment, fft_size: int, fs: float) -> np.ndarray:
     """target 方位に向けた steering ベクトルを構成する。"""
     receiver_pose = receiver.trajectory.pose(0.0)
     source_pos = source.trajectory.position(0.0)

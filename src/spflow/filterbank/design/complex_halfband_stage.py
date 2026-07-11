@@ -114,6 +114,9 @@ def resolve_qmf_stage_parameters(
                         reconstruction_max_abs_error=error,
                     )
                 if error <= tolerance:
+                    # 直前で同じ候補から生成したため、この時点の best は必ず非 None である。
+                    if best is None:
+                        raise RuntimeError("resolved stage parameters unexpectedly missing.")
                     return best
 
     if best is None:

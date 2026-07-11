@@ -166,6 +166,8 @@ def test_loaded_mvdr_matches_fixed_weight_for_white_covariance() -> None:
     designer = LoadedMVDRWeightDesigner(diagonal_loading_ratio=0.0)
 
     result = designer.compute(covariance, steering, fixed_weight)
+    assert result.weights.dtype == np.complex64
+    assert result.loaded_condition_number.dtype == np.float32
 
     np.testing.assert_allclose(result.weights, fixed_weight, atol=1.0e-12)
     np.testing.assert_array_equal(result.fallback_mask, np.zeros(8, dtype=np.bool_))
@@ -209,7 +211,8 @@ def test_loaded_mvdr_preserves_fixed_path_complex_target_response() -> None:
     np.testing.assert_allclose(
         diff_result.diagnostics.q_blocking_response,
         np.zeros(8, dtype=np.complex128),
-        atol=1.0e-12,
+        # complex64運用重みへ戻した後のblocking残差は約3e-8であり、1e-7以下ならtarget漏洩として無視できる。
+        atol=1.0e-7,
     )
 
 
@@ -368,7 +371,10 @@ def test_standard_fractional_delay_filter_bank_has_51_patterns_and_128_taps() ->
     np.testing.assert_allclose(filter_bank.frac_grid[0], -0.5)
     np.testing.assert_allclose(filter_bank.frac_grid[25], 0.0)
     np.testing.assert_allclose(filter_bank.frac_grid[-1], 0.5)
-    np.testing.assert_allclose(np.diff(filter_bank.frac_grid), np.full(50, 0.02))
+    # float32 gridの0.02刻みは最大約2e-8の量子化差を持つため、2e-6の相対許容差で等間隔性を判定する。
+    np.testing.assert_allclose(np.diff(filter_bank.frac_grid), np.full(50, 0.02), rtol=2.0e-6)
+    assert filter_bank.frac_grid.dtype == np.float32
+    assert filter_bank.frac_filters.dtype == np.float32
 
 
 def test_fixed_delay_fractional_weights_use_selected_filter_per_channel_and_beam() -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 import numpy as np
 
@@ -162,17 +162,18 @@ def _get_pyplot():
     return plt
 
 
-def require_matplotlib() -> None:
+def require_matplotlib() -> Any:
     """画像保存に必要な matplotlib が使えることを確認する。
 
     Returns:
-        なし。
+        import 済みの pyplot module。matplotlib は optional 依存で型stubの有無が環境依存なため、境界型は Any とする。
 
     Raises:
         RuntimeError: matplotlib が利用できず PNG 保存契約を満たせない場合。
     """
-    _get_pyplot()
+    pyplot = _get_pyplot()
     configure_matplotlib_japanese()
+    return pyplot
 
 
 def centers_to_edges(centers: np.ndarray) -> np.ndarray:

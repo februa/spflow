@@ -270,7 +270,7 @@ def _run_fractional_delay_diagnostics(
     config: TimeDelayDiagnosticConfig,
     fractional_delay_filter_bank_path: str | Path,
     channel_weights: FloatArray | None = None,
-) -> tuple[dict[str, object], FractionalDelayAndSumBeamformer, np.ndarray, np.ndarray, tuple[TimeDelayDiagnosticSource, ...], np.ndarray]:
+) -> tuple[dict[str, Any], FractionalDelayAndSumBeamformer, np.ndarray, np.ndarray, tuple[TimeDelayDiagnosticSource, ...], np.ndarray]:
     """小数遅延固定整相の BL/FRAZ/BTR を保存し、SLC 前段の評価結果を返す。"""
     require_matplotlib()
     _validate_config(config)

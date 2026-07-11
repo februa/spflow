@@ -252,25 +252,29 @@ def test_nonuniform_leaf_processor_mvdr_reduces_interferer_response_and_target_e
 
     x = full_target_steering @ target_source[np.newaxis, :] + full_interferer_steering @ interferer_source[np.newaxis, :]
 
-    common_kwargs = dict(
-        spec=spec,
-        used_channels=used,
-        steering=full_target_steering,
-        long_fft_frame_size=256,
-        long_fft_valid_size=128,
-        short_fft_size=256,
-        short_fft_hop_size=128,
-        output_path_mode="leaf_independent_one_sided",
-    )
     cbf_processor = NonuniformLeafProcessor(
         NonuniformLeafProcessorConfig(
-            **common_kwargs,
+            spec=spec,
+            used_channels=used,
+            steering=full_target_steering,
+            long_fft_frame_size=256,
+            long_fft_valid_size=128,
+            short_fft_size=256,
+            short_fft_hop_size=128,
+            output_path_mode="leaf_independent_one_sided",
             beamformer_mode="cbf",
         )
     )
     mvdr_processor = NonuniformLeafProcessor(
         NonuniformLeafProcessorConfig(
-            **common_kwargs,
+            spec=spec,
+            used_channels=used,
+            steering=full_target_steering,
+            long_fft_frame_size=256,
+            long_fft_valid_size=128,
+            short_fft_size=256,
+            short_fft_hop_size=128,
+            output_path_mode="leaf_independent_one_sided",
             beamformer_mode="mvdr",
             integration_time=0.5,
             weight_update_period=0.0,

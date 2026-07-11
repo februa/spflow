@@ -194,7 +194,11 @@ class NonuniformTreeFilterBank:
         packets: list[NonuniformBandPacket],
     ) -> None:
         if node.is_leaf:
-            packets.append(NonuniformBandPacket(node.spec, np.asarray(x, dtype=np.complex64).copy()))
+            leaf_spec = node.spec
+            if leaf_spec is None:
+                # leaf は必ず帯域仕様を持つ。不完全な tree 構築を信号処理前に検出する。
+                raise RuntimeError("leaf node must have a band specification.")
+            packets.append(NonuniformBandPacket(leaf_spec, np.asarray(x, dtype=np.complex64).copy()))
             return
 
         low, high = self.stage.analysis(x)

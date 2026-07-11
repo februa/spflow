@@ -6,6 +6,7 @@ import csv
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -70,10 +71,10 @@ class TimeDelayGuardDesignConfig:
         require_positive_float("fs_hz", float(self.fs_hz))
         require_positive_float("duration_s", float(self.duration_s))
         require_positive_float("sound_speed_m_s", float(self.sound_speed_m_s))
-        require(np.isfinite(float(self.target_azimuth_deg)), "target_azimuth_deg must be finite.")
-        require(np.isfinite(float(self.target_elevation_deg)), "target_elevation_deg must be finite.")
-        require(np.isfinite(float(self.target_level_db20)), "target_level_db20 must be finite.")
-        require(np.isfinite(float(self.target_phase_deg)), "target_phase_deg must be finite.")
+        require(bool(np.isfinite(float(self.target_azimuth_deg))), "target_azimuth_deg must be finite.")
+        require(bool(np.isfinite(float(self.target_elevation_deg))), "target_elevation_deg must be finite.")
+        require(bool(np.isfinite(float(self.target_level_db20))), "target_level_db20 must be finite.")
+        require(bool(np.isfinite(float(self.target_phase_deg))), "target_phase_deg must be finite.")
         require_positive_int("array_n_ch", int(self.array_n_ch))
         require_positive_float("array_sensor_spacing_m", float(self.array_sensor_spacing_m))
         require_positive_int("n_beam_az_real", int(self.n_beam_az_real))
@@ -90,20 +91,20 @@ class TimeDelayGuardDesignConfig:
         if self.frequency_grid_hz is not None:
             frequencies_hz = np.asarray(self.frequency_grid_hz, dtype=np.float64)
             require(frequencies_hz.ndim == 1 and frequencies_hz.size > 0, "frequency_grid_hz must be a non-empty 1-D sequence.")
-            require(np.all(np.isfinite(frequencies_hz)), "frequency_grid_hz must contain only finite values.")
-            require(np.all(frequencies_hz > 0.0), "frequency_grid_hz must contain only positive values.")
-            require(np.all(np.diff(frequencies_hz) > 0.0), "frequency_grid_hz must be strictly increasing.")
+            require(bool(np.all(np.isfinite(frequencies_hz))), "frequency_grid_hz must contain only finite values.")
+            require(bool(np.all(frequencies_hz > 0.0)), "frequency_grid_hz must contain only positive values.")
+            require(bool(np.all(np.diff(frequencies_hz) > 0.0)), "frequency_grid_hz must be strictly increasing.")
 
         if self.sparse_stride_pattern is not None:
             stride_pattern = np.asarray(self.sparse_stride_pattern, dtype=np.int64)
             require(stride_pattern.ndim == 1 and stride_pattern.size > 0, "sparse_stride_pattern must be a non-empty 1-D sequence.")
-            require(np.all(stride_pattern > 0), "sparse_stride_pattern must contain only positive integers.")
+            require(bool(np.all(stride_pattern > 0)), "sparse_stride_pattern must contain only positive integers.")
 
         if self.array_positions_m is not None:
             positions = np.asarray(self.array_positions_m, dtype=np.float64)
             require(positions.ndim == 2 and positions.shape[1] == 3, "array_positions_m must have shape (n_ch, 3).")
             require(positions.shape[0] > 0, "array_positions_m must not be empty.")
-            require(np.all(np.isfinite(positions)), "array_positions_m must contain only finite values.")
+            require(bool(np.all(np.isfinite(positions))), "array_positions_m must contain only finite values.")
 
 
 def _resolve_frequency_grid_hz(config: TimeDelayGuardDesignConfig) -> np.ndarray:
@@ -215,6 +216,13 @@ def _write_guard_table_csv(path: Path, records: list[dict[str, object]]) -> None
             writer.writerow({fieldname: record[fieldname] for fieldname in fieldnames})
 
 
+def _require_record_number(value: object, name: str) -> int | float:
+    """集計recordから型検証済みの数値を返す。"""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise TypeError(f"{name} must be numeric.")
+    return value
+
+
 def _plot_guard_design_summary(
     output_path: Path,
     frequencies_hz: np.ndarray,
@@ -239,7 +247,7 @@ def _plot_guard_design_summary(
     plt.close(fig)
 
 
-def run_integer_delay_guard_design(config: TimeDelayGuardDesignConfig) -> dict[str, object]:
+def run_integer_delay_guard_design(config: TimeDelayGuardDesignConfig) -> dict[str, Any]:
     """固定整相だけの BL から周波数依存 guard 設計表を保存する。
 
     Args:
@@ -315,8 +323,15 @@ def run_integer_delay_guard_design(config: TimeDelayGuardDesignConfig) -> dict[s
                 ),
             ),
         )
-        multichannel_signal, _ = _generate_target_scene(array_positions_m, measurement_config.source_specs, measurement_config)
+        measurement_source_specs = measurement_config.source_specs
+        if measurement_source_specs is None:
+            # この関数では直前に必ず単一音源を設定する。None は構成契約違反として早期に検出する。
+            raise RuntimeError("guard measurement requires one source specification.")
+        multichannel_signal, _ = _generate_target_scene(array_positions_m, measurement_source_specs, measurement_config)
         beam_output = beamformer.process(multichannel_signal)
+        if isinstance(beam_output, tuple):
+            # guard 設計は主ビーム出力だけを評価し、デバッグ用 steered channel は使用しない。
+            beam_output = beam_output[0]
 
         beam_levels_db20 = np.array(
             [
@@ -416,8 +431,14 @@ def run_integer_delay_guard_design(config: TimeDelayGuardDesignConfig) -> dict[s
     json_path = output_dir / "frequency_guard_table.json"
     csv_path = output_dir / "frequency_guard_table.csv"
     plot_path = output_dir / "frequency_guard_table.png"
-    half_power_width_beams = np.array([int(record["half_power_width_beams"]) for record in records], dtype=np.int64)
-    guard_half_width_beams = np.array([int(record["guard_half_width_beams"]) for record in records], dtype=np.int64)
+    half_power_width_beams = np.array(
+        [int(_require_record_number(record["half_power_width_beams"], "half_power_width_beams")) for record in records],
+        dtype=np.int32,
+    )
+    guard_half_width_beams = np.array(
+        [int(_require_record_number(record["guard_half_width_beams"], "guard_half_width_beams")) for record in records],
+        dtype=np.int32,
+    )
 
     _write_guard_table_csv(csv_path, records)
     _plot_guard_design_summary(
@@ -461,7 +482,3 @@ __all__ = [
     "TimeDelayGuardDesignConfig",
     "run_integer_delay_guard_design",
 ]
-
-
-
-

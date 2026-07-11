@@ -20,6 +20,7 @@ from scene_renderer import (
     AcousticSource,
     ArrayGeometry,
     ConstantEnvelope,
+    Environment,
     FreeField,
     LinearArray,
     Receiver,
@@ -149,7 +150,7 @@ def direction_from_source(receiver: Receiver, source: AcousticSource) -> np.ndar
     return receiver_pose.world_vector_to_array(direction_world)
 
 
-def steering_from_dir3d(receiver: Receiver, environment: FreeField, fft_size: int, fs: float, dir3d: np.ndarray) -> np.ndarray:
+def steering_from_dir3d(receiver: Receiver, environment: Environment, fft_size: int, fs: float, dir3d: np.ndarray) -> np.ndarray:
     """到来方向ベクトルから周波数依存 steering ベクトルを構成する。"""
     tau = receiver.array.positions() @ dir3d / environment.c
     freqs = np.fft.fftfreq(fft_size, d=1.0 / fs)
@@ -157,7 +158,7 @@ def steering_from_dir3d(receiver: Receiver, environment: FreeField, fft_size: in
     return np.moveaxis(steering, -1, 1)
 
 
-def make_beam_steering(receiver: Receiver, source: AcousticSource, environment: FreeField, fft_size: int, fs: float):
+def make_beam_steering(receiver: Receiver, source: AcousticSource, environment: Environment, fft_size: int, fs: float):
     """指定方位に対応する steering ベクトルと走査軸を構成する。"""
     direction = direction_from_source(receiver, source)
     az_deg = float(np.rad2deg(np.arctan2(direction[1], direction[0])))

@@ -442,8 +442,13 @@ class OracleComplexFIRHalfbandStageStreamingSynthesizer:
             self._low = low_arr.copy()
             self._high = high_arr.copy()
         else:
-            self._low = np.concatenate([self._low, low_arr], axis=-1)
-            self._high = np.concatenate([self._high, high_arr], axis=-1)
+            previous_low = self._low
+            previous_high = self._high
+            if previous_high is None:
+                # low/high は常に対で更新するため、片側だけ欠ける状態は内部状態破損である。
+                raise RuntimeError("streaming synthesis low/high state is inconsistent.")
+            self._low = np.concatenate([previous_low, low_arr], axis=-1)
+            self._high = np.concatenate([previous_high, high_arr], axis=-1)
 
         assert self._high is not None
         recon = self.stage.synthesis(self._low, self._high)

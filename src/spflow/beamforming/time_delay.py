@@ -11,19 +11,19 @@ from .._validation import require, require_positive_float, require_positive_int
 
 
 def _normalize_array_positions(array_pos_m: np.ndarray) -> np.ndarray:
-    """アレイ位置ベクトルを shape `[n_ch, 3]` の `float64` 配列へ正規化する。"""
-    positions = np.asarray(array_pos_m, dtype=np.float64)
+    """アレイ位置ベクトルを shape `[n_ch, 3]` の `float32` 配列へ正規化する。"""
+    positions = np.asarray(array_pos_m, dtype=np.float32)
     require(positions.ndim == 2 and positions.shape[1] == 3, "array_pos_m must have shape (n_ch, 3).")
     require(positions.shape[0] > 0, "array_pos_m must not be empty.")
-    require(np.all(np.isfinite(positions)), "array_pos_m must contain only finite values.")
+    require(bool(np.all(np.isfinite(positions))), "array_pos_m must contain only finite values.")
     return positions
 
 
 def _normalize_direction_cosines(dir_cos: np.ndarray) -> np.ndarray:
-    """方向余弦テーブルを shape `[n_beam, 3]` の `float64` 配列へ正規化する。"""
-    directions = np.asarray(dir_cos, dtype=np.float64)
+    """方向余弦テーブルを shape `[n_beam, 3]` の `float32` 配列へ正規化する。"""
+    directions = np.asarray(dir_cos, dtype=np.float32)
     require(directions.ndim == 2, "dir_cos must be a 2-D array.")
-    require(np.all(np.isfinite(directions)), "dir_cos must contain only finite values.")
+    require(bool(np.all(np.isfinite(directions))), "dir_cos must contain only finite values.")
 
     if directions.shape[1] == 3:
         return directions
@@ -53,18 +53,19 @@ class FractionalDelayFilterBank:
 
     def __post_init__(self) -> None:
         """保存形式と nearest-neighbor 選択に必要な shape 条件を検証する。"""
-        frac_grid = np.asarray(self.frac_grid, dtype=np.float64)
-        frac_filters = np.asarray(self.frac_filters, dtype=np.float64)
+        # FIR設計はfloat64で行っても、運用時の係数バンクはメモリ帯域を抑えるためfloat32で保持する。
+        frac_grid = np.asarray(self.frac_grid, dtype=np.float32)
+        frac_filters = np.asarray(self.frac_filters, dtype=np.float32)
 
         require(frac_grid.ndim == 1, "frac_grid must have shape (n_frac_filter,).")
         require(frac_grid.size > 0, "frac_grid must not be empty.")
-        require(np.all(np.isfinite(frac_grid)), "frac_grid must contain only finite values.")
-        require(np.all(np.diff(frac_grid) >= 0.0), "frac_grid must be sorted in ascending order.")
+        require(bool(np.all(np.isfinite(frac_grid))), "frac_grid must contain only finite values.")
+        require(bool(np.all(np.diff(frac_grid) >= 0.0)), "frac_grid must be sorted in ascending order.")
 
         require(frac_filters.ndim == 2, "frac_filters must have shape (n_frac_filter, n_tap).")
         require(frac_filters.shape[0] == frac_grid.size, "frac_filters and frac_grid must agree on n_frac_filter.")
         require(frac_filters.shape[1] > 0, "frac_filters must contain at least one tap.")
-        require(np.all(np.isfinite(frac_filters)), "frac_filters must contain only finite values.")
+        require(bool(np.all(np.isfinite(frac_filters))), "frac_filters must contain only finite values.")
 
         object.__setattr__(self, "frac_grid", frac_grid)
         object.__setattr__(self, "frac_filters", frac_filters)
@@ -92,7 +93,7 @@ class FractionalDelayFilterBank:
         Raises:
             ValueError: `delay_frac` が 2 次元でない場合。
         """
-        delay_frac_array = np.asarray(delay_frac, dtype=np.float64)
+        delay_frac_array = np.asarray(delay_frac, dtype=np.float32)
         require(delay_frac_array.ndim == 2, "delay_frac must have shape (n_ch, n_beam).")
 
         # delay_frac[..., None] shape: [n_ch, n_beam, 1]
@@ -101,7 +102,7 @@ class FractionalDelayFilterBank:
         return np.argmin(
             np.abs(delay_frac_array[..., np.newaxis] - self.frac_grid[np.newaxis, np.newaxis, :]),
             axis=-1,
-        ).astype(np.int64)
+        ).astype(np.int32)
 
     def save_npz(self, path: str | Path) -> None:
         """小数遅延 FIR バンクを `.npz` 形式で保存する。"""
@@ -146,7 +147,7 @@ def design_windowed_sinc_fractional_delay_filter(mu: float, n_tap: int) -> np.nd
     taps *= np.hamming(n_tap)
 
     dc_gain = np.sum(taps)
-    require(abs(dc_gain) > 0.0, "fractional delay filter normalization failed.")
+    require(bool(abs(dc_gain) > 0.0), "fractional delay filter normalization failed.")
 
     # DC 利得を 1 に正規化しておくことで、固定整相後の振幅が
     # フィルタ選択だけで系統的に増減しないようにする。
@@ -201,10 +202,10 @@ class DelayTable:
 
     def __post_init__(self) -> None:
         """shape 整合とサンプル遅延分解の基本条件を検証する。"""
-        arrival_delay_sec = np.asarray(self.arrival_delay_sec, dtype=np.float64)
-        steering_delay_sample = np.asarray(self.steering_delay_sample, dtype=np.float64)
-        delay_int = np.asarray(self.delay_int, dtype=np.int64)
-        delay_frac = np.asarray(self.delay_frac, dtype=np.float64)
+        arrival_delay_sec = np.asarray(self.arrival_delay_sec, dtype=np.float32)
+        steering_delay_sample = np.asarray(self.steering_delay_sample, dtype=np.float32)
+        delay_int = np.asarray(self.delay_int, dtype=np.int32)
+        delay_frac = np.asarray(self.delay_frac, dtype=np.float32)
 
         require(arrival_delay_sec.ndim == 2, "arrival_delay_sec must have shape (n_ch, n_beam).")
         require(
@@ -216,10 +217,10 @@ class DelayTable:
             delay_frac.shape == arrival_delay_sec.shape,
             "delay_frac and arrival_delay_sec must agree on shape.",
         )
-        require(np.all(delay_int >= 0), "delay_int must be non-negative after causal offsetting.")
+        require(bool(np.all(delay_int >= 0)), "delay_int must be non-negative after causal offsetting.")
 
         if self.frac_filter_index is not None:
-            frac_filter_index = np.asarray(self.frac_filter_index, dtype=np.int64)
+            frac_filter_index = np.asarray(self.frac_filter_index, dtype=np.int32)
             require(
                 frac_filter_index.shape == arrival_delay_sec.shape,
                 "frac_filter_index and arrival_delay_sec must agree on shape.",
@@ -289,7 +290,7 @@ class DelayTable:
 
         # round 分解により、補償遅延を整数部と ±0.5 sample 程度の小数部へ分ける。
         # 後段の小数遅延 FIR は delay_frac のみを担当し、delay_int は単純なサンプルシフトで処理する。
-        delay_int = np.rint(steering_delay_sample).astype(np.int64)
+        delay_int = np.rint(steering_delay_sample).astype(np.int32)
         delay_frac = steering_delay_sample - delay_int
 
         frac_filter_index = None
@@ -307,7 +308,9 @@ class DelayTable:
 
 def _steering_phase_from_integer_delay(delay_int: np.ndarray, frequency_hz: float, fs_hz: float) -> np.ndarray:
     """整数遅延だけの steering 複素応答を返す。"""
-    return np.exp(-1j * 2.0 * np.pi * float(frequency_hz) * np.asarray(delay_int, dtype=np.float64) / float(fs_hz))
+    return np.exp(
+        -1j * np.float32(2.0 * np.pi * float(frequency_hz) / float(fs_hz)) * np.asarray(delay_int, dtype=np.float32)
+    ).astype(np.complex64)
 
 
 def _fractional_filter_response(
@@ -327,16 +330,16 @@ def _fractional_filter_response(
     Returns:
         各チャネル・各ビームで選ばれた FIR の複素応答。shape は `[n_ch, n_beam]`。
     """
-    index_table = np.asarray(frac_filter_index, dtype=np.int64)
+    index_table = np.asarray(frac_filter_index, dtype=np.int32)
     require(index_table.ndim == 2, "frac_filter_index must have shape (n_ch, n_beam).")
 
     angular_frequency_rad = 2.0 * np.pi * float(frequency_hz) / float(fs_hz)
-    tap_index = np.arange(fractional_filter_bank.n_tap, dtype=np.float64)
+    tap_index = np.arange(fractional_filter_bank.n_tap, dtype=np.float32)
     unique_filter_indices = np.unique(index_table)
     unique_responses: dict[int, complex] = {}
 
     for filter_index in unique_filter_indices.tolist():
-        taps = np.asarray(fractional_filter_bank.frac_filters[int(filter_index)], dtype=np.float64)
+        taps = np.asarray(fractional_filter_bank.frac_filters[int(filter_index)], dtype=np.float32)
         # H(e^{jw}) = Σ h[n] exp(-j w n)。
         # 実行時の FIR 畳み込みと同じタップ順で周波数応答を評価し、
         # beam-domain の解析式と time-domain 実装の位相基準を一致させる。
@@ -344,7 +347,7 @@ def _fractional_filter_response(
             np.sum(taps * np.exp(-1j * angular_frequency_rad * tap_index))
         )
 
-    filter_response = np.empty(index_table.shape, dtype=np.complex128)
+    filter_response = np.empty(index_table.shape, dtype=np.complex64)
     for filter_index, response in unique_responses.items():
         filter_response[index_table == int(filter_index)] = response
     return filter_response
@@ -623,7 +626,7 @@ class FractionalDelayAndSumBeamformer:
 
         # FIR 畳み込みでは tap 係数が float64 のため、出力は少なくとも float64 に保って
         # 高域位相誤差の確認時に丸めで差分が埋もれないようにする。
-        working_dtype = np.result_type(input_signal.dtype, np.float64)
+        working_dtype = np.result_type(input_signal.dtype, np.float32)
         channel_signal = np.asarray(input_signal, dtype=working_dtype)
         filter_taps = np.asarray(self.fractional_filter_bank.frac_filters, dtype=working_dtype)
 

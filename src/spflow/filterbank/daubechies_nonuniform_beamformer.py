@@ -105,8 +105,8 @@ class DaubechiesNonuniformBeamformer:
 
         # ビームフォーマ全体設定
         self.array_design = make_reference_dense_sparse_array_design() if array_design is None else array_design
-        self.beamformer_mode = beamformer_mode
-        self.output_path_mode = output_path_mode
+        self.beamformer_mode: BeamformerMode = beamformer_mode
+        self.output_path_mode: LeafOutputPathMode = output_path_mode
         self.integration_time = float(integration_time)
         self.weight_update_period = float(weight_update_period)
         self.diag_load = float(diag_load)

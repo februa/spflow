@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -119,7 +120,7 @@ def _validate_config(config: TimeDelayDiagnosticConfig) -> None:
     if config.sparse_stride_pattern is not None:
         stride_pattern = np.asarray(config.sparse_stride_pattern, dtype=np.int64)
         require(stride_pattern.ndim == 1 and stride_pattern.size > 0, "sparse_stride_pattern must be a non-empty 1-D sequence.")
-        require(np.all(stride_pattern > 0), "sparse_stride_pattern must contain only positive integers.")
+        require(bool(np.all(stride_pattern > 0)), "sparse_stride_pattern must contain only positive integers.")
         require(
             int(config.array_n_ch) % 2 == 1,
             "array_n_ch must be odd when sparse_stride_pattern is used so that the sparse array keeps a center sensor.",
@@ -129,7 +130,7 @@ def _validate_config(config: TimeDelayDiagnosticConfig) -> None:
         positions = np.asarray(config.array_positions_m, dtype=np.float64)
         require(positions.ndim == 2 and positions.shape[1] == 3, "array_positions_m must have shape (n_ch, 3).")
         require(positions.shape[0] > 0, "array_positions_m must not be empty.")
-        require(np.all(np.isfinite(positions)), "array_positions_m must contain only finite values.")
+        require(bool(np.all(np.isfinite(positions))), "array_positions_m must contain only finite values.")
 
 
 def _amplitude_from_db20(level_db20: float) -> float:
@@ -157,7 +158,7 @@ def _normalize_explicit_array_positions(array_positions_m: np.ndarray) -> np.nda
     positions = np.asarray(array_positions_m, dtype=np.float64)
     require(positions.ndim == 2 and positions.shape[1] == 3, "array_positions_m must have shape (n_ch, 3).")
     require(positions.shape[0] > 0, "array_positions_m must not be empty.")
-    require(np.all(np.isfinite(positions)), "array_positions_m must contain only finite values.")
+    require(bool(np.all(np.isfinite(positions))), "array_positions_m must contain only finite values.")
     return positions
 
 
@@ -188,7 +189,7 @@ def build_sparse_single_side_array_positions(
 
     stride_pattern = np.asarray(sparse_stride_pattern, dtype=np.int64)
     require(stride_pattern.ndim == 1 and stride_pattern.size > 0, "sparse_stride_pattern must be a non-empty 1-D sequence.")
-    require(np.all(stride_pattern > 0), "sparse_stride_pattern must contain only positive integers.")
+    require(bool(np.all(stride_pattern > 0)), "sparse_stride_pattern must contain only positive integers.")
 
     n_positive_sensor = n_ch // 2
     positive_indices: list[int] = []
@@ -494,7 +495,7 @@ def _evaluate_source_metrics_and_save_bl(
     return source_metrics
 
 
-def run_integer_delay_diagnostics(config: TimeDelayDiagnosticConfig) -> dict[str, object]:
+def run_integer_delay_diagnostics(config: TimeDelayDiagnosticConfig) -> dict[str, Any]:
     """整数遅延固定整相の BL/FRAZ/BTR を画像保存し、ピーク位置を要約する。
 
     Args:
@@ -531,6 +532,9 @@ def run_integer_delay_diagnostics(config: TimeDelayDiagnosticConfig) -> dict[str
         sound_speed_m_s=float(config.sound_speed_m_s),
     )
     beam_output = beamformer.process(multichannel_signal)
+    # process はデバッグ用 steered channel を返す構成も型契約に含むため、診断で使う主出力を明示的に確定する。
+    if isinstance(beam_output, tuple):
+        beam_output = beam_output[0]
 
     axis_az_deg = np.asarray(beam_grid["axis_az_deg"], dtype=np.float64)
     freqs_hz, fraz_levels_db20 = _rfft_levels_db20(beam_output, fs_hz=float(config.fs_hz))
@@ -675,4 +679,3 @@ def run_integer_delay_diagnostics(config: TimeDelayDiagnosticConfig) -> dict[str
 
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
     return summary
-

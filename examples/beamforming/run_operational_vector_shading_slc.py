@@ -271,10 +271,15 @@ def _load_runtime_array_input() -> RuntimeArrayInput:
                 "RECEIVER_POSITION_M, SHADING_COEFFICIENT_BY_CHANNEL_AND_BIN, "
                 "SHADING_FREQUENCY_HZ must be set together."
             )
+        receiver_position_m = RECEIVER_POSITION_M
+        shading_coefficient = SHADING_COEFFICIENT_BY_CHANNEL_AND_BIN
+        shading_frequency_hz = SHADING_FREQUENCY_HZ
+        if receiver_position_m is None or shading_coefficient is None or shading_frequency_hz is None:
+            raise RuntimeError("runtime array input validation did not narrow all three arrays.")
         return _validate_runtime_array_input(
-            receiver_position_m=RECEIVER_POSITION_M,
-            shading_coefficient_by_channel_and_bin=SHADING_COEFFICIENT_BY_CHANNEL_AND_BIN,
-            shading_frequency_hz=SHADING_FREQUENCY_HZ,
+            receiver_position_m=receiver_position_m,
+            shading_coefficient_by_channel_and_bin=shading_coefficient,
+            shading_frequency_hz=shading_frequency_hz,
         )
 
     array_definition = OperationalSparseArrayDefinition.load_json(DEFAULT_ARRAY_DEFINITION_PATH)
@@ -968,6 +973,14 @@ def _write_csv(path: Path, rows: list[dict[str, object]], columns: tuple[str, ..
             writer.writerow(row)
 
 
+def _row_float(row: dict[str, object], key: str) -> float:
+    """CSV rowの数値を型検証して返す。"""
+    value = row.get(key, 0.0)
+    if not isinstance(value, int | float | str):
+        raise TypeError(f"{key} must be numeric or a numeric string.")
+    return float(value)
+
+
 def _build_worst_cases(summary_rows: list[dict[str, object]]) -> list[dict[str, object]]:
     """worst_cases.csv の row を作る。"""
     worst_rows: list[dict[str, object]] = []
@@ -986,7 +999,7 @@ def _build_worst_cases(summary_rows: list[dict[str, object]]) -> list[dict[str, 
     for metric_name in metric_names:
         ranked = sorted(
             summary_rows,
-            key=lambda row: abs(float(row.get(metric_name, 0.0))),
+            key=lambda row: abs(_row_float(row, metric_name)),
             reverse=True,
         )
         for rank, row in enumerate(ranked[:10], start=1):
@@ -1032,7 +1045,7 @@ def _build_worst_cases(summary_rows: list[dict[str, object]]) -> list[dict[str, 
     safe = next(row for row in summary_rows if row["method"] == "A2_safe")
     aggressive = next(row for row in summary_rows if row["method"] == "A2_aggressive")
     for metric_name in metric_names:
-        diff = abs(float(aggressive[metric_name]) - float(safe[metric_name]))
+        diff = abs(_row_float(aggressive, metric_name) - _row_float(safe, metric_name))
         worst_rows.append(
             {
                 "category": "a2_safe_aggressive_large_difference",
@@ -1159,8 +1172,8 @@ def _write_review_index(
                 method=row["method"],
                 candidate=row["candidate"],
                 status=row["status"],
-                p95=float(row["non_source_p95_level_delta_db"]),
-                source=float(row["source_peak_delta_db"]),
+                p95=_row_float(row, "non_source_p95_level_delta_db"),
+                source=_row_float(row, "source_peak_delta_db"),
                 fallback=row["fallback_required"],
             )
         )

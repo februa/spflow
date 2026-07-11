@@ -1011,6 +1011,8 @@ def _safe_float(row: dict[str, object], key: str) -> float:
     value = row.get(key, "")
     if value == "":
         return float("nan")
+    if not isinstance(value, int | float | str):
+        raise TypeError(f"{key} must be numeric or a numeric string.")
     return float(value)
 
 
@@ -1156,6 +1158,7 @@ def _plot_level_snr_heatmap(rows: list[dict[str, object]]) -> None:
     levels = sorted({_safe_float(row, "unknown_level_db") for row in family_rows})
     noises = sorted({_safe_float(row, "noise_floor_db") for row in family_rows})
     fig, axes = plt.subplots(1, len(methods), figsize=(12, 4.5), sharex=True, sharey=True)
+    image = None
     for axis_index, method in enumerate(methods):
         ax = axes[axis_index]
         grid = np.full((len(noises), len(levels)), np.nan, dtype=np.float64)
@@ -1184,6 +1187,8 @@ def _plot_level_snr_heatmap(rows: list[dict[str, object]]) -> None:
         if axis_index == 0:
             ax.set_ylabel("beam-domain noise floor [dB re input RMS]")
         ax.grid(color="black", alpha=0.15, linewidth=0.5)
+    if image is None:
+        raise RuntimeError("heatmap requires at least one method.")
     fig.colorbar(image, ax=axes.ravel().tolist(), label="unknown component delta [dB]")
     fig.suptitle("level/SNR sweep: A2 effective unknown source preservation")
     FIGURE_DIR.mkdir(parents=True, exist_ok=True)
@@ -1241,7 +1246,7 @@ def _run_source_mask_risk_sweep() -> list[dict[str, object]]:
         )
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    _write_csv(SUMMARY_CSV_PATH, rows)
+    _write_csv(rows, SUMMARY_CSV_PATH)
     _write_report(rows)
     _plot_level_snr_heatmap(rows)
     _plot_margin_scatter(rows)

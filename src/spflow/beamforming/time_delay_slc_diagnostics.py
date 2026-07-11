@@ -27,6 +27,13 @@ from .time_delay_diagnostics import (
 )
 
 
+def _require_summary_number(value: object, name: str) -> int | float:
+    """方式別summaryから型検証済みの数値を返す。"""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise TypeError(f"{name} must be numeric.")
+    return value
+
+
 def _resolve_target_source_indices(
     source_specs: tuple[TimeDelayDiagnosticSource, ...],
     target_source_indices: tuple[int, ...] | None,
@@ -401,6 +408,9 @@ def run_integer_delay_slc_diagnostics(
         sound_speed_m_s=float(config.sound_speed_m_s),
     )
     fixed_beam_output = beamformer.process(multichannel_signal)
+    if isinstance(fixed_beam_output, tuple):
+        # 診断指標は主ビーム出力を対象とし、デバッグ用 steered channel は別責務とする。
+        fixed_beam_output = fixed_beam_output[0]
     axis_az_deg = np.asarray(beam_grid["axis_az_deg"], dtype=np.float64)
     slc_beam_output = np.array(fixed_beam_output, copy=True)
 
@@ -578,10 +588,10 @@ def run_integer_delay_slc_diagnostics(
         "protected_target_indices": [int(source_index) for source_index in protected_target_indices],
         "protected_target_labels": [str(_source_label(source_specs[int(source_index)], int(source_index))) for source_index in protected_target_indices],
         "frequencies_hz": [float(frequency_hz) for frequency_hz in unique_target_frequencies_hz],
-        "normal_beam_count": int(np.sum([int(summary["normal_beam_count"]) for summary in per_frequency_design_summaries])),
-        "limited_beam_count": int(np.sum([int(summary["limited_beam_count"]) for summary in per_frequency_design_summaries])),
-        "disabled_beam_count": int(np.sum([int(summary["disabled_beam_count"]) for summary in per_frequency_design_summaries])),
-        "mean_selected_reference_beams": float(np.mean([float(summary["mean_selected_reference_beams"]) for summary in per_frequency_design_summaries])) if per_frequency_design_summaries else 0.0,
+        "normal_beam_count": int(np.sum([int(_require_summary_number(summary["normal_beam_count"], "normal_beam_count")) for summary in per_frequency_design_summaries])),
+        "limited_beam_count": int(np.sum([int(_require_summary_number(summary["limited_beam_count"], "limited_beam_count")) for summary in per_frequency_design_summaries])),
+        "disabled_beam_count": int(np.sum([int(_require_summary_number(summary["disabled_beam_count"], "disabled_beam_count")) for summary in per_frequency_design_summaries])),
+        "mean_selected_reference_beams": float(np.mean([float(_require_summary_number(summary["mean_selected_reference_beams"], "mean_selected_reference_beams")) for summary in per_frequency_design_summaries])) if per_frequency_design_summaries else 0.0,
         "per_frequency": per_frequency_design_summaries,
     }
 
@@ -627,4 +637,3 @@ def run_integer_delay_slc_diagnostics(
 __all__ = [
     "run_integer_delay_slc_diagnostics",
 ]
-
