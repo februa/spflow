@@ -475,3 +475,48 @@ DC〜Nyquist 全帯域の sample RMS:
 3. CSV、NPZ、metadata、review index の serializer を成果物別に分離する。
 4. BL/FRAZ/BTR plot が共通の表示条件オブジェクトを受け取るようにする。
 5. `delay_and_sum.py` で信号生成規約を固定した後、別の校正入力生成処理から BL 群と人間評価入力を生成する。
+
+## 12. BL指標校正の基準出力
+
+### 12.1 単一source基準条件
+
+`evaluations/beamforming/bl_baseline.py` により、信号生成を検証済みの平面波toneからBLを生成する。
+
+```text
+array: 8 channel uniform linear array
+sensor spacing: 0.25 m
+sound speed: 1500 m/s
+source azimuth: 65 deg
+source frequency: 1500 Hz
+source level: 0 dB re input RMS
+waiting beam axis: 0..180 deg, 1 deg step
+source guard: ±10 deg
+BL display range: -80..3 dB re input RMS
+```
+
+BLはsource条件を固定し、waiting beamごとのdelay-and-sum出力tone RMSを並べた`[n_beam]`配列である。beam patternのように入力source方位をsweepしたものではない。
+
+### 12.2 現行特徴量
+
+2026-07-11時点の出力は次である。
+
+| 特徴量 | 値 | 定義上の注意 |
+|---|---:|---|
+| peak azimuth | 65.0 deg | source truthと一致 |
+| peak azimuth error | 0.0 deg | waiting beam量子化を含む |
+| peak level | 約0.0 dB re input RMS | distortionless応答 |
+| -3 dB peak width | 28.0 deg | global peakを含む連結区間 |
+| guard-outside peak | -1.595 dB re input RMS | ±10 deg guard外。mainlobe裾を含む |
+| guard-outside p95 | -3.258 dB re input RMS | 方位sample percentile |
+| guard-outside p99 | -1.911 dB re input RMS | 方位sample percentile |
+| integrated guard-outside level | +11.025 dB re input RMS | guard外beam sample powerの無重み和 |
+| source-to-guard peak margin | 1.595 dB | source内peakとguard外peakの差 |
+
+### 12.3 現時点で判明した問題
+
+- -3 dB幅が28 degであるのにguardが±10 degであるため、guard-outside peakはsidelobeではなくmainlobeの裾を測っている。
+- 線状アレイ応答は方向余弦で決まるため、degree軸上ではmainlobeとnull間隔が左右非対称に見える。固定degree guardだけではmainlobe境界を正しく表せない。
+- integrated guard-outside levelはbeam sampleのpowerを無重みで加算しており、beam本数と方位grid密度に依存する。物理的な方位積分でも人間の視覚量でもない。
+- p95/p99もguard定義と方位samplingに依存するため、現時点では校正前の観測値である。
+
+したがって、これらの値を方式の採否へ使わない。次段では、mainlobe境界をfirst-null、局所極小、方向余弦幅のどれで定義するかを整理し、同じBL図に対する人間評価との対応を測る。

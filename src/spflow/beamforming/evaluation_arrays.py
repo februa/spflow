@@ -63,6 +63,28 @@ class BlShapeFeatures:
     source_separation_valley_depth_db: float | None
     level_reference_label: str
 
+    def as_dict(self) -> dict[str, float | str | None]:
+        """JSONやCSVへ保存可能な辞書へ変換する。
+
+        Returns:
+            各特徴量名とPython scalarの対応。shapeを持つ配列は含まない。
+
+        境界条件:
+            sourceが2個未満の場合、`source_separation_valley_depth_db`は`None`のまま返す。
+        """
+        return {
+            "peak_azimuth_deg": float(self.peak_azimuth_deg),
+            "peak_level_db": float(self.peak_level_db),
+            "peak_width_3db_deg": float(self.peak_width_3db_deg),
+            "guard_outside_peak_level_db": float(self.guard_outside_peak_level_db),
+            "guard_outside_p95_level_db": float(self.guard_outside_p95_level_db),
+            "guard_outside_p99_level_db": float(self.guard_outside_p99_level_db),
+            "integrated_guard_outside_level_db": float(self.integrated_guard_outside_level_db),
+            "source_to_guard_peak_margin_db": float(self.source_to_guard_peak_margin_db),
+            "source_separation_valley_depth_db": self.source_separation_valley_depth_db,
+            "level_reference_label": self.level_reference_label,
+        }
+
 
 def build_beam_level_display_arrays(
     beam_spectrum: NDArray[Any],

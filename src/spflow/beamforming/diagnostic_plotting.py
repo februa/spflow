@@ -77,29 +77,37 @@ def build_beam_diagnostic_plot_usage_notes() -> BeamDiagnosticPlotUsageNotes:
     return BeamDiagnosticPlotUsageNotes(
         common=(
             "方位軸を等 cos 空間で設計した場合、degree 空間ではビーム間隔が非一様になる。",
-            "そのため FRAZ/BTR の画像描画では、ビーム中心値を線形補間せずセル境界を明示する必要がある。",
+            "そのため FRAZ/BTR の画像描画では、ビーム中心値を線形補間せず"
+            "セル境界を明示する必要がある。",
             "BL/FRAZ/BTR のピーク方位は連続角ではなく nearest beam center へ量子化される。",
-            "dB は比率表現であり単位ではないため、レベル軸には dB re input RMS、dB re 1 uPa RMS、dB re uPa/sqrt(Hz) など基準量を明記する。",
+            "dB は比率表現であり単位ではないため、レベル軸には dB re input RMS、"
+            "dB re 1 uPa RMS、dB re uPa/sqrt(Hz) など基準量を明記する。",
         ),
         bl=(
             "BL は指定周波数 1 点でのビーム応答であり、帯域平均応答ではない。",
             "複数音源条件では、BL を音源周波数ごとに個別評価し、他周波数音源の影響と混同しない。",
-            "SLC 前後の重ね書き BL は、target 近傍の mainlobe 形状維持と guard 外 sidelobe 抑圧を同時に確認するために使う。",
+            "SLC 前後の重ね書き BL は、target 近傍の mainlobe 形状維持と"
+            " guard 外 sidelobe 抑圧を同時に確認するために使う。",
             "target 方位とピーク方位の差は、主にビームグリッド量子化と整数遅延近似の影響で生じる。",
         ),
         fraz=(
             "FRAZ は one-sided RMS スペクトルを表示するため、負周波数側は描かない。",
-            "方位軸が非一様な場合に imshow(extent=...) を使うと見かけ上のピーク位置がずれるため、非一様セル描画を使う。",
+            "方位軸が非一様な場合に imshow(extent=...) を使うと見かけ上の"
+            "ピーク位置がずれるため、非一様セル描画を使う。",
         ),
         btr=(
-            "BTR は各時刻で最大ビームを 0 dB に正規化した相対表示であり、時刻間の絶対レベル比較には使わない。",
-            "複数同時音源条件では『最大ビームのトラック』が任意の target 方位と一致しないことがある。",
+            "BTR は各時刻で最大ビームを 0 dB に正規化した相対表示であり、"
+            "時刻間の絶対レベル比較には使わない。",
+            "複数同時音源条件では『最大ビームのトラック』が任意の target 方位と"
+            "一致しないことがある。",
             "target 方位追従の確認に BTR を使うときは、まず単一音源条件で検証する。",
         ),
     )
 
 
-def write_beam_diagnostic_plot_usage_notes(path: str | Path, notes: BeamDiagnosticPlotUsageNotes) -> None:
+def write_beam_diagnostic_plot_usage_notes(
+    path: str | Path, notes: BeamDiagnosticPlotUsageNotes
+) -> None:
     """使用上の注意事項を Markdown ファイルとして保存する。
 
     Args:
@@ -123,9 +131,9 @@ def configure_matplotlib_japanese() -> None:
     Raises:
         AssertionError: matplotlib が import 済みでない場合。
     """
-    assert plt is not None
-    plt.rcParams["font.family"] = "sans-serif"
-    plt.rcParams["font.sans-serif"] = [
+    plotting = _get_pyplot()
+    plotting.rcParams["font.family"] = "sans-serif"
+    plotting.rcParams["font.sans-serif"] = [
         "Yu Gothic",
         "Yu Gothic UI",
         "Meiryo",
@@ -134,7 +142,24 @@ def configure_matplotlib_japanese() -> None:
         "Noto Sans CJK JP",
         "DejaVu Sans",
     ]
-    plt.rcParams["axes.unicode_minus"] = False
+    plotting.rcParams["axes.unicode_minus"] = False
+
+
+def _get_pyplot():
+    """利用可能なmatplotlib.pyplot moduleを返す。
+
+    Returns:
+        import済みの`matplotlib.pyplot` module。
+
+    Raises:
+        RuntimeError: matplotlibが導入されていない場合。
+
+    境界条件:
+        optional dependencyをmodule import時の必須条件にせず、実際に描画するときだけ検証する。
+    """
+    if plt is None:
+        raise RuntimeError("matplotlib is required to save BL/FRAZ/BTR figures.")
+    return plt
 
 
 def require_matplotlib() -> None:
@@ -146,8 +171,7 @@ def require_matplotlib() -> None:
     Raises:
         RuntimeError: matplotlib が利用できず PNG 保存契約を満たせない場合。
     """
-    if plt is None:
-        raise RuntimeError("matplotlib is required to save BL/FRAZ/BTR figures.")
+    _get_pyplot()
     configure_matplotlib_japanese()
 
 
@@ -172,7 +196,7 @@ def centers_to_edges(centers: np.ndarray) -> np.ndarray:
     if axis_centers.size == 1:
         return np.array([axis_centers[0] - 0.5, axis_centers[0] + 0.5], dtype=np.float64)
 
-    require(np.all(np.diff(axis_centers) > 0.0), "centers must be strictly increasing.")
+    require(bool(np.all(np.diff(axis_centers) > 0.0)), "centers must be strictly increasing.")
     edges = np.empty(axis_centers.size + 1, dtype=np.float64)
 
     # 内部境界は隣接 2 点の中点とし、非一様サンプリング間隔を画像セル幅へ保存する。
@@ -209,7 +233,7 @@ def save_figure(fig, path: str | Path) -> None:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
+    _get_pyplot().close(fig)
 
 
 def _normalize_marker_points(
@@ -221,7 +245,10 @@ def _normalize_marker_points(
 ) -> list[tuple[float, float, str]]:
     """単一点指定と複数点指定を共通の点列へ正規化する。"""
     if target_points is not None:
-        return [(float(azimuth_deg), float(frequency_hz), str(label)) for azimuth_deg, frequency_hz, label in target_points]
+        return [
+            (float(azimuth_deg), float(frequency_hz), str(label))
+            for azimuth_deg, frequency_hz, label in target_points
+        ]
 
     if target_azimuth_deg is None or target_frequency_hz is None:
         return []
@@ -239,6 +266,8 @@ def plot_bl_response(
     output_path: str | Path,
     response_label: str = "Beam response",
     level_unit_label: str = "dB re input RMS",
+    source_guard_deg: float | None = None,
+    level_limits_db: tuple[float, float] | None = None,
 ) -> None:
     """BL, すなわち指定周波数でのビーム応答を保存する。
 
@@ -254,19 +283,52 @@ def plot_bl_response(
         response_label: 凡例名。
         level_unit_label: y 軸へ表示する dB 基準量。
             例は `dB re 1 uPa RMS`, `dB re input RMS`, `dB re uPa/sqrt(Hz)`。
+        source_guard_deg: target 方位の左右に表示するsource guard幅。単位はdeg。
+            `None`の場合は表示しない。
+        level_limits_db: y軸下限・上限。単位は`level_unit_label`が示すdB reference。
+            `None`の場合はmatplotlibの自動範囲を使う。
 
     Raises:
+        ValueError: guard幅またはlevel範囲が不正な場合。
         OSError: 図保存に失敗した場合。
     """
-    fig, axis = plt.subplots(figsize=(10, 4.5))
+    fig, axis = _get_pyplot().subplots(figsize=(10, 4.5))
     axis.plot(axis_az_deg, beam_levels_db20, linewidth=1.5, label=response_label)
-    axis.axvline(float(target_azimuth_deg), color="black", linestyle=":", linewidth=1.0, label="Target azimuth")
-    axis.axvline(float(peak_azimuth_deg), color="tab:red", linestyle="--", linewidth=1.0, label="Peak azimuth")
+    if source_guard_deg is not None:
+        guard_deg = float(source_guard_deg)
+        require(guard_deg >= 0.0, "source_guard_deg must be non-negative.")
+        # source maskとして数値評価から除外した範囲を図にも明示し、
+        # mainlobeの裾をsidelobe指標として読んでいないか人間が確認できるようにする。
+        axis.axvspan(
+            float(target_azimuth_deg) - guard_deg,
+            float(target_azimuth_deg) + guard_deg,
+            color="tab:green",
+            alpha=0.12,
+            label="Source guard",
+        )
+    axis.axvline(
+        float(target_azimuth_deg),
+        color="black",
+        linestyle=":",
+        linewidth=1.0,
+        label="Target azimuth",
+    )
+    axis.axvline(
+        float(peak_azimuth_deg),
+        color="tab:red",
+        linestyle="--",
+        linewidth=1.0,
+        label="Peak azimuth",
+    )
     axis.set_xlabel("Azimuth [deg]")
     # dB は比率表現であり単位そのものではないため、軸ラベルには必ず基準量を含める。
     axis.set_ylabel(f"RMS Level [{level_unit_label}]")
     axis.set_title(title)
     axis.grid(True, alpha=0.3)
+    if level_limits_db is not None:
+        lower_db, upper_db = (float(value) for value in level_limits_db)
+        require(lower_db < upper_db, "level_limits_db must satisfy lower < upper.")
+        axis.set_ylim(lower_db, upper_db)
     axis.legend(loc="best")
     add_caption(fig, caption)
     fig.tight_layout(rect=(0.03, 0.04, 1.0, 0.96))
@@ -307,12 +369,30 @@ def plot_bl_comparison(
     Raises:
         OSError: 図保存に失敗した場合。
     """
-    fig, axis = plt.subplots(figsize=(10, 4.5))
+    fig, axis = _get_pyplot().subplots(figsize=(10, 4.5))
     axis.plot(axis_az_deg, before_levels_db20, linewidth=1.5, color="tab:blue", label=before_label)
     axis.plot(axis_az_deg, after_levels_db20, linewidth=1.5, color="tab:orange", label=after_label)
-    axis.axvline(float(target_azimuth_deg), color="black", linestyle=":", linewidth=1.0, label="Target azimuth")
-    axis.axvline(float(before_peak_azimuth_deg), color="tab:blue", linestyle="--", linewidth=1.0, label="Before peak")
-    axis.axvline(float(after_peak_azimuth_deg), color="tab:orange", linestyle="-.", linewidth=1.0, label="After peak")
+    axis.axvline(
+        float(target_azimuth_deg),
+        color="black",
+        linestyle=":",
+        linewidth=1.0,
+        label="Target azimuth",
+    )
+    axis.axvline(
+        float(before_peak_azimuth_deg),
+        color="tab:blue",
+        linestyle="--",
+        linewidth=1.0,
+        label="Before peak",
+    )
+    axis.axvline(
+        float(after_peak_azimuth_deg),
+        color="tab:orange",
+        linestyle="-.",
+        linewidth=1.0,
+        label="After peak",
+    )
     axis.set_xlabel("Azimuth [deg]")
     # dB は比率表現であり単位そのものではないため、軸ラベルには必ず基準量を含める。
     axis.set_ylabel(f"RMS Level [{level_unit_label}]")
@@ -341,7 +421,7 @@ def plot_fraz_heatmap(
     colorbar_label: str = "RMS Level [dB re input RMS]",
 ) -> None:
     """FRAZ, すなわち周波数-方位レベル分布を保存する。"""
-    fig, axis = plt.subplots(figsize=(10, 5.5))
+    fig, axis = _get_pyplot().subplots(figsize=(10, 5.5))
     azimuth_edges_deg = centers_to_edges(axis_az_deg)
     frequency_edges_hz = centers_to_edges(freqs_hz)
 
@@ -420,7 +500,7 @@ def plot_btr_heatmap(
     colorbar_label: str = "Relative Level [dB re frame max]",
 ) -> None:
     """BTR, すなわち time-azimuth のビームトラックを保存する。"""
-    fig, axis = plt.subplots(figsize=(10, 5.5))
+    fig, axis = _get_pyplot().subplots(figsize=(10, 5.5))
     azimuth_edges_deg = centers_to_edges(axis_az_deg)
     time_edges_s = centers_to_edges(times_s)
 
@@ -438,7 +518,14 @@ def plot_btr_heatmap(
     )
 
     if btr_peak_azimuths_deg is not None:
-        axis.plot(btr_peak_azimuths_deg, times_s, color="white", linestyle="--", linewidth=1.0, label="Peak track")
+        axis.plot(
+            btr_peak_azimuths_deg,
+            times_s,
+            color="white",
+            linestyle="--",
+            linewidth=1.0,
+            label="Peak track",
+        )
 
     if target_azimuths_deg is None and target_azimuth_deg is not None:
         normalized_target_azimuths_deg = np.array([float(target_azimuth_deg)], dtype=np.float64)
