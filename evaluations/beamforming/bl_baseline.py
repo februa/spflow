@@ -8,7 +8,8 @@ from pathlib import Path
 import numpy as np
 
 from spflow import (
-    calculate_bl_shape_features,
+    BlComponentEvaluation,
+    evaluate_target_only_bl,
     relative_arrival_delay,
     rms_amplitude_to_level_db,
     steering_from_relative_delay,
@@ -106,26 +107,29 @@ def main() -> None:
         np.array([source_azimuth_deg], dtype=np.float64),
         guard_deg=source_guard_deg,
     )
-    features = calculate_bl_shape_features(
+    target_only_metrics = evaluate_target_only_bl(
         waiting_beam_azimuth_deg,
         bl_level_db,
-        source_mask.source_mask,
-        source_beam_indices=source_mask.source_beam_indices,
+        source_azimuth_deg=source_azimuth_deg,
+        source_level_db=source_level_db_re_input_rms,
         level_reference_label="dB re input RMS",
     )
-
-    metrics = features.as_dict()
+    component_evaluation = BlComponentEvaluation(target_only=target_only_metrics)
+    metrics = component_evaluation.as_dict()
     metrics.update(
         {
             "source_azimuth_deg": source_azimuth_deg,
             "source_frequency_hz": tone_frequency_hz,
             "source_level_db_re_input_rms": source_level_db_re_input_rms,
-            "peak_azimuth_error_deg": features.peak_azimuth_deg - source_azimuth_deg,
             "source_guard_deg": source_guard_deg,
             "display_floor_db": display_floor_db,
             "evaluation_pattern": "fixed_beam_single_source",
             "metric_status": "uncalibrated_observation",
-            "integrated_level_definition": "unweighted sum over guard-outside beam samples",
+            "component_status": {
+                "target_only": "evaluated",
+                "noise_only": "not_generated",
+                "mixed": "not_generated",
+            },
         }
     )
     metrics_path = output_dir / "bl_metrics.json"
@@ -144,7 +148,7 @@ def main() -> None:
         waiting_beam_azimuth_deg,
         bl_level_db,
         target_azimuth_deg=source_azimuth_deg,
-        peak_azimuth_deg=features.peak_azimuth_deg,
+        peak_azimuth_deg=target_only_metrics.peak_azimuth_deg,
         title="Delay-and-sum beam response for one plane-wave tone",
         caption=(
             f"Source={source_azimuth_deg:.1f} deg, {tone_frequency_hz:.1f} Hz, "

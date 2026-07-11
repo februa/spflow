@@ -496,28 +496,50 @@ BL display range: -80..3 dB re input RMS
 
 BLはsource条件を固定し、waiting beamごとのdelay-and-sum出力tone RMSを並べた`[n_beam]`配列である。beam patternのように入力source方位をsweepしたものではない。
 
-### 12.2 現行特徴量
+### 12.2 成分別BL評価部品
 
-2026-07-11時点の出力は次である。
+`src/spflow/beamforming/bl_component_metrics.py`は、方式比較と採否判定を含めず、次の固定結果型を提供する。
+
+```text
+TargetOnlyBlMetrics
+    peak方位誤差、SL誤差、-3 dB幅、左右first null、左右第一副極、
+    最大副極、grating-lobe候補
+
+NoiseOnlyBlMetrics
+    noise-only BL、w^H R_n w予測BL、予測誤差、理論array gain
+
+MixedBlConsistency
+    target-only power＋noise-only powerから求めた期待mixed BL、観測誤差
+
+BlComponentEvaluation
+    上記3成分を一つの固定型で保持する
+```
+
+各結果型は`as_dict()`でJSON化できる。noise-onlyまたはmixedをまだ生成していない場合は`None`を明示し、target-only BLからnoise floorを推測しない。
+
+基準target-only BLの2026-07-11時点の出力は次である。
 
 | 特徴量 | 値 | 定義上の注意 |
 |---|---:|---|
 | peak azimuth | 65.0 deg | source truthと一致 |
 | peak azimuth error | 0.0 deg | waiting beam量子化を含む |
 | peak level | 約0.0 dB re input RMS | distortionless応答 |
+| peak level error | 約0.0 dB | 入力SLとの差 |
 | -3 dB peak width | 28.0 deg | global peakを含む連結区間 |
-| guard-outside peak | -1.595 dB re input RMS | ±10 deg guard外。mainlobe裾を含む |
-| guard-outside p95 | -3.258 dB re input RMS | 方位sample percentile |
-| guard-outside p99 | -1.911 dB re input RMS | 方位sample percentile |
-| integrated guard-outside level | +11.025 dB re input RMS | guard外beam sample powerの無重み和 |
-| source-to-guard peak margin | 1.595 dB | source内peakとguard外peakの差 |
+| left first null | 23.0 deg | peak左側で最も近い局所極小 |
+| right first null | 94.0 deg | peak右側で最も近い局所極小 |
+| first-null width | 71.0 deg | degree軸では左右非対称 |
+| left first sidelobe | 検出なし | 0 deg境界より外側にpeakがあるため推測しない |
+| right first sidelobe | -12.800 dB re mainlobe peak | 107.0 deg |
+| maximum detected sidelobe | -12.800 dB re mainlobe peak | 一様有限ULAの約-13 dBと整合 |
+| grating-lobe candidate | 0件 | -3 dB re peak以上のmainlobe外局所peakなし |
 
 ### 12.3 現時点で判明した問題
 
-- -3 dB幅が28 degであるのにguardが±10 degであるため、guard-outside peakはsidelobeではなくmainlobeの裾を測っている。
+- 旧guard-outside指標は、-3 dB幅28 degより狭い±10 deg guardを使い、mainlobeの裾をsidelobeとしていたため、primary metricから外した。
 - 線状アレイ応答は方向余弦で決まるため、degree軸上ではmainlobeとnull間隔が左右非対称に見える。固定degree guardだけではmainlobe境界を正しく表せない。
-- integrated guard-outside levelはbeam sampleのpowerを無重みで加算しており、beam本数と方位grid密度に依存する。物理的な方位積分でも人間の視覚量でもない。
-- p95/p99もguard定義と方位samplingに依存するため、現時点では校正前の観測値である。
+- 旧integrated guard-outside levelとp95/p99はguard定義、beam本数、方位samplingに依存するため、成分別BL評価部品には含めない。
+- 左側第一副極のように評価軸外へpeakがある場合は`None`とし、境界sampleを局所peakとみなさない。評価範囲不足として別途扱う。
 
 したがって、これらの値を方式の採否へ使わない。次段では、mainlobe境界をfirst-null、局所極小、方向余弦幅のどれで定義するかを整理し、同じBL図に対する人間評価との対応を測る。
 

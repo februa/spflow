@@ -13,6 +13,16 @@ from .abf_like_metrics import (
     judge_abf_like_non_source_metrics,
 )
 from .array_design import BandwiseArrayDesign
+from .bl_component_metrics import (
+    BlComponentEvaluation,
+    BlLocalPeak,
+    MixedBlConsistency,
+    NoiseOnlyBlMetrics,
+    TargetOnlyBlMetrics,
+    evaluate_mixed_bl_consistency,
+    evaluate_noise_only_bl,
+    evaluate_target_only_bl,
+)
 from .cbf import (
     CBFBeamformer,
     CBFOverlapSaveBeamformer,
@@ -198,6 +208,11 @@ from .time_domain_adaptive import (
 __all__ = [
     "BeamLevelDisplayArrays",
     "BlShapeFeatures",
+    "BlComponentEvaluation",
+    "BlLocalPeak",
+    "MixedBlConsistency",
+    "NoiseOnlyBlMetrics",
+    "TargetOnlyBlMetrics",
     "PlaneWaveTone",
     "AbfLikeMetricDecision",
     "AbfLikeNonSourceMetrics",
@@ -244,6 +259,9 @@ __all__ = [
     "build_beam_level_display_arrays",
     "calculate_bl_shape_features",
     "calculate_btr_relative_level_db",
+    "evaluate_mixed_bl_consistency",
+    "evaluate_noise_only_bl",
+    "evaluate_target_only_bl",
     "OperationalArrayFractionalDelayPerformanceConfig",
     "run_operational_array_fractional_delay_performance_report",
     "OperationalSparseArrayDesignConfig",
