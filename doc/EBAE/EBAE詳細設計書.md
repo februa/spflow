@@ -416,3 +416,79 @@ R_{S1}(\theta_b,k)
 - latency、block境界、重み更新境界、fallback状態
 
 3方式のBL/FRAZ/BTRは同じ表示条件とdB基準で比較する。絶対levelは`dB re input RMS`などの基準、相対差は`dB re direct S0 EBAE`または`dB re fixed integer+fractional output`を明記する。直接方式との差が観測された場合、EBAE方式の優劣と即断せず、まず共分散座標、steering座標、FIR再現誤差、時間整合のどこで差が生じたかを判定する。
+
+### 11.7 過去のMVDRにおけるS0・S1・T1・T2結果との関係
+
+過去のMVDR比較では、方式を次のように区別していた。
+
+| 旧ID | 共分散・適用方式 | 過去結果の群 |
+|---|---|---|
+| S0 | 整数遅延なし、同一時間blockの粗い共分散から直接設計 | 低周波・粗い分析幅で裾が広く、他3方式と異なる |
+| S1 | 整数遅延後の残留信号から作る粗い共分散で設計 | T1・T2と近い |
+| T1 | 方位別時間切り出し共分散から設計し、元入力へ直接適用 | S1・T2と数値的に近い |
+| T2 | T1と同じ完成共分散を整数遅延後座標へ変換して適用 | S1・T1と数値誤差内で一致 |
+
+代表的な低周波endfire条件では、S1と方位別時間切り出し共分散の2方式がほぼ同じBL/FRAZとなり、S0だけ低周波側に広い応答が残った。また、同じ完成済み方位別共分散を使うT1とT2は、整数遅延分の位相を共分散とsteeringへ整合させると数式上同じ出力になった。
+
+この群分けの主因は、整数遅延bufferの有無だけではない。長大開口、粗い分析幅、広帯域信号の組合せでは、S0の同一時間block共分散がbin内の周波数成分を単一steering vectorで表せず、channel pairごとに概ね次のcoherence低下を持つ。
+
+\[
+\operatorname{sinc}\left(\Delta f\,\tau_{ij}\right)
+\]
+
+このcoherence低下により、単一sourceであっても信号powerが複数固有modeへ分散し、共分散rankと固有空間が理想的な狭帯域モデルから外れる。S1は整数遅延によりchannel間の大きな到来時刻差を先に減らし、T1・T2は方位別時間切り出しにより同一波面区間を揃える。そのため、いずれもS0より信号部分空間を回復し、近いMVDR結果になったと解釈する。
+
+#### EBAEで予想される影響
+
+EBAEはMVDRより共分散固有空間へ直接依存するため、このS0とS1/T系の差を無視できない。S0のcoherence低下は、EBAEの各段へ次のように伝わる。
+
+1. 単一sourceの固有値が複数modeへ分散し、N/E AICが`Ns`を過大推定する可能性がある。
+2. 雑音部分へ本来の信号成分が漏れ、MUSIC peakが広がる、移動する、または複数peakになる可能性がある。
+3. 信号固有ベクトルと方位の対応が崩れ、保護すべきmodeへ`delta_i=1`を適用する可能性がある。
+4. 雑音固有値平均`alpha`と`beta_i`が変わり、除外量がS1/T系と異なる。
+5. 結果として、target保持、非target抑圧、`Ns=0`へ戻る条件がS1/T系と異なる。
+
+したがって、EBAEでも次の群分けを第一仮説とする。
+
+```text
+S0共分散で設計する方式:
+    direct_s0_ebae
+    fixed_integer_fractional_ebae_difference
+        ※差分枝の完成重みをS0共分散から設計する場合
+
+coherenceを回復した共分散で設計する方式:
+    integer_delay_then_ebae       （S1相当）
+    direction_cut_direct_ebae     （T1相当、今後の比較候補）
+    direction_cut_integer_ebae    （T2相当、今後の比較候補）
+```
+
+EBAE差分補正枝方式は、固定主枝に整数遅延＋小数遅延FIRを持っていても、統計ルートでS0共分散から`w_opt`を設計する限りS0群に属する。実時間主枝を高精度にしても、S0共分散の固有空間劣化は修復されない。これは実行経路の整相方式と、重み設計に使う共分散方式を分離して考える必要があることを示す。
+
+一方、整数遅延＋EBAE補正方式はS1共分散を使うため、過去のMVDR結果からはT1・T2相当のEBAEへ近づく可能性がある。ただし、これは現時点ではMVDRからの推論であり、EBAEについて確認済みの結果ではない。MVDRは`R^{-1}a`を使うのに対し、EBAEはAICによる離散的な信号数決定、MUSIC peak選択、sigmoid保護係数を含むため、小さな共分散差が`Ns`または対応beam indexの不連続な差へ拡大する可能性がある。
+
+#### 3方式比較への反映
+
+先に定義した3方式だけを比較すると、実装構造差と共分散方式差が同時に変わる。比較は次の2段階に分ける。
+
+1. **重み実装構造の同値性確認**
+   - `direct_s0_ebae`
+   - `fixed_integer_fractional_ebae_difference`
+   - 両方とも同じS0共分散、同じ`w_opt`を使い、差をFIR化と時間整合だけへ限定する。
+2. **共分散coherence回復の効果確認**
+   - `direct_s0_ebae`
+   - `integer_delay_then_ebae`（S1）
+   - 将来接続する`direction_cut_direct_ebae`（T1）
+   - 将来接続する`direction_cut_integer_ebae`（T2）
+   - `Ns`、固有値比、信号部分空間角、MUSIC peak、`delta_i`、完成重みを比較する。
+
+過去のMVDR結果と整合するかを見る主判定は、S1・T1・T2の最終BLが近いかだけでは不十分である。EBAEでは、少なくとも次の中間量が同じ群を作るか確認する。
+
+- binごとの`Ns`
+- 降順固有値と雑音平均`alpha`
+- 信号部分空間間のprincipal angle
+- MUSIC peak方位とpeak順位
+- 固有ベクトルごとの対応beam index
+- `rho_i`、`delta_i`、`beta_i`
+- 正規化前`q_raw`と完成`w_opt`
+
+この確認により、S1・T1・T2が近い理由を「出力図が似た」だけでなく、EBAE内部の信号数推定、方位対応、固有mode除外まで含めて説明できる。
