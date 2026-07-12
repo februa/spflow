@@ -26,6 +26,7 @@ from scene_renderer import (  # noqa: E402
     SceneRenderer,
     SourceComponent,
     StaticPose,
+    ToneSpectrum,
 )
 from spflow.beamforming import (  # noqa: E402
     DirectionCovarianceSelectionConfig,
@@ -71,7 +72,15 @@ def _geometry():
     return schedule, frequency_hz, steering_ch_bin_direction
 
 
-def _render_segment(duration_s: int, bearings_deg: tuple[float, ...], *, noise: bool, seed: int) -> NDArray[np.float32]:
+def _render_segment(
+    duration_s: int,
+    bearings_deg: tuple[float, ...],
+    *,
+    noise: bool,
+    seed: int,
+    tone_frequency_hz: float | None = None,
+    ambient_covariance: NDArray[np.float32] | None = None,
+) -> NDArray[np.float32]:
     """scene_rendererで指定方位sourceと独立channel雑音を生成する。"""
 
     receiver = Receiver(
@@ -81,7 +90,11 @@ def _render_segment(duration_s: int, bearings_deg: tuple[float, ...], *, noise: 
     sources = []
     for source_index, bearing_deg in enumerate(bearings_deg):
         component = SourceComponent(
-            spectrum=BandLimitedNoiseSpectrum(SOURCE_LOW_HZ, SOURCE_HIGH_HZ),
+            spectrum=(
+                BandLimitedNoiseSpectrum(SOURCE_LOW_HZ, SOURCE_HIGH_HZ)
+                if tone_frequency_hz is None
+                else ToneSpectrum(tone_frequency_hz)
+            ),
             envelope=ConstantEnvelope(),
             amplitude=None,
             level_db=0.0,
@@ -103,7 +116,11 @@ def _render_segment(duration_s: int, bearings_deg: tuple[float, ...], *, noise: 
             AmbientField.from_asd_level_db(
                 BandLimitedNoiseSpectrum(0.0, FS_HZ / 2.0),
                 NOISE_LEVEL_DB_RE_INPUT_RMS_PER_SQRT_HZ,
-                covariance=np.eye(64, dtype=np.float32),
+                covariance=(
+                    np.eye(64, dtype=np.float32)
+                    if ambient_covariance is None
+                    else np.asarray(ambient_covariance, dtype=np.float32)
+                ),
                 noise_seed=seed + 9000,
                 noise_filter_length=513,
             )

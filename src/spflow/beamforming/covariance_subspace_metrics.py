@@ -26,12 +26,18 @@ class CovarianceSubspaceMetrics:
         principal_eigenvector_alignment: `|a^H u1|^2/(a^H a)`。shapeは`[n_direction,n_bin]`。
         principal_eigenvalue_fraction: `lambda1/sum(lambda)`。shapeは`[n_direction,n_bin]`。
         principal_to_noise_mean_ratio: `lambda1/mean(lambda2...)`。shapeは`[n_direction,n_bin]`。
+        trace_power: 共分散trace。shapeは`[n_direction,n_bin]`。
+        principal_eigenvalue_gap_fraction: `(lambda1-lambda2)/trace(R)`。
+        steering_rank_one_residual: 最適steering rank-1 modelのFrobenius相対残差。
     """
 
     steering_power_fraction: NDArray[np.float32]
     principal_eigenvector_alignment: NDArray[np.float32]
     principal_eigenvalue_fraction: NDArray[np.float32]
     principal_to_noise_mean_ratio: NDArray[np.float32]
+    trace_power: NDArray[np.float32]
+    principal_eigenvalue_gap_fraction: NDArray[np.float32]
+    steering_rank_one_residual: NDArray[np.float32]
 
 
 def calculate_covariance_subspace_metrics(
@@ -81,6 +87,9 @@ def calculate_covariance_subspace_metrics(
     principal_eigenvector_alignment = np.zeros(output_shape, dtype=np.float32)
     principal_eigenvalue_fraction = np.zeros(output_shape, dtype=np.float32)
     principal_to_noise_mean_ratio = np.zeros(output_shape, dtype=np.float32)
+    trace_power_output = np.zeros(output_shape, dtype=np.float32)
+    principal_eigenvalue_gap_fraction = np.zeros(output_shape, dtype=np.float32)
+    steering_rank_one_residual = np.zeros(output_shape, dtype=np.float32)
 
     for direction_start in range(0, covariance.shape[0], chunk_size):
         direction_stop = min(direction_start + chunk_size, covariance.shape[0])
@@ -136,6 +145,31 @@ def calculate_covariance_subspace_metrics(
         )
         eigenvalue_fraction_chunk = np.zeros(trace_power.shape, dtype=np.float32)
         eigenvalue_fraction_chunk[valid_power] = eigenvalues[..., -1][valid_power] / trace_power[valid_power]
+        eigenvalue_gap_chunk = np.zeros(trace_power.shape, dtype=np.float32)
+        eigenvalue_gap_chunk[valid_power] = (
+            eigenvalues[..., -1][valid_power] - eigenvalues[..., -2][valid_power]
+        ) / trace_power[valid_power]
+
+        # u=a/||a||はnorm 1なので、最小二乗rank-1 modelのpは
+        # u^H R u=(a^H R a)/(a^H a)。未正規化aの二次形式をそのままpにすると、
+        # channel数の二乗だけ過大になり、白色共分散でも残差を0へ誤クリップしてしまう。
+        # ||R-puu^H||_F^2=||R||_F^2-p^2を使い、巨大なmodel行列を追加生成しない。
+        covariance_frobenius_squared = np.sum(np.abs(covariance_hermitian) ** 2, axis=(-2, -1))
+        normalized_steering_power = np.zeros(trace_power.shape, dtype=np.float32)
+        normalized_steering_power[valid_norm] = np.asarray(
+            steering_quadratic_power[valid_norm] / steering_norm_squared[valid_norm],
+            dtype=np.float32,
+        )
+        residual_squared = np.maximum(
+            covariance_frobenius_squared - np.maximum(normalized_steering_power, 0.0) ** 2,
+            0.0,
+        )
+        residual_chunk = np.zeros(trace_power.shape, dtype=np.float32)
+        valid_frobenius = covariance_frobenius_squared > np.float32(floor_value)
+        residual_chunk[valid_frobenius] = np.asarray(
+            np.sqrt(residual_squared[valid_frobenius] / covariance_frobenius_squared[valid_frobenius]),
+            dtype=np.float32,
+        )
 
         noise_eigenvalue_mean = np.mean(eigenvalues[..., :-1], axis=-1)
         eigenvalue_ratio_chunk = np.zeros(trace_power.shape, dtype=np.float32)
@@ -153,10 +187,20 @@ def calculate_covariance_subspace_metrics(
             eigenvalue_fraction_chunk, 0.0, 1.0
         )
         principal_to_noise_mean_ratio[direction_start:direction_stop] = eigenvalue_ratio_chunk
+        trace_power_output[direction_start:direction_stop] = trace_power
+        principal_eigenvalue_gap_fraction[direction_start:direction_stop] = np.clip(
+            eigenvalue_gap_chunk, 0.0, 1.0
+        )
+        steering_rank_one_residual[direction_start:direction_stop] = np.clip(
+            residual_chunk, 0.0, 1.0
+        )
 
     return CovarianceSubspaceMetrics(
         steering_power_fraction=steering_power_fraction,
         principal_eigenvector_alignment=principal_eigenvector_alignment,
         principal_eigenvalue_fraction=principal_eigenvalue_fraction,
         principal_to_noise_mean_ratio=principal_to_noise_mean_ratio,
+        trace_power=trace_power_output,
+        principal_eigenvalue_gap_fraction=principal_eigenvalue_gap_fraction,
+        steering_rank_one_residual=steering_rank_one_residual,
     )
