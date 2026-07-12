@@ -38,7 +38,8 @@ from evaluations.beamforming.low_frequency_long_ula_covariance import (  # noqa:
 )
 
 
-OUTPUT_DIR = ROOT / "artifacts" / "beamforming" / "long_ula_correlation_method_comparison"
+SOURCE_AZIMUTH_DEG = 60.0
+OUTPUT_DIR = ROOT / "artifacts" / "beamforming" / "long_ula_correlation_method_comparison_source_60deg"
 SNAPSHOT_SECONDS = (2, 4, 6, 8, 10)
 # 100 Hzの波長15 mを基準に、短・中・長基線の時間差効果を分離する。
 BASELINE_EDGES_M = np.asarray([0.0, 15.0, 120.0, APERTURE_M + 1.0], dtype=np.float32)
@@ -64,14 +65,15 @@ def _summarize_curve(
         ValueError: 評価帯域または方位領域が空の場合。
 
     境界条件:
-        0度endfireは方位軸端なので、source近傍を両側ではなく0--2度で定義する。
+        source近傍を入力方位の±2度、遠方を入力方位から20度以上として比較する。
     """
 
     if not bool(np.any(frequency_band)):
         raise ValueError("frequency_band must select at least one bin.")
     curve = np.asarray(np.mean(table[:, frequency_band], axis=1), dtype=np.float32)
-    source_mask = azimuth_deg <= 2.0
-    far_mask = azimuth_deg >= 20.0
+    direction_error_deg = np.abs(azimuth_deg - np.float32(SOURCE_AZIMUTH_DEG))
+    source_mask = direction_error_deg <= 2.0
+    far_mask = direction_error_deg >= 20.0
     if not bool(np.any(source_mask)) or not bool(np.any(far_mask)):
         raise ValueError("azimuth axis must contain source and far regions.")
     source_mean = float(np.mean(curve[source_mask]))
@@ -85,7 +87,7 @@ def _summarize_curve(
         "source_far_mean_margin": source_mean - far_mean,
         "source_far_peak_margin": source_mean - far_maximum,
         "peak_azimuth_deg": float(azimuth_deg[peak_index]),
-        "peak_error_deg": float(abs(azimuth_deg[peak_index])),
+        "peak_error_deg": float(abs(azimuth_deg[peak_index] - SOURCE_AZIMUTH_DEG)),
         "all_direction_range": float(np.max(curve) - np.min(curve)),
     }
 
@@ -157,7 +159,7 @@ def _plot_final_curves(
     for axis, (title, names) in zip(axes.flat, groups, strict=True):
         for name in names:
             axis.plot(azimuth_deg, np.mean(final_tables[name][:, frequency_band], axis=1), label=name)
-        axis.axvline(0.0, color="black", linestyle="--", linewidth=1.0)
+        axis.axvline(SOURCE_AZIMUTH_DEG, color="black", linestyle="--", linewidth=1.0)
         axis.set(title=title, xlabel="Azimuth [deg]", ylabel="Normalized correlation [ratio]", ylim=(0.0, 1.0))
         axis.grid(True, alpha=0.25)
         axis.legend(fontsize=7)
@@ -214,10 +216,15 @@ def main() -> None:
     steering = np.transpose(steering_from_relative_delay(delays_s, frequency_hz), (0, 2, 1)).astype(np.complex64)
     frequency_band = (frequency_hz >= SOURCE_LOW_HZ) & (frequency_hz <= SOURCE_HIGH_HZ)
 
-    target_only = _render(positions, noise=False, seed=10100)
-    target_plus_noise = _render(positions, noise=True, seed=10200)
+    target_only = _render(positions, noise=False, seed=10100, source_azimuth_deg=SOURCE_AZIMUTH_DEG)
+    target_plus_noise = _render(positions, noise=True, seed=10200, source_azimuth_deg=SOURCE_AZIMUTH_DEG)
     # 同一seedのtarget成分を差し引き、target+noiseと同じambient realizationだけを分離する。
-    noise_only = target_plus_noise - _render(positions, noise=False, seed=10200)
+    noise_only = target_plus_noise - _render(
+        positions,
+        noise=False,
+        seed=10200,
+        source_azimuth_deg=SOURCE_AZIMUTH_DEG,
+    )
     scenes = {"target_only": target_only, "noise_only": noise_only, "target_plus_noise": target_plus_noise}
     output: dict[str, Any] = {}
     final_target_plus_noise_tables: dict[str, NDArray[np.float32]] | None = None
@@ -262,6 +269,7 @@ def main() -> None:
     payload = {
         "array": {"n_channel": N_CHANNEL, "spacing_m": 6.25, "aperture_m": APERTURE_M},
         "signal_band_hz": [SOURCE_LOW_HZ, SOURCE_HIGH_HZ],
+        "source_azimuth_deg": SOURCE_AZIMUTH_DEG,
         "snapshot_seconds": list(SNAPSHOT_SECONDS),
         "correlation_formula": "abs(R_ij) / sqrt(R_ii * R_jj), i > j",
         "physical_baseline_edges_m": BASELINE_EDGES_M.tolist(),

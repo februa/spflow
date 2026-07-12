@@ -64,8 +64,30 @@ def _positions() -> NDArray[np.float32]:
     return positions
 
 
-def _render(positions_m: NDArray[np.float32], *, noise: bool, seed: int) -> NDArray[np.float32]:
-    """80--120 Hz広帯域エンドファイア信号を生成する。"""
+def _render(
+    positions_m: NDArray[np.float32],
+    *,
+    noise: bool,
+    seed: int,
+    source_azimuth_deg: float = SOURCE_AZIMUTH_DEG,
+) -> NDArray[np.float32]:
+    """指定方位の80--120 Hz広帯域信号を生成する。
+
+    Args:
+        positions_m: 受波器位置。shapeは`[n_ch,3]`、単位はm。
+        noise: 空間白色雑音を重畳する場合はTrue。
+        seed: 信号と雑音の乱数seed。
+        source_azimuth_deg: 信号到来方位。単位はdegree、範囲は0--180度。
+
+    Returns:
+        受波信号。shapeは`[n_ch,n_sample]`、dtypeはfloat32。
+
+    Raises:
+        ValueError: source方位が評価対象の0--180度外の場合。
+    """
+
+    if not 0.0 <= source_azimuth_deg <= 180.0:
+        raise ValueError("source_azimuth_deg must be in [0, 180].")
 
     receiver = Receiver(
         trajectory=StaticPose(position_world=[0.0, 0.0, 0.0], heading_deg=0.0),
@@ -80,7 +102,7 @@ def _render(positions_m: NDArray[np.float32], *, noise: bool, seed: int) -> NDAr
         noise_filter_length=513,
     )
     source = AcousticSource.from_relative_bearing(
-        bearing_deg=SOURCE_AZIMUTH_DEG,
+        bearing_deg=source_azimuth_deg,
         distance=1.0e6,
         receiver_pose=receiver.trajectory.pose(0.0),
         components=[component],
