@@ -30,6 +30,24 @@ def main() -> None:
         beams_per_half=159,
     )
 
+    left_extent = snapshot_length_samples // 2
+    right_extent = snapshot_length_samples - left_extent
+    # 図のタイトルで長方形と断定する前に、生成済み配列そのものへ幾何条件を課す。
+    # 秒頭90度のblock開始は全channelで0、右の概念閉端は全channelで1秒となる。
+    np.testing.assert_array_equal(
+        schedule.channel_center_samples[:, :, 0] - left_extent,
+        np.zeros((2, n_ch), dtype=np.int32),
+    )
+    conceptual_closure_center = np.full(n_ch, int(fs_hz) - right_extent, dtype=np.int32)
+    np.testing.assert_array_equal(conceptual_closure_center + right_extent, np.full(n_ch, int(fs_hz)))
+    # 0.5秒を挟む2 snapshotは同じendfire方位で、2個の半台形を連続させる。
+    np.testing.assert_array_equal(schedule.direction_match_indices[0, 79:81], np.array([0, 0]))
+    np.testing.assert_array_equal(schedule.channel_center_samples[1], np.flip(schedule.channel_center_samples[0], axis=0))
+    snapshot_start = schedule.channel_center_samples - left_extent
+    snapshot_stop = schedule.channel_center_samples + right_extent
+    assert bool(np.all(snapshot_start >= 0))
+    assert bool(np.all(snapshot_stop <= int(fs_hz)))
+
     fig = plt.figure(figsize=(15.5, 10.0), constrained_layout=True)
     grid = fig.add_gridspec(2, 2, height_ratios=(1.45, 1.0))
     center_axis = fig.add_subplot(grid[0, :])
@@ -55,6 +73,14 @@ def main() -> None:
     for second_start in (0.0, 1.0):
         center_axis.axvline(second_start + half_block_s, color="#666666", linestyle="--", linewidth=0.8)
         center_axis.axvline(second_start + 1.0 - half_block_s, color="#666666", linestyle="--", linewidth=0.8)
+        # 右端90度は次秒頭と共有するため保持表には重複させず、概念閉端を補助線で示す。
+        center_axis.plot(
+            np.full(n_ch, second_start + (conceptual_closure_center[0] / fs_hz)),
+            channel_index,
+            color="#222222",
+            linewidth=0.8,
+            linestyle=":",
+        )
     center_axis.set_xlim(-0.01, 2.01)
     center_axis.set_ylim(n_ch - 0.5, -0.5)
     center_axis.set_xlabel("Center time [s]")

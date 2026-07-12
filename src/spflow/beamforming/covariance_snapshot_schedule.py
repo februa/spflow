@@ -685,21 +685,19 @@ def build_two_second_covariance_snapshot_schedule(
     # local snapshot数とglobal方位数は同じ159だが、対応は一対一ではない。
     direction_count_per_side = (beam_count - 1) // 2
     global_direction_azimuth_deg = np.linspace(0.0, 180.0, beam_count, dtype=np.float32)
+    # 同一方位の2観測を隣接させると、到来遅延と時間配置の組合せが台形になる。
+    # 秒頭の90度からendfireへ進み、endfireを境に90度へ戻る往復順とする。
+    # 次秒頭の90度を閉端として見ると、0.5秒で2個の半台形が接続して長方形になる。
     first_direction_match = np.concatenate(
         (
-            np.repeat(np.arange(direction_count_per_side, dtype=np.int32), 2),
             np.array([direction_count_per_side], dtype=np.int32),
+            np.arange(direction_count_per_side - 1, -1, -1, dtype=np.int32),
+            np.arange(direction_count_per_side, dtype=np.int32),
         )
     )
-    second_direction_match = np.concatenate(
-        (
-            np.repeat(
-                np.arange(beam_count - 1, direction_count_per_side, -1, dtype=np.int32),
-                2,
-            ),
-            np.array([direction_count_per_side], dtype=np.int32),
-        )
-    )
+    # centrosymmetric ULAでは反対側方位indexが`158-index`なので、方位表も中心表と
+    # 同じ上下反転関係を保つ。90度index 79は両segmentで不変である。
+    second_direction_match = np.asarray(beam_count - 1 - first_direction_match, dtype=np.int32)
     first_azimuth_deg = global_direction_azimuth_deg[first_direction_match]
     second_azimuth_deg = global_direction_azimuth_deg[second_direction_match]
     beam_azimuth_deg = np.stack((first_azimuth_deg, second_azimuth_deg), axis=0).astype(np.float32, copy=False)
@@ -713,15 +711,21 @@ def build_two_second_covariance_snapshot_schedule(
     # 全channel共通の基準中心だけを1秒内に配置し、到来遅延tauはscaleせず加える。
     # channelごとに行を正規化すると、center[i]-center[j]がfs*(tau[i]-tau[j])
     # と一致せず、長大開口で同一波面の時間区間を切り出せない。
-    minimum_delay_s = float(np.min(arrival_delay_s))
-    maximum_delay_s = float(np.max(arrival_delay_s))
-    base_start_s = left_extent / sample_rate - minimum_delay_s
-    base_stop_s = 1.0 - right_extent / sample_rate - maximum_delay_s
+    minimum_delay_s = np.min(arrival_delay_s, axis=0)
+    maximum_delay_s = np.max(arrival_delay_s, axis=0)
+    feasible_lower_s = left_extent / sample_rate - minimum_delay_s
+    feasible_upper_s = 1.0 - right_extent / sample_rate - maximum_delay_s
     require(
-        base_stop_s > base_start_s,
+        bool(np.all(feasible_upper_s >= feasible_lower_s)),
         "array delay aperture and snapshot length must fit inside one second without scaling delays.",
     )
-    base_center_s = np.linspace(base_start_s, base_stop_s, beam_count, dtype=np.float64)
+    # q/159は次秒頭q=159を閉端とする半開区間の時間比である。各候補方位固有の
+    # 可行下端・上端をこの比率で補間するため、物理遅延を保ったまま0--1秒を充填できる。
+    time_fraction = np.arange(beam_count, dtype=np.float64) / float(beam_count)
+    base_center_s = (
+        (1.0 - time_fraction) * feasible_lower_s
+        + time_fraction * feasible_upper_s
+    )
     first_centers = np.rint(sample_rate * (base_center_s[np.newaxis, :] + arrival_delay_s)).astype(
         np.int32
     )
