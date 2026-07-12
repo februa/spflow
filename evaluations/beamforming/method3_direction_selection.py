@@ -81,6 +81,7 @@ def _render_segment(
     tone_frequency_hz: float | None = None,
     ambient_covariance: NDArray[np.float32] | None = None,
     array_positions_m: NDArray[np.float32] = ARRAY_POSITIONS_M,
+    source_distance_m: float = 1000.0,
 ) -> NDArray[np.float32]:
     """scene_rendererで指定方位sourceとchannel雑音を生成する。
 
@@ -92,12 +93,16 @@ def _render_segment(
         tone_frequency_hz: toneの周波数。Noneでは128--1024 Hz広帯域信号。
         ambient_covariance: 空間雑音共分散。shapeは`[n_ch,n_ch]`。
         array_positions_m: 受波器座標。shapeは`[n_ch,3]`、単位はm。
+        source_distance_m: sourceとarray基準点の距離。単位はm。
 
     Returns:
         実数受波信号。shapeは`[n_ch,duration_s*fs]`。
     """
 
     positions = np.asarray(array_positions_m, dtype=np.float32)
+    if not np.isfinite(source_distance_m) or source_distance_m <= 0.0:
+        # 非有限または非正の距離では到来遅延と球面拡散を定義できない。
+        raise ValueError("source_distance_m must be finite and positive.")
     receiver = Receiver(
         trajectory=StaticPose(position_world=[0.0, 0.0, 0.0], heading_deg=0.0),
         array=CoordinateArray(positions),
@@ -119,7 +124,7 @@ def _render_segment(
         sources.append(
             AcousticSource.from_relative_bearing(
                 bearing_deg=bearing_deg,
-                distance=1000.0,
+                distance=float(source_distance_m),
                 receiver_pose=receiver.trajectory.pose(0.0),
                 components=[component],
                 elevation_deg=0.0,
