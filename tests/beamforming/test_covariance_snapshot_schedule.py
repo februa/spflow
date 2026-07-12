@@ -3,10 +3,47 @@
 import numpy as np
 
 from spflow.beamforming import (
+    CovarianceSnapshotCenterSchedule,
     DirectionMatchedCovarianceAccumulator,
     build_two_second_covariance_snapshot_schedule,
     calculate_maximum_spatial_correlation_table,
 )
+
+
+def test_time_axis_restoration_removes_phase_from_different_snapshot_centers() -> None:
+    """同じtoneを異なる中心で切り出しても、位相復元後はchannel間位相が一致する。"""
+
+    schedule = CovarianceSnapshotCenterSchedule(
+        beam_azimuth_deg=np.array([[0.0], [180.0]], dtype=np.float32),
+        global_direction_azimuth_deg=np.array([0.0], dtype=np.float32),
+        direction_match_indices=np.array([[0], [0]], dtype=np.int32),
+        # ch1をch0より8 sample後で切り出し、FFTに既知の時間原点差を与える。
+        channel_center_samples=np.array([[[256], [264]], [[256], [264]]], dtype=np.int32),
+        fs_hz=1024.0,
+        snapshot_length_samples=128,
+    )
+    sample_index = np.arange(1024, dtype=np.float32)
+    tone = np.cos(np.float32(2.0 * np.pi * 64.0 / 1024.0) * sample_index).astype(np.float32)
+    signal = np.stack((tone, tone), axis=0)
+    snapshots = schedule.extract_snapshots(signal, azimuth_segment_index=0)
+    spectrum = np.fft.rfft(snapshots, axis=1).astype(np.complex64)
+    corrected = spectrum * schedule.calculate_time_axis_restoration_phase(azimuth_segment_index=0)
+
+    tone_bin_index = 8
+    # 補正前は8 sample中心差に対応するπ radの位相差があり、補正後は同一時間軸で一致する。
+    assert not np.isclose(spectrum[0, tone_bin_index, 0], spectrum[1, tone_bin_index, 0])
+    np.testing.assert_allclose(
+        corrected[0, tone_bin_index, 0],
+        corrected[1, tone_bin_index, 0],
+        rtol=1.0e-5,
+        atol=1.0e-5,
+    )
+    accumulator = DirectionMatchedCovarianceAccumulator(schedule, coef=1.0)
+    update = accumulator.process_one_second(signal)
+    corrected_cross_covariance = update.active_direction_covariance[0, 0, 1, tone_bin_index]
+    # Accumulatorが補正spectrumからX X^Hを作るため、交差共分散は正の実軸上へ揃う。
+    assert float(np.real(corrected_cross_covariance)) > 0.0
+    np.testing.assert_allclose(np.imag(corrected_cross_covariance), 0.0, atol=1.0e-3)
 
 
 def test_schedule_assigns_one_overlapping_snapshot_to_each_beam() -> None:

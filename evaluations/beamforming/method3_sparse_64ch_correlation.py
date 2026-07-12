@@ -735,6 +735,12 @@ def main() -> None:
         "process_duration_seconds": PROCESS_DURATION_S,
         "display_snapshot_seconds": list(DISPLAY_SNAPSHOT_SECONDS),
         "correlation_formula": "abs(R_ij) / sqrt(R_ii * R_jj), i > j",
+        "time_axis_restoration": {
+            "enabled": True,
+            "reference": "per-beam mean channel center sample",
+            "formula": "exp(-j * 2*pi * f_k * (center_ch_beam-center_ref_beam) / fs)",
+            "coefficient_reuse": "precomputed once for two center-table segments",
+        },
         "physical_baseline_group_index": valid_physical_indices.tolist(),
         "physical_baseline_pair_count": physical_metadata.pair_count[0, valid_physical_indices].tolist(),
         "physical_baseline_minimum_m": physical_metadata.value_minimum[0, valid_physical_indices].astype(float).tolist(),

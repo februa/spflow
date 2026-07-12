@@ -144,6 +144,50 @@ class CovarianceSnapshotCenterSchedule:
         snapshots_ch_beam_sample = input_signal[channel_indices, sample_indices]
         return np.asarray(np.moveaxis(snapshots_ch_beam_sample, 2, 1))
 
+    def calculate_time_axis_restoration_phase(self, *, azimuth_segment_index: int) -> NDArray[np.complex64]:
+        """channelごとに異なるsnapshot中心を共通時刻へ戻す位相係数を返す。
+
+        Args:
+            azimuth_segment_index: 使用する90度区間。`0`または`1`。
+
+        Returns:
+            位相復元係数。shapeは`[n_ch,n_bin,n_beam]`、dtypeは`complex64`。
+            axis=0はchannel、axis=1はrFFT周波数bin、axis=2はbeamである。
+
+        Raises:
+            ValueError: segment indexが`0`または`1`でない場合。
+
+        Notes:
+            snapshot中心`center[ch,beam]`はchannelごとに異なるため、そのままFFTすると
+            各spectrumは異なる絶対時刻を基準に持つ。beam内のchannel平均中心を共通基準
+            `center_ref[beam]`とし、`Delta t=(center-center_ref)/fs`に対して
+            `exp(-j 2 pi f Delta t)`を掛け、方式2と同じ共通時間軸へ戻す。
+            中心表と同様にframe非依存なので、Accumulator初期化時に1回だけ計算して再利用する。
+        """
+
+        segment_index = int(azimuth_segment_index)
+        require(segment_index in (0, 1), "azimuth_segment_index must be 0 or 1.")
+        centers_sample = np.asarray(
+            self.channel_center_samples[segment_index],
+            dtype=np.float64,
+        )
+        # reference_center shapeは`[1,n_beam]`。channel平均により全chを同一beam時刻へ揃える。
+        reference_center_sample = np.mean(centers_sample, axis=0, keepdims=True)
+        relative_center_time_s = (centers_sample - reference_center_sample) / float(self.fs_hz)
+        frequency_hz = np.fft.rfftfreq(
+            self.snapshot_length_samples,
+            d=1.0 / float(self.fs_hz),
+        )
+        # phase shapeはbroadcastにより`[n_ch,n_bin,n_beam]`となる。
+        phase = np.exp(
+            -1j
+            * 2.0
+            * np.pi
+            * relative_center_time_s[:, np.newaxis, :]
+            * frequency_hz[np.newaxis, :, np.newaxis]
+        )
+        return np.asarray(phase, dtype=np.complex64)
+
 
 @dataclass(frozen=True)
 class DirectionMatchedCovarianceUpdate:
@@ -318,6 +362,15 @@ class DirectionMatchedCovarianceAccumulator:
             require(0.0 < update_coef <= 1.0, "coef must satisfy 0 < coef <= 1.")
             self.direction_update_coef = np.full(n_direction, update_coef, dtype=np.float32)
         self.n_bin = schedule.snapshot_length_samples // 2 + 1
+        # 中心sample表はframe間で不変なので、2個のsegmentの時間軸復元位相も初期化時に固定する。
+        # shapeは`[2,n_ch,n_bin,n_beam]`で、毎秒のexp計算を避けて同じ係数を再利用する。
+        self._time_axis_restoration_phase = np.stack(
+            [
+                schedule.calculate_time_axis_restoration_phase(azimuth_segment_index=segment_index)
+                for segment_index in (0, 1)
+            ],
+            axis=0,
+        ).astype(np.complex64, copy=False)
         self.direction_covariance = np.zeros(
             (
                 schedule.global_direction_azimuth_deg.size,
@@ -368,6 +421,15 @@ class DirectionMatchedCovarianceAccumulator:
                 np.fft.rfft(snapshots, n=self.schedule.snapshot_length_samples, axis=1),
                 dtype=np.complex64,
             )
+            # snapshotはchannelごとに異なる中心時刻から切り出されている。
+            # `exp(-j2πfΔt)`でbeam内の共通中心時刻へ戻してから、X X^Hを形成する。
+            # phase/spectrum shapeはいずれも`[n_ch,n_bin,n_chunk]`である。
+            spectrum *= self._time_axis_restoration_phase[
+                segment_index,
+                :,
+                :,
+                beam_start:beam_stop,
+            ]
             instantaneous_covariance = np.asarray(
                 np.einsum("ikb,jkb->bijk", spectrum, spectrum.conj(), optimize=True),
                 dtype=np.complex64,
