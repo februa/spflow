@@ -39,7 +39,7 @@ class EbaeMvdrSanityResult:
     """EBAEとMVDRの単一条件比較結果を保持する。
 
     入力はbin中心・beam直上の単一sourceと空間白色雑音であり、出力は両方式の
-    target-only、noise-only、mixed BLと主要比較指標である。FIR化、S0/S1/T1/T2、
+    target-only、noise-only、mixed BLと主要比較指標である。FIR化、S1/S2/T1/T2、
     周波数sweep、BTRは責務に含めない。
 
     Attributes:
@@ -326,7 +326,7 @@ def write_ebae_mvdr_bin_center_sanity_report(output_dir: Path = OUTPUT_DIR) -> E
         f"- target BL RMS差: {float(ebae_row['target_bl_rms_delta_db_re_mvdr']):.3f} dB re MVDR",
         f"- target BL最大絶対差: {float(ebae_row['target_bl_max_abs_delta_db_re_mvdr']):.3f} dB re MVDR",
         "",
-        "この成果物はEBAEの基本動作確認専用であり、S0/S1/T1/T2、FIR長、FRAZ、BTR、",
+        "この成果物はEBAEの基本動作確認専用であり、S1/S2/T1/T2、FIR長、FRAZ、BTR、",
         "streaming成立性、方式採否の根拠には使用しない。単一binのためFRAZとBTRは未評価である。",
         "EBAEはtarget応答とpeak方位をMVDRと一致させる一方、DL=1のロバスト化により",
         "非target抑圧がMVDRより浅くなることを許容する。",

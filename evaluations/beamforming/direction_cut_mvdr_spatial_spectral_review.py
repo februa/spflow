@@ -42,10 +42,10 @@ AZIMUTH_DEG = np.linspace(0.0, 180.0, 37, dtype=np.float64)
 FREQUENCY_HZ = np.arange(16.0, 256.0 + 16.0, 16.0, dtype=np.float64)
 METHOD_IDS = (
     "fixed_integer_fractional",
-    "coarse_covariance_direct_mvdr",
-    "integer_delay_then_mvdr",
-    "direction_cut_direct_mvdr",
-    "direction_cut_integer_delay_mvdr",
+    "S1",
+    "S2",
+    "T1",
+    "T2",
 )
 
 
@@ -222,12 +222,9 @@ def calculate_review_arrays() -> dict[str, NDArray[Any]]:
                 * delay_table.delay_int[:, beam_index]
                 / FS_HZ
             )
-            integer_aligned_coarse_covariance = _direction_cut_covariance(
-                beam_delay_s[beam_index],
-                (source_delay_s[0], source_delay_s[1]),
-                source_steerings_at_frequency,
-                source_powers_at_frequency,
-            )
+            # S2はS1と同じS共分散を整数遅延後座標へunitary変換する。
+            # ここへ候補方位別T共分散を入れると、実現座標と共分散構成の2軸が混ざる。
+            integer_aligned_coarse_covariance = coarse_covariance
             rotated_coarse_covariance = (
                 integer_phase[:, np.newaxis]
                 * integer_aligned_coarse_covariance

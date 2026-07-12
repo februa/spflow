@@ -1,22 +1,22 @@
-"""EBAE/MVDR S0・S1・T1・T2 FIR長sweepの回帰試験。"""
+"""EBAE/MVDR S1・S2・T1・T2 FIR長sweepの回帰試験。"""
 
 from __future__ import annotations
 
 import numpy as np
 
-from evaluations.beamforming.ebae_mvdr_s0_s1_t1_t2_fir_sweep import (
+from evaluations.beamforming.ebae_mvdr_s1_s2_t1_t2_fir_sweep import (
     ALGORITHM_IDS,
     FIR_TAP_COUNTS,
     calculate_fir_sweep,
 )
 
 
-def test_s0_s1_and_t1_t2_are_unitary_coordinate_equivalents() -> None:
-    """EBAE/MVDR双方で正しいS0=S1、T1=T2が成立することを確認する。"""
+def test_s1_s2_and_t1_t2_are_unitary_coordinate_equivalents() -> None:
+    """EBAE/MVDR双方で正しいS1=S2、T1=T2が成立することを確認する。"""
     _, _, arrays = calculate_fir_sweep()
 
     for algorithm in ALGORITHM_IDS:
-        assert float(arrays[f"{algorithm}_s0_s1_relative_error"][0]) < 1.0e-10
+        assert float(arrays[f"{algorithm}_s1_s2_relative_error"][0]) < 1.0e-10
         assert float(arrays[f"{algorithm}_t1_t2_relative_error"][0]) < 1.0e-10
 
 
@@ -35,7 +35,7 @@ def test_full_length_fir_reconstructs_all_reference_weights() -> None:
 
 
 def test_integer_delay_residual_coordinates_improve_short_fir_reconstruction() -> None:
-    """短いFIRでS1/T2が対応するS0/T1より再構成誤差を下げることを確認する。"""
+    """短いFIRでS2/T2が対応するS1/T1より再構成誤差を下げることを確認する。"""
     _, rows, _ = calculate_fir_sweep()
     lookup = {
         (str(row["algorithm"]), str(row["method"]), int(row["tap_count"])): float(
@@ -44,6 +44,6 @@ def test_integer_delay_residual_coordinates_improve_short_fir_reconstruction() -
         for row in rows
     }
     for algorithm in ALGORITHM_IDS:
-        assert lookup[(algorithm, "S1", 32)] < lookup[(algorithm, "S0", 32)]
+        assert lookup[(algorithm, "S2", 32)] < lookup[(algorithm, "S1", 32)]
         assert lookup[(algorithm, "T2", 32)] < lookup[(algorithm, "T1", 32)]
-        assert np.isfinite(lookup[(algorithm, "S1", 32)])
+        assert np.isfinite(lookup[(algorithm, "S2", 32)])

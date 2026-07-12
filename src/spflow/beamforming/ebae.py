@@ -19,13 +19,13 @@ BoolArray = NDArray[np.bool_]
 class EbaeConfig:
     """EBAE の信号数推定と固有ベクトル除外条件を保持する。
 
-    このクラスは S0 共分散の独立 snapshot レート、積分時間、sigmoid パラメータ、
+    このクラスは入力共分散の独立 snapshot レート、積分時間、sigmoid パラメータ、
     diagonal loading 係数を入力として保持する。重みや信号を計算する責務は持たない。
     信号処理上は、各 FFT bin で独立に実行する EBAE 重み更新の固定条件に位置づく。
 
     Attributes:
-        snapshot_rate_hz: S0 共分散へ入る独立 snapshot のレート。単位は snapshot/s。
-        integration_time_sec: S0 共分散の積分時間。単位は s。
+        snapshot_rate_hz: 入力共分散へ入る独立 snapshot のレート。単位は snapshot/s。
+        integration_time_sec: 入力共分散の積分時間。単位は s。
         sigmoid_slope: 固有ベクトル除外係数 sigmoid の傾き ``sigm_a``。無次元。
         sigmoid_midpoint: sigmoid の変曲点 ``sigm_b``。無次元。
         diagonal_loading: ロバスト化係数 ``DL``。無次元で、1 を既定値とする。
@@ -91,7 +91,7 @@ class EbaeBandResult:
 class EbaeResult:
     """全 FFT bin の EBAE 設計結果を表す。
 
-    各 bin を完全に独立して設計した重みと診断量を返す。FFT、S0 共分散更新、
+    各 bin を完全に独立して設計した重みと診断量を返す。FFT、S/T 共分散更新、
     ビーム出力計算は責務に含めない。
 
     Attributes:
@@ -209,7 +209,7 @@ def design_ebae_weights_band(
     """単一 FFT bin の EBAE 重みを設計する。
 
     Args:
-        covariance: S0 空間共分散。shape は ``[n_ch,n_ch]``、単位は入力power。
+        covariance: 入力空間共分散。shape は ``[n_ch,n_ch]``、単位は入力power。
         steering: 未正規化ステアリング。shape は ``[n_ch,n_beam]``。
         snapshot_count: N/E AIC に使う独立 snapshot 数 ``L=rate*T``。
         config: EBAE の固定設計条件。
@@ -332,7 +332,7 @@ def design_ebae_weights(
     """全 FFT bin の EBAE 重みを完全に独立して設計する。
 
     Args:
-        covariance: S0 共分散。shape は ``[n_bin,n_ch,n_ch]``。
+        covariance: 入力共分散。shape は ``[n_bin,n_ch,n_ch]``。
         steering: 未正規化ステアリング。shape は ``[n_ch,n_beam,n_bin]``。
         config: ``rate*T=M^2`` を満たす EBAE 設定。
 

@@ -24,8 +24,8 @@ def test_review_arrays_have_fixed_beam_and_frequency_axes() -> None:
         assert bool(np.all(np.isfinite(arrays[f"{method_id}_fraz_level_db"])))
 
 
-def test_direct_and_integer_delay_fraz_are_equivalent_in_static_model() -> None:
-    """位相基準を揃えた2 MVDRの静的FRAZが数値誤差内で一致する。"""
+def test_t1_t2_fraz_are_equivalent_in_static_model() -> None:
+    """位相基準を揃えたT1/T2の静的FRAZが数値誤差内で一致する。"""
 
     arrays = calculate_review_arrays()
     np.testing.assert_allclose(
@@ -36,13 +36,13 @@ def test_direct_and_integer_delay_fraz_are_equivalent_in_static_model() -> None:
     )
 
 
-def test_integer_delay_then_mvdr_matches_direction_cut_direct_static_fraz() -> None:
-    """整数遅延後の残差MVDRと方位別直接MVDRの静的FRAZが一致する。"""
+def test_s1_s2_fraz_are_equivalent_in_static_model() -> None:
+    """位相基準を揃えたS1/S2の静的FRAZが数値誤差内で一致する。"""
 
     arrays = calculate_review_arrays()
     np.testing.assert_allclose(
+        arrays[f"{METHOD_IDS[1]}_fraz_level_db"],
         arrays[f"{METHOD_IDS[2]}_fraz_level_db"],
-        arrays[f"{METHOD_IDS[3]}_fraz_level_db"],
         rtol=0.0,
         atol=1.0e-8,
     )
