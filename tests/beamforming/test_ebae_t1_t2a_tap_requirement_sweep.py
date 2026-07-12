@@ -1,8 +1,8 @@
-"""T1/T2必要tap評価の回帰試験。"""
+"""T1/T2a必要tap評価の回帰試験。"""
 
 from __future__ import annotations
 
-from evaluations.beamforming.ebae_t1_t2_tap_requirement_sweep import (
+from evaluations.beamforming.ebae_t1_t2a_tap_requirement_sweep import (
     METHOD_IDS,
     SCENARIOS,
     TAP_COUNTS,
@@ -45,11 +45,11 @@ def test_full_dft_length_is_an_exact_fir_realization_reference() -> None:
 
 
 def test_integer_delay_separation_never_requires_more_taps_than_direct_t1() -> None:
-    """同一条件では整数遅延分離T2の最短tapが直接実現T1以下であることを確認する。"""
+    """同一条件では整数遅延分離T2aの最短tapが直接実現T1以下であることを確認する。"""
     _, minimum_rows = calculate_tap_requirement_sweep()
     lookup = {
         (str(row["scenario"]), str(row["method"])): int(row["minimum_passing_tap"])
         for row in minimum_rows
     }
     for scenario in SCENARIOS:
-        assert lookup[(scenario.scenario_id, "T2")] <= lookup[(scenario.scenario_id, "T1")]
+        assert lookup[(scenario.scenario_id, "T2a")] <= lookup[(scenario.scenario_id, "T1")]

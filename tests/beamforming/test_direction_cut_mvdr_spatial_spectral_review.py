@@ -24,8 +24,8 @@ def test_review_arrays_have_fixed_beam_and_frequency_axes() -> None:
         assert bool(np.all(np.isfinite(arrays[f"{method_id}_fraz_level_db"])))
 
 
-def test_t1_t2_fraz_are_equivalent_in_static_model() -> None:
-    """位相基準を揃えたT1/T2の静的FRAZが数値誤差内で一致する。"""
+def test_t1_t2a_fraz_are_equivalent_in_static_model() -> None:
+    """位相基準を揃えたT1/T2aの静的FRAZが数値誤差内で一致する。"""
 
     arrays = calculate_review_arrays()
     np.testing.assert_allclose(
@@ -36,8 +36,8 @@ def test_t1_t2_fraz_are_equivalent_in_static_model() -> None:
     )
 
 
-def test_s1_s2_fraz_are_equivalent_in_static_model() -> None:
-    """位相基準を揃えたS1/S2の静的FRAZが数値誤差内で一致する。"""
+def test_s1_s2a_fraz_are_equivalent_in_static_model() -> None:
+    """位相基準を揃えたS1/S2aの静的FRAZが数値誤差内で一致する。"""
 
     arrays = calculate_review_arrays()
     np.testing.assert_allclose(

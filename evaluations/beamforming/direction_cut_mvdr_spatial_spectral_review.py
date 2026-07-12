@@ -43,9 +43,9 @@ FREQUENCY_HZ = np.arange(16.0, 256.0 + 16.0, 16.0, dtype=np.float64)
 METHOD_IDS = (
     "fixed_integer_fractional",
     "S1",
-    "S2",
+    "S2a",
     "T1",
-    "T2",
+    "T2a",
 )
 
 
@@ -222,7 +222,7 @@ def calculate_review_arrays() -> dict[str, NDArray[Any]]:
                 * delay_table.delay_int[:, beam_index]
                 / FS_HZ
             )
-            # S2はS1と同じS共分散を整数遅延後座標へunitary変換する。
+            # S2aはS1と同じS共分散を整数遅延後座標へunitary変換する。
             # ここへ候補方位別T共分散を入れると、実現座標と共分散構成の2軸が混ざる。
             integer_aligned_coarse_covariance = coarse_covariance
             rotated_coarse_covariance = (

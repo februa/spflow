@@ -1,4 +1,4 @@
-"""T共分散の方位推定とT1/T2の有限長FIR実現誤差を分離して評価する。"""
+"""T共分散の方位推定とT1/T2aの有限長FIR実現誤差を分離して評価する。"""
 
 from __future__ import annotations
 
@@ -11,15 +11,15 @@ from typing import Any, Iterator
 import numpy as np
 from numpy.typing import NDArray
 
-from evaluations.beamforming import ebae_mvdr_s1_s2_t1_t2_fir_sweep as reference
+from evaluations.beamforming import ebae_mvdr_s1_s2a_t1_t2a_fir_sweep as reference
 
 
 FloatArray = NDArray[np.float64]
 ComplexArray = NDArray[np.complex128]
 
-OUTPUT_DIR = Path("artifacts/beamforming/ebae_t1_t2_tap_requirement_sweep/review_pack")
+OUTPUT_DIR = Path("artifacts/beamforming/ebae_t1_t2a_tap_requirement_sweep/review_pack")
 TAP_COUNTS = (8, 16, 32, 64, 128, 256, 512)
-METHOD_IDS = ("T1", "T2")
+METHOD_IDS = ("T1", "T2a")
 
 # 合否値は、方位gridの離散化とFIR打切り誤差を方式差から分離できる水準に固定する。
 PEAK_ERROR_LIMIT_DEG = 10.0
@@ -37,7 +37,7 @@ NULL_DEGRADATION_MAX_DB = 3.0
 
 @dataclass(frozen=True)
 class TapScenario:
-    """T1/T2 tap評価の物理条件を保持する。
+    """T1/T2a tap評価の物理条件を保持する。
 
     このクラスはアレイ開口、方位、bin内分析幅、使用帯域を定義する。
     共分散計算やFIR変換そのものは責務に含めない。
@@ -279,7 +279,7 @@ def _error_metrics(
 
 
 def calculate_tap_requirement_sweep() -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
-    """全条件でT共分散成立性とT1/T2の最短tap数を計算する。
+    """全条件でT共分散成立性とT1/T2aの最短tap数を計算する。
 
     Returns:
         ``(detail_rows, minimum_rows)``。前者は全tap、後者は条件・方式別の最短合格tapを持つ。
@@ -349,7 +349,7 @@ def write_review_pack(output_dir: Path = OUTPUT_DIR) -> None:
             writer.writeheader()
             writer.writerows(rows)
     criteria = (
-        "# T1/T2 tap requirement evaluation\n\n"
+        "# T1/T2a tap requirement evaluation\n\n"
         "A（T共分散の方位推定）とB（有限長FIR実現）を別々に判定する。"
         "幾何遅延幅はT1の有力な予測値であり、無条件の数学的下限とは扱わない。\n\n"
         f"- peak error <= {PEAK_ERROR_LIMIT_DEG} deg\n"
