@@ -85,6 +85,15 @@ from .evaluation_criteria import (
     list_beamforming_evaluation_patterns,
     write_beamforming_evaluation_criteria_markdown,
 )
+from .ebae import (
+    EbaeBandResult,
+    EbaeConfig,
+    EbaeResult,
+    calculate_music_spectrum,
+    design_ebae_weights,
+    design_ebae_weights_band,
+    estimate_signal_count_ne_aic,
+)
 from .fixed_delay_diff_mvdr import (
     STANDARD_FRACTIONAL_DELAY_PATTERN_COUNT,
     STANDARD_FRACTIONAL_DELAY_TAP_COUNT,
