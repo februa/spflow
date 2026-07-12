@@ -28,7 +28,9 @@ INTERFERER_AZIMUTH_DEG = 110.0
 NOISE_POWER_RE_TARGET = 1.0e-2
 DIAGONAL_LOADING_RATIO = 1.0e-3
 SCAN_AZIMUTH_DEG = np.linspace(0.0, 180.0, 721, dtype=np.float64)
-METHOD_IDS = ("S0", "S1", "T0", "T1")
+DIRECT_METHOD_ID = "direction_cut_direct_mvdr"
+INTEGER_DELAY_METHOD_ID = "direction_cut_integer_delay_mvdr"
+METHOD_IDS = (DIRECT_METHOD_ID, INTEGER_DELAY_METHOD_ID)
 
 
 def sensor_positions_m() -> NDArray[np.float64]:
@@ -103,7 +105,7 @@ def _source_covariance(
 
 
 def method_covariances() -> dict[str, NDArray[np.complex128]]:
-    """S0/S1/T0/T1のtarget共分散を返す。
+    """方位別時間切り出し共分散の2つの適用位相基準を返す。
 
     Returns:
         method IDから共分散`[n_ch,n_ch]`への対応。
@@ -119,19 +121,21 @@ def method_covariances() -> dict[str, NDArray[np.complex128]]:
     quantized_delay = np.rint(true_delay * FS_HZ) / FS_HZ
     integer_alignment = np.exp(1j * 2.0 * np.pi * CENTER_FREQUENCY_HZ * quantized_delay)
     residual_delay = true_delay - quantized_delay
-    residual_steering = np.asarray(integer_alignment * physical_steering, dtype=np.complex128)
-
-    s0 = _source_covariance(true_delay, physical_steering)
-    s1 = _source_covariance(residual_delay, residual_steering)
     # target方位の時間切り出しは整数sample丸め残差だけを
-    # coherenceに残すが、共通時刻復元後の位相座標は物理steeringである。
-    t0 = _source_covariance(residual_delay, physical_steering)
-    # T1はT0と同じ標本のunitary座標変換であり、共分散を再推定しない。
-    t1 = np.asarray(
-        integer_alignment[:, np.newaxis] * t0 * integer_alignment.conj()[np.newaxis, :],
+    # coherenceに残すが、切り出し時刻差の位相補正後は元入力と同じ位相基準になる。
+    direct_covariance = _source_covariance(residual_delay, physical_steering)
+    # 整数遅延前段方式では、同じ完成共分散のchannel位相を、
+    # 実際に信号へ与える整数遅延分だけ合わせ直す。共分散は再推定しない。
+    integer_delay_covariance = np.asarray(
+        integer_alignment[:, np.newaxis]
+        * direct_covariance
+        * integer_alignment.conj()[np.newaxis, :],
         dtype=np.complex128,
     )
-    return {"S0": s0, "S1": s1, "T0": t0, "T1": t1}
+    return {
+        DIRECT_METHOD_ID: direct_covariance,
+        INTEGER_DELAY_METHOD_ID: integer_delay_covariance,
+    }
 
 
 def _mvdr_weight(
@@ -161,7 +165,7 @@ def _mvdr_weight(
 
 
 def evaluate_methods() -> tuple[list[dict[str, Any]], dict[str, NDArray[np.float64]]]:
-    """S0/S1/T0/T1の数値指標と固定weight beam patternを返す。"""
+    """方位別共分散を使う2整相方式の指標とbeam patternを返す。"""
 
     positions = sensor_positions_m()
     scan_delay = arrival_delays_s(positions, SCAN_AZIMUTH_DEG)
@@ -182,20 +186,20 @@ def evaluate_methods() -> tuple[list[dict[str, Any]], dict[str, NDArray[np.float
     complex_outputs: dict[str, complex] = {}
 
     for method_id in METHOD_IDS:
-        delayed_coordinate = method_id in ("S1", "T1")
+        integer_delay_applied = method_id == INTEGER_DELAY_METHOD_ID
         constraint = (
             np.asarray(integer_alignment * target_physical, dtype=np.complex128)
-            if delayed_coordinate
+            if integer_delay_applied
             else target_physical
         )
         scan = (
             np.asarray(scan_physical * integer_alignment[np.newaxis, :], dtype=np.complex128)
-            if delayed_coordinate
+            if integer_delay_applied
             else scan_physical
         )
         interferer = (
             np.asarray(integer_alignment * interferer_physical, dtype=np.complex128)
-            if delayed_coordinate
+            if integer_delay_applied
             else interferer_physical
         )
         weight, health = _mvdr_weight(
@@ -237,10 +241,13 @@ def evaluate_methods() -> tuple[list[dict[str, Any]], dict[str, NDArray[np.float
             }
         )
 
-    # T0/T1は座標変換だけなので、同一targetの複素出力が一致する。
-    equivalence_error = abs(complex_outputs["T0"] - complex_outputs["T1"])
+    # 両方式は同じ完成共分散と整数遅延分の位相補正だけが異なるため、
+    # 整合した信号とweightを組み合わせればtarget複素出力は一致する。
+    equivalence_error = abs(
+        complex_outputs[DIRECT_METHOD_ID] - complex_outputs[INTEGER_DELAY_METHOD_ID]
+    )
     for row in rows:
-        row["t0_t1_target_complex_error"] = float(equivalence_error)
+        row["direct_integer_delay_target_complex_error"] = float(equivalence_error)
     return rows, patterns
 
 
@@ -299,7 +306,7 @@ def _write_artifacts(
             "- levelは`dB re target response`、target出力は`dB re input RMS`。",
             "- `scenario_summary.csv`が数値根拠、`plot_data.npz`が図の元配列。",
             (
-                "- この代表条件は方式と座標変換の検証用であり、"
+                "- この代表条件は直接適用と整数遅延前段の位相整合を検証するものであり、"
                 "運用採否やBL複合scoreの根拠には使用しない。"
             ),
             "",
@@ -309,7 +316,7 @@ def _write_artifacts(
 
 
 def main() -> None:
-    """代表条件のS0/S1/T0/T1評価と成果物生成を実行する。"""
+    """方位別共分散を使う2整相方式の評価と成果物生成を実行する。"""
 
     rows, patterns = evaluate_methods()
     _write_artifacts(rows, patterns)
