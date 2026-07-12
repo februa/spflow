@@ -40,6 +40,7 @@ from .covariance import (
     recommended_integration_time_for_independent_samples,
 )
 from .covariance_snapshot_schedule import (
+    CompletedDirectionSteeringMetrics,
     CovarianceSnapshotCenterSchedule,
     DirectionMatchedCovarianceAccumulator,
     DirectionMatchedCovarianceUpdate,
@@ -62,6 +63,13 @@ from .diagnostic_plotting import (
     write_beam_diagnostic_plot_usage_notes,
 )
 from .directions import make_directions
+from .direction_covariance_selector import (
+    CovarianceFallbackReason,
+    CovarianceFallbackSource,
+    DirectionCovarianceSelectionConfig,
+    DirectionCovarianceSelectionResult,
+    DirectionMatchedCovarianceSelector,
+)
 from .evaluation_arrays import (
     BeamLevelDisplayArrays,
     BlShapeFeatures,
@@ -250,6 +258,12 @@ __all__ = [
     "forgetting_factor_from_integration_time",
     "CovarianceEstimator",
     "CovarianceSnapshotCenterSchedule",
+    "CompletedDirectionSteeringMetrics",
+    "CovarianceFallbackSource",
+    "CovarianceFallbackReason",
+    "DirectionCovarianceSelectionConfig",
+    "DirectionCovarianceSelectionResult",
+    "DirectionMatchedCovarianceSelector",
     "CovarianceSubspaceMetrics",
     "DirectionMatchedCovarianceAccumulator",
     "DirectionMatchedCovarianceUpdate",

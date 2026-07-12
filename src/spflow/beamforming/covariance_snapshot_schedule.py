@@ -207,6 +207,25 @@ class DirectionMatchedCovarianceUpdate:
 
 
 @dataclass(frozen=True)
+class CompletedDirectionSteeringMetrics:
+    """2秒完成周期で確定したsteering power整合度を保持する。
+
+    Attributes:
+        steering_power: `|u^H X|^2`の方位別指数積分。shapeは`[n_direction,n_bin]`。
+        total_power: `norm(X)^2`の方位別指数積分。shapeは`[n_direction,n_bin]`。
+        eta: `steering_power/total_power`。shapeは`[n_direction,n_bin]`。
+        eta_valid: 分母と有限性が有効なmask。shapeは`[n_direction,n_bin]`。
+        completed_cycle_count: 完成した2秒周期数。
+    """
+
+    steering_power: NDArray[np.float32]
+    total_power: NDArray[np.float32]
+    eta: NDArray[np.float32]
+    eta_valid: NDArray[np.bool_]
+    completed_cycle_count: int
+
+
+@dataclass(frozen=True)
 class MaximumSpatialCorrelationTable:
     """方位・周波数ごとの最大非対角正規化相関を保持する。
 
@@ -321,6 +340,8 @@ class DirectionMatchedCovarianceAccumulator:
         coef: float | None = None,
         integration_time_seconds: float | None = None,
         beam_chunk_size: int = 8,
+        steering_table: NDArray[Any] | None = None,
+        eta_denominator_floor: float = 1.0e-20,
     ) -> None:
         """再利用するscheduleと瞬時共分散の更新係数を設定する。
 
@@ -330,6 +351,9 @@ class DirectionMatchedCovarianceAccumulator:
             integration_time_seconds: 等価積分時間。単位はs。方位一致表から各global方位の
                 実更新rateを求め、`coef=2/(1+rate*T)`を方位ごとに設定する。
             beam_chunk_size: FFTと瞬時共分散を一括処理するbeam数。
+            steering_table: 物理steering。shapeは`[n_ch,n_bin,n_direction]`。
+                指定時はchannel norm 1へ正規化し、瞬時steering/total powerも同時積分する。
+            eta_denominator_floor: eta分母の数値下限。
 
         Raises:
             ValueError: 係数指定が排他的でない、または範囲外の場合。
@@ -341,7 +365,9 @@ class DirectionMatchedCovarianceAccumulator:
         )
         self.schedule = schedule
         self.beam_chunk_size = int(beam_chunk_size)
+        self.eta_denominator_floor = float(eta_denominator_floor)
         require_positive_int("beam_chunk_size", self.beam_chunk_size)
+        require_positive_float("eta_denominator_floor", self.eta_denominator_floor)
         n_direction = int(schedule.global_direction_azimuth_deg.size)
         if integration_time_seconds is not None:
             integration_time = float(integration_time_seconds)
@@ -362,6 +388,24 @@ class DirectionMatchedCovarianceAccumulator:
             require(0.0 < update_coef <= 1.0, "coef must satisfy 0 < coef <= 1.")
             self.direction_update_coef = np.full(n_direction, update_coef, dtype=np.float32)
         self.n_bin = schedule.snapshot_length_samples // 2 + 1
+        self._normalized_steering_table: NDArray[np.complex64] | None = None
+        self.steering_power: NDArray[np.float32] | None = None
+        self.total_power: NDArray[np.float32] | None = None
+        if steering_table is not None:
+            steering = np.asarray(steering_table, dtype=np.complex64)
+            require(
+                steering.shape == (schedule.n_ch, self.n_bin, n_direction),
+                "steering_table must have shape (n_ch, n_bin, n_direction).",
+            )
+            require(bool(np.all(np.isfinite(steering))), "steering_table must be finite.")
+            steering_norm = np.sqrt(np.sum(np.abs(steering) ** 2, axis=0, keepdims=True))
+            require(bool(np.all(steering_norm > 0.0)), "steering_table channel norm must be positive.")
+            self._normalized_steering_table = np.asarray(
+                steering / steering_norm,
+                dtype=np.complex64,
+            )
+            self.steering_power = np.zeros((n_direction, self.n_bin), dtype=np.float32)
+            self.total_power = np.zeros((n_direction, self.n_bin), dtype=np.float32)
         # 中心sample表はframe間で不変なので、2個のsegmentの時間軸復元位相も初期化時に固定する。
         # shapeは`[2,n_ch,n_bin,n_beam]`で、毎秒のexp計算を避けて同じ係数を再利用する。
         self._time_axis_restoration_phase = np.stack(
@@ -386,6 +430,10 @@ class DirectionMatchedCovarianceAccumulator:
         """全方位共分散と秒counterをゼロへ戻す。"""
 
         self.direction_covariance.fill(np.complex64(0.0 + 0.0j))
+        if self.steering_power is not None:
+            self.steering_power.fill(np.float32(0.0))
+        if self.total_power is not None:
+            self.total_power.fill(np.float32(0.0))
         self._processed_second_count = 0
 
     def process_one_second(self, signal: NDArray[Any]) -> DirectionMatchedCovarianceUpdate:
@@ -430,11 +478,40 @@ class DirectionMatchedCovarianceAccumulator:
                 :,
                 beam_start:beam_stop,
             ]
+            chunk_direction_indices = direction_indices[beam_start:beam_stop]
+            if self._normalized_steering_table is not None:
+                steering_power = self.steering_power
+                total_power = self.total_power
+                if steering_power is None or total_power is None:
+                    raise RuntimeError("steering power state must exist when steering_table is configured.")
+                normalized_steering = self._normalized_steering_table[:, :, chunk_direction_indices]
+                # u^H Xをchannel axis=0で内積し、`[n_bin,n_chunk]`から`[n_chunk,n_bin]`へ転置する。
+                projected = np.einsum(
+                    "ikb,ikb->kb",
+                    normalized_steering.conj(),
+                    spectrum,
+                    optimize=True,
+                )
+                steering_power_instantaneous = np.asarray(np.abs(projected.T) ** 2, dtype=np.float32)
+                total_power_instantaneous = np.asarray(
+                    np.sum(np.abs(spectrum) ** 2, axis=0).T,
+                    dtype=np.float32,
+                )
+                active_power_coef = self.direction_update_coef[chunk_direction_indices, np.newaxis]
+                steering_power[chunk_direction_indices] = np.asarray(
+                    (1.0 - active_power_coef) * steering_power[chunk_direction_indices]
+                    + active_power_coef * steering_power_instantaneous,
+                    dtype=np.float32,
+                )
+                total_power[chunk_direction_indices] = np.asarray(
+                    (1.0 - active_power_coef) * total_power[chunk_direction_indices]
+                    + active_power_coef * total_power_instantaneous,
+                    dtype=np.float32,
+                )
             instantaneous_covariance = np.asarray(
                 np.einsum("ikb,jkb->bijk", spectrum, spectrum.conj(), optimize=True),
                 dtype=np.complex64,
             )
-            chunk_direction_indices = direction_indices[beam_start:beam_stop]
             previous_covariance = self.direction_covariance[chunk_direction_indices]
             active_coef = self.direction_update_coef[
                 chunk_direction_indices,
@@ -458,6 +535,54 @@ class DirectionMatchedCovarianceAccumulator:
             ),
             processed_second_count=self._processed_second_count,
         )
+
+    def completed_steering_metrics(self) -> CompletedDirectionSteeringMetrics:
+        """直近2秒周期で完成したetaを返す。
+
+        Returns:
+            完成済みsteering power、total power、eta、valid mask、周期数。
+
+        Raises:
+            RuntimeError: steering table未設定、初回2秒未完了、または周期途中の場合。
+
+        Notes:
+            1秒目の片側方位だけを外部公開しないため、処理秒数が偶数の完成境界でのみ返す。
+        """
+
+        if self.steering_power is None or self.total_power is None:
+            raise RuntimeError("steering_table was not configured.")
+        if self._processed_second_count < 2 or self._processed_second_count % 2 != 0:
+            raise RuntimeError("steering metrics are available only at a completed two-second cycle.")
+        valid = (
+            np.isfinite(self.steering_power)
+            & np.isfinite(self.total_power)
+            & (self.total_power > np.float32(self.eta_denominator_floor))
+        )
+        eta = np.zeros(self.total_power.shape, dtype=np.float32)
+        eta[valid] = np.asarray(
+            self.steering_power[valid] / self.total_power[valid],
+            dtype=np.float32,
+        )
+        # 理論範囲を丸め誤差だけ超える場合はclipし、大幅超過は実装または入力共分散異常とする。
+        if bool(np.any(eta[valid] > 1.0 + 1.0e-4)):
+            raise RuntimeError("eta exceeds its physical range.")
+        eta = np.clip(eta, 0.0, 1.0).astype(np.float32, copy=False)
+        return CompletedDirectionSteeringMetrics(
+            steering_power=self.steering_power.copy(),
+            total_power=self.total_power.copy(),
+            eta=eta,
+            eta_valid=np.asarray(valid, dtype=np.bool_),
+            completed_cycle_count=self._processed_second_count // 2,
+        )
+
+    @property
+    def steering_state_bytes(self) -> int:
+        """正規化steering tableと2個のpower積分状態の常駐byte数を返す。"""
+
+        steering_bytes = 0 if self._normalized_steering_table is None else int(self._normalized_steering_table.nbytes)
+        power_bytes = 0 if self.steering_power is None else int(self.steering_power.nbytes)
+        power_bytes += 0 if self.total_power is None else int(self.total_power.nbytes)
+        return steering_bytes + power_bytes
 
 
 def build_two_second_covariance_snapshot_schedule(
