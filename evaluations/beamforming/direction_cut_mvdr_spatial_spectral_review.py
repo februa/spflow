@@ -42,6 +42,8 @@ AZIMUTH_DEG = np.linspace(0.0, 180.0, 37, dtype=np.float64)
 FREQUENCY_HZ = np.arange(16.0, 256.0 + 16.0, 16.0, dtype=np.float64)
 METHOD_IDS = (
     "fixed_integer_fractional",
+    "coarse_covariance_direct_mvdr",
+    "integer_delay_then_mvdr",
     "direction_cut_direct_mvdr",
     "direction_cut_integer_delay_mvdr",
 )
@@ -126,6 +128,26 @@ def _direction_cut_covariance(
     return np.asarray(covariance, dtype=np.complex128)
 
 
+def _coarse_same_time_covariance(
+    source_delays_s: tuple[NDArray[np.float64], ...],
+    source_steerings: tuple[NDArray[np.complex128], ...],
+    source_powers: tuple[float, ...],
+) -> NDArray[np.complex128]:
+    """同一時間blockの粗い分析幅共分散`[n_ch,n_ch]`を返す。"""
+
+    covariance = NOISE_POWER_PER_BIN_RE_SOURCE_RMS * np.eye(N_CHANNEL, dtype=np.complex128)
+    for source_delay_s, source_steering, source_power in zip(
+        source_delays_s, source_steerings, source_powers, strict=True
+    ):
+        # 整数遅延も方位別切り出しも行わないため、開口全体の
+        # 物理遅延が1 bin内のcoherence低下にそのまま寄与する。
+        pair_delay_s = source_delay_s[:, np.newaxis] - source_delay_s[np.newaxis, :]
+        coherence = np.sinc(ANALYSIS_WIDTH_HZ * pair_delay_s)
+        outer = source_steering[:, np.newaxis] * source_steering.conj()[np.newaxis, :]
+        covariance += float(source_power) * coherence * outer
+    return np.asarray(covariance, dtype=np.complex128)
+
+
 def calculate_review_arrays() -> dict[str, NDArray[Any]]:
     """3方式のBL、FRAZ、周波数スペクトル配列を返す。"""
 
@@ -158,21 +180,38 @@ def calculate_review_arrays() -> dict[str, NDArray[Any]]:
         fs_hz=FS_HZ,
     )
     # weight shapeは`[n_frequency,n_beam,n_ch]`。MVDRも同じaxis順へ揃える。
-    direct_weights = np.empty_like(fixed_weights)
-    integer_weights = np.empty_like(fixed_weights)
+    coarse_direct_weights = np.empty_like(fixed_weights)
+    integer_then_weights = np.empty_like(fixed_weights)
+    direction_direct_weights = np.empty_like(fixed_weights)
+    direction_integer_weights = np.empty_like(fixed_weights)
     for frequency_index, frequency_hz in enumerate(FREQUENCY_HZ.tolist()):
         for beam_index in range(AZIMUTH_DEG.size):
-            covariance = _direction_cut_covariance(
+            source_steerings_at_frequency = (
+                source_steering[0, frequency_index],
+                source_steering[1, frequency_index],
+            )
+            source_powers_at_frequency = (
+                float(source_power_per_bin[frequency_index]),
+                float(source_power_per_bin[frequency_index]),
+            )
+            coarse_covariance = _coarse_same_time_covariance(
+                (source_delay_s[0], source_delay_s[1]),
+                source_steerings_at_frequency,
+                source_powers_at_frequency,
+            )
+            direction_covariance = _direction_cut_covariance(
                 beam_delay_s[beam_index],
                 (source_delay_s[0], source_delay_s[1]),
-                (source_steering[0, frequency_index], source_steering[1, frequency_index]),
-                (
-                    float(source_power_per_bin[frequency_index]),
-                    float(source_power_per_bin[frequency_index]),
-                ),
+                source_steerings_at_frequency,
+                source_powers_at_frequency,
             )
             constraint = beam_steering[beam_index, frequency_index]
-            direct_weights[frequency_index, beam_index] = _mvdr_weight(covariance, constraint)
+            coarse_direct_weights[frequency_index, beam_index] = _mvdr_weight(
+                coarse_covariance, constraint
+            )
+            direction_direct_weights[frequency_index, beam_index] = _mvdr_weight(
+                direction_covariance, constraint
+            )
             # 整数遅延前段に合わせ、共分散・steering・入力の
             # channel位相を同じ係数で回転する。
             integer_phase = np.exp(
@@ -183,26 +222,47 @@ def calculate_review_arrays() -> dict[str, NDArray[Any]]:
                 * delay_table.delay_int[:, beam_index]
                 / FS_HZ
             )
-            rotated_covariance = (
+            integer_aligned_coarse_covariance = _direction_cut_covariance(
+                beam_delay_s[beam_index],
+                (source_delay_s[0], source_delay_s[1]),
+                source_steerings_at_frequency,
+                source_powers_at_frequency,
+            )
+            rotated_coarse_covariance = (
                 integer_phase[:, np.newaxis]
-                * covariance
+                * integer_aligned_coarse_covariance
                 * integer_phase.conj()[np.newaxis, :]
             )
-            delayed_input_weight = _mvdr_weight(
-                np.asarray(rotated_covariance, dtype=np.complex128),
+            rotated_direction_covariance = (
+                integer_phase[:, np.newaxis]
+                * direction_covariance
+                * integer_phase.conj()[np.newaxis, :]
+            )
+            delayed_coarse_weight = _mvdr_weight(
+                np.asarray(rotated_coarse_covariance, dtype=np.complex128),
+                np.asarray(integer_phase * constraint, dtype=np.complex128),
+            )
+            delayed_direction_weight = _mvdr_weight(
+                np.asarray(rotated_direction_covariance, dtype=np.complex128),
                 np.asarray(integer_phase * constraint, dtype=np.complex128),
             )
             # 実出力はw_d^H D xである。元入力xへ対する等価weightは
             # D^H w_dなので、BL/FRAZ計算用に元入力位相基準へ戻す。
-            integer_weights[frequency_index, beam_index] = np.asarray(
-                integer_phase.conj() * delayed_input_weight,
+            integer_then_weights[frequency_index, beam_index] = np.asarray(
+                integer_phase.conj() * delayed_coarse_weight,
+                dtype=np.complex128,
+            )
+            direction_integer_weights[frequency_index, beam_index] = np.asarray(
+                integer_phase.conj() * delayed_direction_weight,
                 dtype=np.complex128,
             )
 
     weights_by_method = {
         METHOD_IDS[0]: fixed_weights,
-        METHOD_IDS[1]: direct_weights,
-        METHOD_IDS[2]: integer_weights,
+        METHOD_IDS[1]: coarse_direct_weights,
+        METHOD_IDS[2]: integer_then_weights,
+        METHOD_IDS[3]: direction_direct_weights,
+        METHOD_IDS[4]: direction_integer_weights,
     }
     arrays: dict[str, NDArray[Any]] = {
         "azimuth_deg": AZIMUTH_DEG,
@@ -299,7 +359,7 @@ def _plot_review(arrays: dict[str, NDArray[Any]]) -> None:
     )
     vmax = float(np.max(finite_values))
     vmin = vmax - 80.0
-    figure, axes = plt.subplots(1, 3, figsize=(16.0, 5.0), constrained_layout=True, sharey=True)
+    figure, axes = plt.subplots(1, 5, figsize=(24.0, 5.0), constrained_layout=True, sharey=True)
     image: Any = None
     for axis, method_id in zip(axes, METHOD_IDS, strict=True):
         image = axis.pcolormesh(
@@ -317,10 +377,7 @@ def _plot_review(arrays: dict[str, NDArray[Any]]) -> None:
     plt.close(figure)
 
     fixed_fraz = np.asarray(arrays[f"{METHOD_IDS[0]}_fraz_level_db"])
-    for method_id, filename in (
-        (METHOD_IDS[1], "fraz_delta_direct_vs_fixed.png"),
-        (METHOD_IDS[2], "fraz_delta_integer_delay_vs_fixed.png"),
-    ):
+    for method_id in METHOD_IDS[1:]:
         delta = np.asarray(arrays[f"{method_id}_fraz_level_db"]) - fixed_fraz
         figure, axis = plt.subplots(figsize=(9.0, 5.0), constrained_layout=True)
         image = axis.pcolormesh(
@@ -338,7 +395,7 @@ def _plot_review(arrays: dict[str, NDArray[Any]]) -> None:
             ylabel="Frequency [Hz]",
         )
         figure.colorbar(image, ax=axis, label="Level difference [dB re fixed FRAZ level]")
-        figure.savefig(figure_dir / filename, dpi=160)
+        figure.savefig(figure_dir / f"fraz_delta_{method_id}_vs_fixed.png", dpi=160)
         plt.close(figure)
 
     figure, axis = plt.subplots(figsize=(10.0, 5.0), constrained_layout=True)
@@ -417,7 +474,7 @@ def main() -> None:
     (OUTPUT_DIR / "review_index.md").write_text(
         "\n".join(
             (
-                "# 方位別共分散MVDR 3方式画像レビュー",
+                "# 固定整相・粗い共分散MVDR・方位別共分散MVDR 5方式レビュー",
                 "",
                 f"- scenario: `{SCENARIO_ID}`",
                 "- BLは待受beam軸、FRAZは`[beam,frequency]`、スペクトルはper-bin RMS level。",

@@ -29,8 +29,20 @@ def test_direct_and_integer_delay_fraz_are_equivalent_in_static_model() -> None:
 
     arrays = calculate_review_arrays()
     np.testing.assert_allclose(
-        arrays[f"{METHOD_IDS[1]}_fraz_level_db"],
+        arrays[f"{METHOD_IDS[3]}_fraz_level_db"],
+        arrays[f"{METHOD_IDS[4]}_fraz_level_db"],
+        rtol=0.0,
+        atol=1.0e-8,
+    )
+
+
+def test_integer_delay_then_mvdr_matches_direction_cut_direct_static_fraz() -> None:
+    """整数遅延後の残差MVDRと方位別直接MVDRの静的FRAZが一致する。"""
+
+    arrays = calculate_review_arrays()
+    np.testing.assert_allclose(
         arrays[f"{METHOD_IDS[2]}_fraz_level_db"],
+        arrays[f"{METHOD_IDS[3]}_fraz_level_db"],
         rtol=0.0,
         atol=1.0e-8,
     )
