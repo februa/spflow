@@ -194,34 +194,44 @@ def _evaluate_condition(
 
 
 def _plot_signal(signal: SignalCondition, results: dict[str, Any]) -> None:
-    """3分析幅のmedian、eta、MVDRを同一表示条件で保存する。"""
+    """target+noiseについて分析幅ごとに3指標を同一axisへ重ねて保存する。
+
+    Args:
+        signal: 評価する信号帯域またはtone条件。
+        results: 分析幅ごとの評価結果。各curveのshapeは`[n_direction]`。
+
+    Returns:
+        なし。比較図を成果物directoryへ保存する。
+
+    Notes:
+        target-only、noise-onlyは数値診断へ保持するが、この方式比較図へ重ねない。
+        分析幅ごとの成立性を読む目的では、scene差よりmedian、eta、MVDRの差を
+        同じaxisへ重ねる方が直接比較できるためである。
+    """
 
     plt = require_matplotlib()
-    figure, axes = plt.subplots(3, 3, figsize=(14.0, 11.0), constrained_layout=True)
+    figure, axes = plt.subplots(1, 3, figsize=(15.0, 4.8), constrained_layout=True)
     metric_names = ("correlation_median", "steering_eta", "mvdr_capon")
     metric_titles = ("All-pair correlation median", "Steering power eta", "MVDR/Capon spectrum")
-    for row, delta_f_hz in enumerate(DELTA_F_HZ):
+    for axis, delta_f_hz in zip(axes, DELTA_F_HZ, strict=True):
         record = results[f"df_{delta_f_hz:g}"]
-        for column, (metric_name, metric_title) in enumerate(zip(metric_names, metric_titles, strict=True)):
-            axis = axes[row, column]
-            for scene_name, linestyle in (("target_only", "--"), ("noise_only", ":"), ("target_plus_noise", "-")):
-                axis.plot(
-                    SCAN_AZIMUTHS_DEG,
-                    record["curves"][scene_name][metric_name],
-                    linestyle=linestyle,
-                    label=scene_name,
-                )
-            axis.axvline(SOURCE_AZIMUTH_DEG, color="black", linestyle="--", linewidth=1.0)
-            axis.set(
-                title=f"df={delta_f_hz:g} Hz, bin={record['bin_center_hz']:g} Hz: {metric_title}",
-                xlabel="Azimuth [deg]",
-                ylabel="Ratio",
-                xlim=(0.0, 180.0),
-                ylim=(0.0, 1.05),
+        for metric_name, metric_title in zip(metric_names, metric_titles, strict=True):
+            axis.plot(
+                SCAN_AZIMUTHS_DEG,
+                record["curves"]["target_plus_noise"][metric_name],
+                label=metric_title,
             )
-            axis.grid(True, alpha=0.25)
-            axis.legend(fontsize=7)
-    figure.suptitle(f"{signal.display_name}, source azimuth 60 deg, direction-specific time cut")
+        axis.axvline(SOURCE_AZIMUTH_DEG, color="black", linestyle="--", linewidth=1.0)
+        axis.set(
+            title=f"df={delta_f_hz:g} Hz, bin={record['bin_center_hz']:g} Hz",
+            xlabel="Azimuth [deg]",
+            ylabel="Ratio",
+            xlim=(0.0, 180.0),
+            ylim=(0.0, 1.05),
+        )
+        axis.grid(True, alpha=0.25)
+        axis.legend(fontsize=8)
+    figure.suptitle(f"{signal.display_name}, target+noise, source azimuth 60 deg")
     figure.savefig(OUTPUT_DIR / f"{signal.name}_comparison.png", dpi=160)
     plt.close(figure)
 
