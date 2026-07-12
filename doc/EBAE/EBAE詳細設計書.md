@@ -180,3 +180,82 @@ w_{opt}(\theta_b)=\frac{w_{tmp}(\theta_b)}{a(\theta_b)^Hw_{tmp}(\theta_b)}
 本セッションでは数式単体、shape、方位対応、無歪正規化、bin独立性、`rate*T=M^2`契約を確認する。MVDR置換の採否は行わない。
 
 別セッションの評価方式へ接続するときは、少なくともtarget-only、noise-only、interferer-only、mixedを分離し、固定CBFとEBAEを同じS0共分散、FFT、steering、方位軸で比較する。BLは`dB re mainlobe peak`または明記した入力基準、出力levelは`dB re input RMS`など基準を明記する。N/E AICの推定数、MUSIC対応方位、fallback binも成果物へ保存する。
+
+## 10. 固定遅延＋小数遅延主枝と差分補正枝への接続
+
+### 10.1 信号数0の境界条件
+
+N/E AICの推定結果が`Ns=0`の場合、信号固有modeの除外和は空和で0となる。
+
+\[
+w_{tmp}(\theta_b)=w_0(\theta_b)
+\]
+
+CBF重みは`a(theta_b)^H w_0(theta_b)=1`を満たすため、最終正規化を適用しても次となる。
+
+\[
+w_{opt}(\theta_b)
+=\frac{w_0(\theta_b)}{a(\theta_b)^Hw_0(\theta_b)}
+=w_0(\theta_b)
+\]
+
+したがって、信号数0ではEBAE適応重みが数値誤差を除いてCBF重みと一致する。これは推定対象の信号modeがないときに不要な適応処理を行わない安全側の境界条件であり、実装もこの場合は`fixed_weights`をそのまま返す。
+
+### 10.2 正規化前のEBAE差分量
+
+EBAEの固有mode除外和を次の差分量として定義する。
+
+\[
+q_{raw}(\theta_b)
+=\sum_{i=1}^{N_s}\delta_i(\theta_b)\beta_i(\theta_b)
+\left(u_i^Hw_0(\theta_b)\right)u_i
+\]
+
+このとき、正規化前重みは固定整相主枝から差分補正枝を引く既存構造と同じ形になる。
+
+\[
+w_{tmp}(\theta_b)=w_0(\theta_b)-q_{raw}(\theta_b)
+\]
+
+したがって、以前検討した「整数遅延＋小数遅延FIR」の固定整相主枝と、差分補正FIR枝の構造をEBAEへ再利用できる。ただし、既存の名称`差分MVDR`は補正量が`w_0-w_MVDR`であることを表すため、EBAE接続後の枝は`EBAE差分補正枝`と呼び、MVDR重みを使用していると誤解させない。
+
+### 10.3 最終正規化を含む差分重み
+
+`q_raw`をそのまま時間領域差分補正枝へ与えると、合成後の実効重みは`w_tmp`であり、設計済みの`w_opt`とは正規化係数だけ異なる。正規化分母を次とする。
+
+\[
+g(\theta_b)=a(\theta_b)^H\left(w_0(\theta_b)-q_{raw}(\theta_b)\right)
+\]
+
+\[
+w_{opt}(\theta_b)=\frac{w_0(\theta_b)-q_{raw}(\theta_b)}{g(\theta_b)}
+\]
+
+固定整相主枝を変更せず、既存の`主枝－差分枝`で正規化後のEBAE重みを厳密に再現する差分重みは次である。
+
+\[
+q_{EBAE}(\theta_b)
+=w_0(\theta_b)-w_{opt}(\theta_b)
+=w_0(\theta_b)
+-\frac{w_0(\theta_b)-q_{raw}(\theta_b)}{g(\theta_b)}
+\]
+
+これを用いると次が厳密に成立する。
+
+\[
+w_0(\theta_b)-q_{EBAE}(\theta_b)=w_{opt}(\theta_b)
+\]
+
+この方法は既存の差分補正FIR設計器へ完成済み適応重み`w_opt`を渡し、`q=w_0-w_opt`を作る現在の責務分離と一致する。また`Ns=0`では`q_raw=0`かつ`g=1`であるため、`q_EBAE=0`となり差分補正枝は無出力になる。
+
+別案として、`q_raw`をそのまま差分枝へ適用した合成出力を後段で`1/conj(g)`倍する方法も数式上は同値である。ビーム出力規約が`y=w^H X`であるため、重みを`1/g`倍したとき出力側の係数は`1/conj(g)`になる。しかし、この方法はbin・beam別の複素gainを合成後段へ追加し、固定主枝と補正枝の完成値公開境界を複雑にする。このため正式接続では、正規化済み`w_opt`から`q_EBAE=w_0-w_opt`を作る方式を第一候補とする。
+
+### 10.4 接続前に確認する項目
+
+EBAE差分補正枝を実装する前に、次を評価で確認する。
+
+1. 周波数領域で`w_0-q_EBAE`と`w_opt`が一致すること。
+2. FIR化後も待受応答`(w_0-q_FIR)^H a`が1に近いこと。
+3. `Ns=0`で差分補正出力が数値床に留まり、CBF出力と一致すること。
+4. `Ns`または対応方位が更新された境界で、未完成の`q_EBAE`を公開しないこと。
+5. target-only、noise-only、interferer-only、mixedの各出力で、正規化によるtarget level変化と干渉低減を分離して記録すること。
