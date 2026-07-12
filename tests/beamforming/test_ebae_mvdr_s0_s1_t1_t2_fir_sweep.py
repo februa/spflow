@@ -29,6 +29,9 @@ def test_full_length_fir_reconstructs_all_reference_weights() -> None:
     for row in full_rows:
         assert float(row["relative_weight_error"]) < 1.0e-12
         assert abs(float(row["target_level_delta_db_re_reference"])) < 1.0e-10
+        # full DFT完成重みではT1を含む全方式が正しいsource方位を保持する。
+        # 短tap T1のpeak移動が共分散設計ではなくFIR打切りに起因することを固定する。
+        assert float(row["target_peak_error_deg"]) == 0.0
 
 
 def test_integer_delay_residual_coordinates_improve_short_fir_reconstruction() -> None:

@@ -1085,3 +1085,145 @@ EBAEとMVDRはFIR短縮傾向がほぼ同じだった。EBAE固有の差は、S0
 5. 32 tapはtarget保持には有望だが、weight/BL全体の再現性が不足しており採用未確定である。
 
 次は、同じ4方式×2アルゴリズムについてtarget-only、noise-only、interferer-only、mixedを生成し、same-frequency interferer条件、FRAZ、BTR、streaming境界、runtimeを評価する。tap候補は32、64、128、256を中心とし、512 tap full DFT再構成を参照にする。
+
+## 14. T方式実装監査と狭帯域・広帯域方位推定確認
+
+### 14.1 T1短tap結果の再解釈
+
+13章の32 tap評価では、T1のtarget peakが10 deg移動し、T2は正しい60 degを維持した。この結果だけを見ると「T1共分散が正しく方位を推定できていない」ように見える。しかし、T1とT2のfull DFT完成重みは元入力座標で`1.2e-15`程度まで一致し、512 tapでは両方のtarget peak誤差が0 degであった。
+
+したがって、32 tap T1のpeak移動はT共分散の方位推定失敗ではない。T1は完成重みを元入力座標へ直接適用するため、42 m開口の大きなchannel別幾何遅延をFIR内に含む。32 tapではその時間支持を表現できず、重み打切り後にtarget peakが移動した。T2は同じ完成重みから整数遅延因子をFIR外へ括り出しているため、32 tapでも残留重みを再現できた。
+
+つまり、次の2つは独立した性質である。
+
+1. **T共分散の利点**: 広帯域binでも同一波面区間を揃え、正しい方位選択性と信号部分空間を得る。
+2. **T2/S1実装の利点**: 大きな整数遅延をdelay lineへ分離し、短い残留FIRで完成重みを近似する。
+
+T1は1を持つが2を持たない。T2は1と2の両方を持つ。
+
+### 14.2 実装式の監査
+
+`ebae_mvdr_s0_s1_t1_t2_fir_sweep.py`とT方式の既存解析実装を、次の観点で再確認した。
+
+#### 候補方位別残留遅延
+
+T共分散では、source物理遅延`tau_true[ch]`と候補方位の整数sample切り出し遅延`tau_int(theta,ch)`から、次の残留を使う。
+
+\[
+\tau_{res}(\theta,ch)
+=\tau_{true}(ch)-\frac{\operatorname{round}(f_s\tau_{candidate}(\theta,ch))}{f_s}
+\]
+
+平坦1-bin広帯域のpair coherenceは次である。
+
+\[
+C_{ij}(\theta)
+=\operatorname{sinc}\left[\Delta f
+\left(\tau_{res}(\theta,i)-\tau_{res}(\theta,j)\right)\right]
+\]
+
+正しい候補では残留が1 sample未満へ収まり、coherenceが1へ近づく。誤候補ではsourceとcandidateの遅延差が残り、coherenceが低下する。
+
+#### channel位相基準
+
+T1共分散は元入力へ直接適用する重みを設計するため、共分散の外積位相には元入力の物理steeringを使う。
+
+\[
+R_{T1}(\theta)
+=C(\theta)\odot
+\left(a_{true}a_{true}^H\right)
++\sigma_n^2 I
+\]
+
+候補遅延をcoherence残差へ使っても、外積位相を候補steeringへ置き換えてはならない。現評価実装は物理`source_steering`の外積を維持しており、この契約と一致する。
+
+#### T2位相変換
+
+T2はT1を再推定せず、整数遅延位相`D(theta)`でunitary変換する。
+
+\[
+R_{T2}(\theta)=D(\theta)R_{T1}(\theta)D(\theta)^H
+\]
+
+\[
+a_{T2}(\phi,\theta)=D(\theta)a(\phi)
+\]
+
+整数遅延後重み`v_T2`を元入力座標へ戻すと`D^H v_T2=w_T1`になる。EBAE/MVDR双方でこの相対誤差が`1.5e-15`以下であることを回帰試験へ固定した。
+
+#### 整数遅延位相の符号
+
+steeringを`a=exp(-j2πf tau)`としたため、幾何整数遅延を取り除く前段位相は`D=exp(+j2πf d_int/fs)`である。逆符号でもunitary同値性だけは成立するが、遅延を二重化してFIR短縮が成立しない。tap長sweepではS1/T2の短tap energy集中まで確認し、符号を固定した。
+
+以上から、T方式の主要数式、位相基準、S/T unitary変換は設計どおりである。full DFT T1/T2のtarget peak誤差0 degも回帰試験へ追加した。
+
+### 14.3 S失敗・T成功条件
+
+T方式が狭帯域toneを壊さず、粗い1-bin広帯域でS方式の破綻を回避することを、FIR化前の完成共分散だけで評価した。
+
+| 項目 | 条件 |
+|---|---:|
+| channel数 | 64 |
+| ULA間隔 | 6.25 m |
+| aperture | 393.75 m |
+| sample rate | 32768 Hz |
+| source方位 | 0 deg endfire |
+| bin中心周波数 | 100 Hz |
+| 分析幅 | 64 Hz |
+| source | bin中心tone、または平坦1-bin広帯域 |
+| channel雑音power | `0.01 re source power` |
+| scan方位 | 0--180 deg、0.5 deg刻み |
+| EBAE | N/E AIC、MUSIC、`DL=1` |
+| MVDR | trace平均の`0.001`倍loading、Capon spectrum |
+
+100 Hzの波長は15 m、半波長は7.5 mであり、6.25 m間隔は空間alias条件を満たさない。したがって、ここでの誤方位や幅拡大をgrating lobeで説明しない。
+
+### 14.4 狭帯域tone結果
+
+bin中心toneでは周波数幅が0なので、S/Tともpair coherenceは1である。結果は次となった。
+
+| アルゴリズム | 方式 | peak方位 | peak誤差 | 遠方margin | -3 dB幅 | EBAE `Ns` |
+|---|---|---:|---:|---:|---:|---:|
+| EBAE MUSIC | S | 0 deg | 0 deg | 100 dB re far peak | 0 deg | 1 |
+| EBAE MUSIC | T | 0 deg | 0 deg | 100 dB re far peak | 0 deg | 1 |
+| MVDR Capon | S | 0 deg | 0 deg | 37.49 dB re far peak | 1.0 deg | 該当なし |
+| MVDR Capon | T | 0 deg | 0 deg | 37.49 dB re far peak | 1.0 deg | 該当なし |
+
+T方式は狭帯域toneでもS方式と同じ正方位を維持した。候補方位別時間切り出しは、狭帯域信号へ不要な方位biasを加えていない。
+
+### 14.5 平坦1-bin広帯域結果
+
+同じbin中心周波数で64 Hz幅の平坦広帯域信号を与えた。最大遅延開口は0.2625 sなので、`Δf tau_ap=16.8`であり、S共分散の単一steering近似が成立しない条件である。
+
+| アルゴリズム | 方式 | peak方位 | peak誤差 | 遠方margin | -3 dB幅 | EBAE `Ns` |
+|---|---|---:|---:|---:|---:|---:|
+| EBAE MUSIC | S | 11.0 deg | 11.0 deg | -8.51 dB re far peak | 0 deg | 20 |
+| EBAE MUSIC | T | 0 deg | 0 deg | 73.74 dB re far peak | 0 deg | 1 |
+| MVDR Capon | S | 0 deg | 0 deg | 0.013 dB re far peak | 46.5 deg | 該当なし |
+| MVDR Capon | T | 0 deg | 0 deg | 15.42 dB re far peak | 1.0 deg | 該当なし |
+
+EBAEではS共分散が単一sourceを20 modeと推定し、MUSIC最大方位も11 degへ移動した。T共分散は信号数1、peak 0 degへ回復した。
+
+MVDR/CaponではSの最大値自体は0 degに残ったが、-3 dB幅が46.5 deg、20 deg以遠とのmarginが0.013 dBしかなく、方位を実用的に分離できない平坦plateauとなった。Tは-3 dB幅1.0 deg、遠方margin15.42 dBへ回復した。したがって、MVDRでもS失敗・T成功と判定する。
+
+### 14.6 方式上の結論
+
+今回の監査と追加条件から、T方式の利点を次のように整理する。
+
+1. bin中心toneではS/Tとも正しく方位推定し、Tは狭帯域性能を壊さない。
+2. `Δf tau_ap`が大きい平坦1-bin広帯域では、Sの共分散rankと方位選択性が破綻する。
+3. Tは候補方位ごとに同一波面区間を揃え、EBAEの`Ns`とMUSIC方位、MVDR/Caponのpeak幅とmarginを回復する。
+4. T1の短tap失敗はT共分散の失敗ではなく、元入力座標の幾何遅延を短FIRで表現できない実装問題である。
+5. 広帯域方位推定と短FIRを同時に得る候補はT2である。T1は共分散利点の基準、T2はその実装候補と位置づける。
+
+本確認は単一source・静的解析共分散である。実時間のtransient、複数source、同一周波数干渉、方位変化、共分散積分、係数更新境界については未確認である。
+
+### 14.7 成果物
+
+| 成果物 | 配置 |
+|---|---|
+| 評価実装 | `evaluations/beamforming/ebae_mvdr_s_t_directionality_sanity.py` |
+| 回帰試験 | `tests/beamforming/test_ebae_mvdr_s_t_directionality_sanity.py` |
+| 指標CSV | `artifacts/beamforming/ebae_mvdr_s_t_directionality_sanity/review_pack/scenario_summary.csv` |
+| 描画配列 | `artifacts/beamforming/ebae_mvdr_s_t_directionality_sanity/review_pack/data/long_ula_tone_and_flat_bin_endfire.npz` |
+| S/T比較図 | `artifacts/beamforming/ebae_mvdr_s_t_directionality_sanity/review_pack/figures/long_ula_tone_and_flat_bin_endfire/source_frequency_bl_overlay.png` |
