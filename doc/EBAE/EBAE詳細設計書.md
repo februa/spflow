@@ -957,3 +957,131 @@ EBAEは信号数1を推定し、信号固有ベクトルを正しい60 degへ対
 5. 単一bin sanityの後に複数bin帯域へ広げ、FRAZ、周波数スペクトル、BTR、block境界、latency、runtimeを評価する。
 
 tap長候補は、現在の128 tapだけを前提にせず、短い側と長い側を含めて設定する。具体的な候補値は、各方式のIFFT energy集中率を先に計測してから固定する。EBAEはbin独立の`Ns`・MUSIC対応方位切替により長いimpulse responseを持つ可能性があるため、MVDRと同じtap長で十分とは仮定しない。
+
+## 13. S0・S1・T1・T2 FIR長sweep結果
+
+### 13.1 評価目的と方式定義
+
+直接EBAE方式と整数遅延＋EBAE方式の実装上の利点を確認するため、EBAEとMVDRの双方でS0、S1、T1、T2の完成周波数重みを作り、FIR tap長を変えて再構成誤差を比較した。
+
+方式定義は次で固定した。
+
+| ID | 共分散 | 重み適用座標 | FIR化する重み |
+|---|---|---|---|
+| S0 | 同一時間blockの粗い共分散 | 元入力座標 | 元入力座標の直接重み |
+| S1 | `R_S1=D R_S0 D^H` | 整数遅延後座標 | 大きな整数遅延を除いた残留重み |
+| T1 | 候補方位別時間切り出し共分散 | 元入力座標 | 元入力座標の直接重み |
+| T2 | `R_T2=D R_T1 D^H` | 整数遅延後座標 | 大きな整数遅延を除いた残留重み |
+
+S1で共分散を再推定していない。T2もT1と同じ完成共分散のunitary位相変換である。したがって、FIR化前はS0=S1、T1=T2でなければならない。
+
+### 13.2 評価条件
+
+| 項目 | 条件 |
+|---|---:|
+| channel数 | 8 |
+| ULA間隔 | 6.0 m |
+| aperture | 42.0 m |
+| sample rate | 8192 Hz |
+| FFT長 | 512 sample |
+| 分析幅 | 16 Hz |
+| source | 60 deg、64--128 Hz、各bin中心 |
+| source帯域積分level | 0 dB re input RMS |
+| channel雑音power | `0.01 re input RMS^2/bin/channel` |
+| beam grid | 0--180 deg、10 deg刻み |
+| EBAE | `DL=1`、`sigm_a=10`、`sigm_b=0.5`、`L=M^2=64` |
+| MVDR | trace平均の`0.001`倍loading |
+| FIR tap | 16、32、64、128、256、512 |
+
+対象帯域上端128 Hzの波長は約11.72 mであり、半波長は約5.86 mである。6.0 m間隔は上端で半波長をわずかに超えるため、128 Hz近傍では空間alias境界に近い。今回はFIR時間支持の差を出す長大開口条件として使用するが、grating lobe採否には使用しない。
+
+full DFT重みから実適用応答`conj(w)`をIFFTし、beamごとに全channel共通の連続circular tap窓を選んだ。channelごとに異なるtap窓を許すと、暗黙のchannel別整数遅延を導入して直接方式を有利にするため禁止した。選択tap以外を0にし、FFTで重みを再構成した。
+
+### 13.3 完成重みの同値性
+
+元入力座標へ戻したfull DFT重みの相対誤差は次であった。
+
+| アルゴリズム | S0対S1 | T1対T2 |
+|---|---:|---:|
+| EBAE | `1.274e-15` | `1.139e-15` |
+| MVDR | `1.515e-15` | `1.467e-15` |
+
+両アルゴリズムで、正しいS0=S1およびT1=T2が数値誤差内で成立した。したがって、以下のtap長差は方式の完成空間フィルタ差ではなく、整数遅延をFIR外へ括り出したことによる実装差である。
+
+### 13.4 EBAE信号数推定
+
+target beam、source帯域の全10 full-DFT binで、N/E AICとMUSICは次となった。
+
+| 方式 | 推定`Ns` | MUSIC第1対応beam |
+|---|---:|---:|
+| S0 | 2 | 60 deg |
+| S1 | 2 | 60 deg |
+| T1 | 1 | 60 deg |
+| T2 | 1 | 60 deg |
+
+S0とS1は同じ固有値を持つため信号数2で一致し、T1とT2も信号数1で一致した。単一sourceにもかかわらずS0/S1が2を推定したのは、長大開口と16 Hz幅により同一時間block共分散の信号powerが複数固有modeへ分散したためである。方位別時間切り出しT1/T2は候補60 degで残留遅延を減らし、rank-1に近い信号部分空間を回復した。
+
+これはS0からS1への位相変換では共分散coherenceが改善しない一方、T1/T2では改善するという設計整理と一致する。
+
+### 13.5 FIR再構成結果
+
+target beamに対する代表値を次に示す。`weight error`はsource帯域の全beam・全channel相対norm、`energy`はtarget beamの採用tap内energy比、`target delta`はfull DFT完成重みに対する帯域積分level差である。
+
+#### EBAE
+
+| 方式 | tap | weight error | energy | target delta |
+|---|---:|---:|---:|---:|
+| S0 | 32 | 0.823 | 0.252 | -11.517 dB re reference |
+| S1 | 32 | 0.333 | 0.993 | +0.00018 dB re reference |
+| T1 | 32 | 0.821 | 0.252 | -11.517 dB re reference |
+| T2 | 32 | 0.311 | 0.993 | +0.00018 dB re reference |
+| S0 | 128 | 0.459 | 0.996 | -0.00394 dB re reference |
+| S1 | 128 | 0.145 | 0.998 | -0.000014 dB re reference |
+| T1 | 128 | 0.468 | 0.996 | -0.00389 dB re reference |
+| T2 | 128 | 0.153 | 0.998 | -0.000014 dB re reference |
+
+#### MVDR
+
+| 方式 | tap | weight error | energy | target delta |
+|---|---:|---:|---:|---:|
+| S0 | 32 | 0.811 | 0.257 | -11.001 dB re reference |
+| S1 | 32 | 0.400 | 0.978 | +0.00013 dB re reference |
+| T1 | 32 | 0.823 | 0.252 | -11.517 dB re reference |
+| T2 | 32 | 0.333 | 0.993 | +0.00018 dB re reference |
+| S0 | 128 | 0.458 | 0.988 | -1.134 dB re reference |
+| S1 | 128 | 0.164 | 0.995 | 約0 dB re reference |
+| T1 | 128 | 0.459 | 0.996 | -0.00394 dB re reference |
+| T2 | 128 | 0.156 | 0.998 | -0.000014 dB re reference |
+
+32 tapでは、元入力座標でFIR化するS0/T1が大きな幾何遅延を表現できず、target peakが10 deg移動し、target levelが約11 dB低下した。整数遅延後の残留座標でFIR化するS1/T2は、32 tapでもtarget peak誤差0 deg、target level差0.0002 dB未満を維持した。
+
+128 tapではS0/T1もtarget peakを回復するが、weight全体の相対誤差は約0.46残った。S1/T2は同じtap数で約0.15まで低下した。512 tapでは全方式が`3e-16`以下でfull DFT重みを再構成した。
+
+### 13.6 解釈
+
+本結果は、整数遅延を前段へ置く利点を確認している。S0とS1、T1とT2は完成重みとして同じだが、S1/T2では大きなchannel別線形位相をdelay lineが担当するため、後段FIRは残留小数遅延と適応weightだけを表現すればよい。これにより短いFIRでもtarget応答を維持できた。
+
+ただし、32 tap S1/T2のsource帯域weight相対誤差はEBAEで0.31--0.33、MVDRで0.33--0.40残り、BL全体のdeep nullとsidelobeはfull DFT基準から一致していない。target levelが一致しただけで32 tapを採用してはならない。128 tapでも残留weight誤差は約0.15であり、最終tap数はBL shape、干渉源条件、noise-only、mixed、波形、runtimeを含めて決める必要がある。
+
+EBAEとMVDRはFIR短縮傾向がほぼ同じだった。EBAE固有の差は、S0/S1で`Ns=2`、T1/T2で`Ns=1`となったことである。したがって、整数遅延因数分解によるFIR短縮と、T系共分散による信号部分空間回復は別の利点として扱う。
+
+### 13.7 成果物と現時点の結論
+
+| 成果物 | 配置 |
+|---|---|
+| 評価実装 | `evaluations/beamforming/ebae_mvdr_s0_s1_t1_t2_fir_sweep.py` |
+| 回帰試験 | `tests/beamforming/test_ebae_mvdr_s0_s1_t1_t2_fir_sweep.py` |
+| 指標CSV | `artifacts/beamforming/ebae_mvdr_s0_s1_t1_t2_fir_sweep/review_pack/scenario_summary.csv` |
+| 描画配列 | `artifacts/beamforming/ebae_mvdr_s0_s1_t1_t2_fir_sweep/review_pack/data/low_band_long_ula_beam_center.npz` |
+| FIR誤差図 | `artifacts/beamforming/ebae_mvdr_s0_s1_t1_t2_fir_sweep/review_pack/figures/low_band_long_ula_beam_center/fir_weight_error_sweep.png` |
+| BL図 | `artifacts/beamforming/ebae_mvdr_s0_s1_t1_t2_fir_sweep/review_pack/figures/low_band_long_ula_beam_center/source_frequency_bl_overlay.png` |
+
+現時点では、次を確認済みとする。
+
+1. 正しいS0=S1、T1=T2はEBAE/MVDR双方で成立する。
+2. 整数遅延後座標のS1/T2は、元入力座標のS0/T1より短いFIRでtarget応答を維持できる。
+3. S1はS0のcoherenceを改善せず、EBAE信号数も同じである。
+4. T1/T2は方位別時間切り出しにより、単一sourceのEBAE信号数を2から1へ回復した。
+5. 32 tapはtarget保持には有望だが、weight/BL全体の再現性が不足しており採用未確定である。
+
+次は、同じ4方式×2アルゴリズムについてtarget-only、noise-only、interferer-only、mixedを生成し、same-frequency interferer条件、FRAZ、BTR、streaming境界、runtimeを評価する。tap候補は32、64、128、256を中心とし、512 tap full DFT再構成を参照にする。
