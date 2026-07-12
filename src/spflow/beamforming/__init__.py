@@ -47,6 +47,10 @@ from .covariance_snapshot_schedule import (
     build_two_second_covariance_snapshot_schedule,
     calculate_maximum_spatial_correlation_table,
 )
+from .covariance_subspace_metrics import (
+    CovarianceSubspaceMetrics,
+    calculate_covariance_subspace_metrics,
+)
 from .diagnostic_plotting import (
     BeamDiagnosticPlotUsageNotes,
     build_beam_diagnostic_plot_usage_notes,
@@ -246,6 +250,7 @@ __all__ = [
     "forgetting_factor_from_integration_time",
     "CovarianceEstimator",
     "CovarianceSnapshotCenterSchedule",
+    "CovarianceSubspaceMetrics",
     "DirectionMatchedCovarianceAccumulator",
     "DirectionMatchedCovarianceUpdate",
     "MaximumSpatialCorrelationTable",
@@ -255,6 +260,7 @@ __all__ = [
     "SparseArraySpatialCorrelationStatistics",
     "build_two_second_covariance_snapshot_schedule",
     "calculate_maximum_spatial_correlation_table",
+    "calculate_covariance_subspace_metrics",
     "calculate_spatial_correlation_statistics",
     "calculate_sparse_array_spatial_correlation_statistics",
     "BeamDiagnosticPlotUsageNotes",

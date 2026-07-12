@@ -32,7 +32,10 @@ from scene_renderer import (  # noqa: E402
 from spflow.beamforming import (  # noqa: E402
     DirectionMatchedCovarianceAccumulator,
     build_two_second_covariance_snapshot_schedule,
+    calculate_covariance_subspace_metrics,
     calculate_sparse_array_spatial_correlation_statistics,
+    relative_arrival_delay,
+    steering_from_relative_delay,
 )
 from spflow.beamforming.diagnostic_plotting import centers_to_edges, require_matplotlib  # noqa: E402
 
@@ -519,6 +522,27 @@ def main() -> None:
         name: np.stack(values, axis=0).astype(np.float32) for name, values in composition_snapshots.items()
     }
 
+    azimuth_rad = np.deg2rad(schedule.global_direction_azimuth_deg.astype(np.float64))
+    candidate_directions = np.stack(
+        (np.cos(azimuth_rad), np.sin(azimuth_rad), np.zeros_like(azimuth_rad)),
+        axis=1,
+    )
+    candidate_delay_s = relative_arrival_delay(
+        ARRAY_POSITIONS_M,
+        candidate_directions,
+        sound_speed_m_per_s=SOUND_SPEED_M_S,
+    )
+    # 時間軸復元後の共分散は同時刻channel spectrumを表すため、物理到来遅延から作る
+    # steering `[n_ch,n_direction,n_bin]`と直接比較できる。
+    candidate_steering = steering_from_relative_delay(candidate_delay_s, frequency_hz)
+    subspace_start = time.perf_counter()
+    subspace_metrics = calculate_covariance_subspace_metrics(
+        accumulator.direction_covariance,
+        candidate_steering,
+        direction_chunk_size=8,
+    )
+    subspace_elapsed_seconds = time.perf_counter() - subspace_start
+
     physical_metadata = final_statistics.physical_baseline
     normalized_metadata = final_statistics.wavelength_normalized_baseline
     composition = final_statistics.pair_composition
@@ -570,6 +594,10 @@ def main() -> None:
         pair_composition_mean_by_snapshot=composition_by_snapshot["mean"],
         pair_composition_median_by_snapshot=composition_by_snapshot["median"],
         pair_composition_percentile_95_by_snapshot=composition_by_snapshot["percentile_95"],
+        steering_power_fraction=subspace_metrics.steering_power_fraction,
+        principal_eigenvector_alignment=subspace_metrics.principal_eigenvector_alignment,
+        principal_eigenvalue_fraction=subspace_metrics.principal_eigenvalue_fraction,
+        principal_to_noise_mean_ratio=subspace_metrics.principal_to_noise_mean_ratio,
         processing_elapsed_seconds=processing_times,
         correlation_elapsed_seconds=correlation_times,
     )
@@ -662,6 +690,30 @@ def main() -> None:
         title="60 s snapshot: pair-composition mean at source-band frequencies",
     )
 
+    subspace_display_tables = {
+        "steering power fraction": subspace_metrics.steering_power_fraction,
+        "principal eigenvector alignment": subspace_metrics.principal_eigenvector_alignment,
+        "principal eigenvalue fraction": subspace_metrics.principal_eigenvalue_fraction,
+    }
+    for metric_label, metric_table in subspace_display_tables.items():
+        file_label = metric_label.replace(" ", "_")
+        _write_correlation_png(
+            OUTPUT_DIR / f"{file_label}_imagesc.png",
+            schedule.global_direction_azimuth_deg,
+            frequency_hz,
+            metric_table,
+            title=f"Sparse 64ch method 3: {metric_label} after 60 s",
+            colorbar_label=f"{metric_label.title()} [ratio]",
+        )
+    _write_signal_frequency_azimuth_overlay(
+        OUTPUT_DIR / "signal_frequency_steering_subspace_azimuth_overlay.png",
+        np.asarray(schedule.global_direction_azimuth_deg, dtype=np.float32),
+        frequency_hz,
+        np.asarray(signal_band_mask, dtype=np.bool_),
+        subspace_display_tables,
+        title="60 s snapshot: complex steering and eigenspace metrics at source-band frequencies",
+    )
+
     for composition_index, composition_name in enumerate(composition.group_names):
         for metric_name, display_name in display_names.items():
             if metric_name == "maximum":
@@ -719,6 +771,27 @@ def main() -> None:
         valid_contrast_indices[np.argmax(physical_contrast[valid_contrast_indices])]
     )
     valid_physical_indices = np.flatnonzero(physical_metadata.pair_count[0] > 0)
+    subspace_region_statistics: dict[str, dict[str, float]] = {}
+    subspace_tables_for_summary = {
+        "steering_power_fraction": subspace_metrics.steering_power_fraction,
+        "principal_eigenvector_alignment": subspace_metrics.principal_eigenvector_alignment,
+        "principal_eigenvalue_fraction": subspace_metrics.principal_eigenvalue_fraction,
+        "principal_to_noise_mean_ratio": subspace_metrics.principal_to_noise_mean_ratio,
+    }
+    for metric_name, table in subspace_tables_for_summary.items():
+        source_value = float(np.mean(table[source_neighborhood_mask][:, signal_band_mask]))
+        far_value = float(np.mean(table[far_direction_mask][:, signal_band_mask]))
+        band_mean_by_direction = np.mean(table[:, signal_band_mask], axis=1)
+        peak_direction_index = int(np.argmax(band_mean_by_direction))
+        peak_azimuth_deg = float(schedule.global_direction_azimuth_deg[peak_direction_index])
+        subspace_region_statistics[metric_name] = {
+            "source_neighborhood": source_value,
+            "far_direction": far_value,
+            "source_minus_far": source_value - far_value,
+            "band_mean_peak_azimuth_deg": peak_azimuth_deg,
+            "band_mean_peak_error_deg": peak_azimuth_deg - SOURCE_BEARING_DEG,
+            "band_mean_peak_value": float(band_mean_by_direction[peak_direction_index]),
+        }
     summary = {
         "method": 3,
         "array_layout": "center_dense_outer_sparse_symmetric_64ch",
@@ -758,9 +831,11 @@ def main() -> None:
         "pair_composition_pair_count": composition.pair_count.tolist(),
         "region_statistics_128_1024_hz": region_statistics,
         "pair_composition_region_statistics_128_1024_hz": composition_region_statistics,
+        "steering_and_subspace_region_statistics_128_1024_hz": subspace_region_statistics,
         "scene_render_elapsed_seconds": render_elapsed_seconds,
         "processing_elapsed_seconds_total": float(np.sum(processing_times)),
         "correlation_elapsed_seconds_total_for_snapshots": float(np.sum(correlation_times)),
+        "subspace_elapsed_seconds": subspace_elapsed_seconds,
         "direction_covariance_storage_bytes": int(accumulator.direction_covariance.nbytes),
     }
     (OUTPUT_DIR / "correlation_statistics_summary.json").write_text(
