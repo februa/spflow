@@ -174,6 +174,10 @@ from .source_mask_slc import (
     SourceMaskSlcHealth,
     SourceMaskSlcResult,
 )
+from .spatial_correlation_statistics import (
+    SpatialCorrelationStatistics,
+    calculate_spatial_correlation_statistics,
+)
 from .sparse_single_side_array_design import (
     SparseSingleSideArrayDesignConfig,
     SparseSingleSideArrayDesignResult,
@@ -241,8 +245,10 @@ __all__ = [
     "DirectionMatchedCovarianceAccumulator",
     "DirectionMatchedCovarianceUpdate",
     "MaximumSpatialCorrelationTable",
+    "SpatialCorrelationStatistics",
     "build_two_second_covariance_snapshot_schedule",
     "calculate_maximum_spatial_correlation_table",
+    "calculate_spatial_correlation_statistics",
     "BeamDiagnosticPlotUsageNotes",
     "build_beam_diagnostic_plot_usage_notes",
     "write_beam_diagnostic_plot_usage_notes",
