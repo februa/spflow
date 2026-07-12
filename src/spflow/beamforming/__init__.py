@@ -186,6 +186,10 @@ from .source_mask_slc import (
     SourceMaskSlcHealth,
     SourceMaskSlcResult,
 )
+from .selected_frequency_direction_covariance import (
+    SelectedFrequencyDirectionCovarianceAccumulator,
+    SelectedFrequencyDirectionCovarianceResult,
+)
 from .spatial_correlation_statistics import (
     BinnedSpatialCorrelationStatistics,
     PairCompositionSpatialCorrelationStatistics,
@@ -278,6 +282,8 @@ __all__ = [
     "SparseArraySpatialCorrelationStatistics",
     "SteeringPowerChannelWeighting",
     "prepare_steering_power_channel_weighting",
+    "SelectedFrequencyDirectionCovarianceAccumulator",
+    "SelectedFrequencyDirectionCovarianceResult",
     "build_two_second_covariance_snapshot_schedule",
     "calculate_maximum_spatial_correlation_table",
     "calculate_covariance_subspace_metrics",
