@@ -234,6 +234,12 @@ def write_review_pack(output_dir: Path = OUTPUT_DIR) -> None:
     figure_dir.mkdir(exist_ok=True)
     figure, axes = plt.subplots(2, 2, figsize=(10.0, 8.0), constrained_layout=True)
     image_handle = None
+    title_by_key = {
+        "ebae_S": "EBAE, S covariance family",
+        "ebae_T": "EBAE, T covariance family",
+        "mvdr_S": "MVDR, S covariance family",
+        "mvdr_T": "MVDR, T covariance family",
+    }
     for axis, key in zip(axes.reshape(-1), ("ebae_S", "ebae_T", "mvdr_S", "mvdr_T"), strict=True):
         algorithm, method = key.split("_")
         rates = np.empty((len(WEAK_LEVEL_DELTAS_DB), len(SEPARATIONS_DEG)))
@@ -250,7 +256,7 @@ def write_review_pack(output_dir: Path = OUTPUT_DIR) -> None:
                 rates[level_index, separation_index] = np.mean(selected)
         image_handle = axis.imshow(rates, origin="lower", vmin=0.0, vmax=1.0, aspect="auto")
         axis.set(
-            title=key,
+            title=title_by_key[key],
             xlabel="Azimuth separation [deg]",
             ylabel="Weak-source level [dB re strong]",
             xticks=np.arange(len(SEPARATIONS_DEG)),
@@ -264,7 +270,10 @@ def write_review_pack(output_dir: Path = OUTPUT_DIR) -> None:
     figure.savefig(figure_dir / "weak_source_visibility_heatmap.png", dpi=160)
     plt.close(figure)
     (output_dir / "review_index.md").write_text(
-        "# 強弱近接信号の可視性sweep\n\n弱信号peak誤差2 deg以下かつprominence 3 dB以上を可視とする。\n",
+        "# 強弱近接信号の可視性sweep\n\n"
+        "弱信号peak誤差2 deg以下かつprominence 3 dB以上を可視とする。\n\n"
+        "S covariance familyはS1/S2a/S2b、T covariance familyはT1/T2a/T2bに共通する共分散構成を表す。"
+        "本図はFIR実現座標を適用する前の方位推定結果である。\n",
         encoding="utf-8",
     )
 

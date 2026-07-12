@@ -194,19 +194,33 @@ def write_review_pack(output_dir: Path = OUTPUT_DIR) -> None:
     figure_dir = output_dir / "figures"
     figure_dir.mkdir(exist_ok=True)
     figure, axes = plt.subplots(1, 2, figsize=(11.0, 4.0), constrained_layout=True, sharey=True)
+    method_labels = {
+        "S1": "S1",
+        "S2a": "S2a / S2b",
+        "T1": "T1",
+        "T2a": "T2a / T2b",
+    }
     for axis, band_case in zip(axes, BAND_CASES, strict=True):
-        values = []
-        for tap_count in TAP_COUNTS:
-            selected = [
-                abs(float(row["target_level_error_db"]))
-                for row in rows
-                if row["band_case"] == band_case.case_id
-                and int(row["tap_count"]) == tap_count
-            ]
-            values.append(max(selected))
-        axis.bar([str(value) for value in TAP_COUNTS], values)
-        axis.set(title=band_case.case_id, xlabel="FIR tap count")
+        for method, label in method_labels.items():
+            values = []
+            for tap_count in TAP_COUNTS:
+                selected = [
+                    abs(float(row["target_level_error_db"]))
+                    for row in rows
+                    if row["band_case"] == band_case.case_id
+                    and row["method"] == method
+                    and int(row["tap_count"]) == tap_count
+                ]
+                values.append(max(selected))
+            axis.plot(TAP_COUNTS, values, marker="o", label=label)
+        title = (
+            "Narrowband bin-center tone"
+            if band_case.analysis_width_hz == 0.0
+            else "Flat broadband"
+        )
+        axis.set(title=title, xlabel="FIR tap count", xticks=TAP_COUNTS)
         axis.grid(axis="y", alpha=0.25)
+        axis.legend(fontsize=8)
     axes[0].set_ylabel("Maximum target-level error [dB re configured signal level]")
     figure.savefig(figure_dir / "tap_target_level_error.png", dpi=160)
     plt.close(figure)
@@ -214,7 +228,9 @@ def write_review_pack(output_dir: Path = OUTPUT_DIR) -> None:
         "# 単一信号・全整相方式の直交試験\n\n"
         "狭帯域/広帯域、0/90/150 deg、入力SNR -10/0/10/20 dB、"
         "信号と雑音の同時level shift、32/128/256 tapを評価する。\n\n"
-        "絶対levelは帯域積分RMSの dB re input RMS、SNRは帯域積分power比である。\n",
+        "絶対levelは帯域積分RMSの dB re input RMS、SNRは帯域積分power比である。\n"
+        "方式表記はS1、S2a/S2b、T1、T2a/T2bとする。"
+        "b方式は共通FIR射影下でa方式と同値である。\n",
         encoding="utf-8",
     )
 
