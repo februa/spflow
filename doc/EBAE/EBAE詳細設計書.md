@@ -259,3 +259,160 @@ EBAE差分補正枝を実装する前に、次を評価で確認する。
 3. `Ns=0`で差分補正出力が数値床に留まり、CBF出力と一致すること。
 4. `Ns`または対応方位が更新された境界で、未完成の`q_EBAE`を公開しないこと。
 5. target-only、noise-only、interferer-only、mixedの各出力で、正規化によるtarget level変化と干渉低減を分離して記録すること。
+
+## 11. EBAEを適用する3方式の整理
+
+### 11.1 比較の基準
+
+EBAEの適用方法として、次の3方式を区別する。
+
+| method ID | 方式名 | 共分散座標 | 実時間出力構造 | EBAEの数式上の意味 |
+|---|---|---|---|---|
+| `direct_s0_ebae` | 直接EBAE重み方式 | 元センサ座標のS0共分散 | 完成EBAE重みを直接適用 | 本設計で定義した基準EBAE |
+| `fixed_integer_fractional_ebae_difference` | EBAE差分補正枝方式 | 元センサ座標のS0共分散 | 整数遅延＋小数遅延の固定主枝からEBAE差分補正枝を減算 | 完成重みが一致する限り、直接EBAEと同じ空間フィルタを別構造で実現 |
+| `integer_delay_then_ebae` | 整数遅延＋EBAE補正方式 | 待受beam別の整数遅延後座標 | 整数遅延後の残留整相と固有mode除外をEBAEで実施 | S0-EBAEとは入力統計とsteeringが異なる別方式 |
+
+ここで「補正」は2つの意味を持ち得るため混同しない。
+
+- `EBAE差分補正枝`の補正は、完成EBAE重みと固定主枝重みの**差分を実装する並列枝**を意味する。
+- `整数遅延＋EBAE補正`の補正は、整数遅延後に残る**小数遅延、残留位相、信号固有mode**をEBAE重みで処理することを意味する。
+
+### 11.2 方式A: 直接EBAE重み方式
+
+元センサ入力を`X[k]`、S0共分散を`R_S0[k]`とする。
+
+\[
+R_{S0}[k]=E\{X[k]X[k]^H\}
+\]
+
+この共分散、元センサ座標の未正規化steering`a(theta_b,k)`、CBF重み`w_0(theta_b,k)`から、7章の式で`w_opt(theta_b,k)`を設計する。出力は完成重みを直接適用する。
+
+\[
+Y_{direct}(\theta_b,k)=w_{opt}(\theta_b,k)^H X[k]
+\]
+
+この方式は現在の`design_ebae_weights`が表す基準方式であり、EBAEアルゴリズムそのものの成立性を評価する。固定遅延主枝、差分補正FIR、整数遅延後共分散の影響を含まないため、他2方式の誤差を切り分ける参照になる。
+
+直接適用をSTFT、filter bank、または周波数応答から作った多channel FIRで実装する場合、有限長化、窓、overlap、再合成による誤差はEBAEの数式ではなく実装誤差として別に記録する。
+
+### 11.3 方式B: EBAE差分補正枝方式
+
+整数遅延＋小数遅延FIRの固定整相主枝が実際に持つ周波数重みを`w_fixed(theta_b,k)`とする。理想steeringから作ったCBF重みで代用せず、整数遅延表、小数遅延FIR、channel shading、FIR群遅延を含む実周波数応答を使う。
+
+直接EBAEで設計した完成重みを`w_opt(theta_b,k)`とし、差分補正重みを次で定義する。
+
+\[
+q_{EBAE}(\theta_b,k)
+=w_{fixed}(\theta_b,k)-w_{opt}(\theta_b,k)
+\]
+
+固定主枝出力と差分補正枝出力を同じ時間基準で減算する。
+
+\[
+Y_{difference}(\theta_b,k)
+=w_{fixed}(\theta_b,k)^H X[k]
+-q_{EBAE}(\theta_b,k)^H X[k]
+\]
+
+差分重みが周波数領域で厳密に再現される場合は次が成立する。
+
+\[
+Y_{difference}(\theta_b,k)
+=w_{opt}(\theta_b,k)^H X[k]
+=Y_{direct}(\theta_b,k)
+\]
+
+したがって、この方式はEBAEの信号数推定、MUSIC対応付け、固有mode除外の意味を変えない。変わるのは完成重みの**実装分解**だけである。
+
+ただし、次の場合は直接EBAEと同じ意味にならない。
+
+1. `w_fixed`を実際の主枝応答ではなく理想CBFで近似した場合。
+2. 差分FIRの有限tap化により`q_EBAE`を再現できない場合。
+3. 固定主枝と差分枝の群遅延またはblock境界が一致しない場合。
+4. EBAE重みの最終正規化前の`q_raw`だけを差分枝へ与え、正規化差分を含めない場合。
+5. 重み更新時に主枝と差分枝が異なる完成世代の係数を参照した場合。
+
+`Ns=0`では基準EBAE重みは理想CBF`w_0`へ戻る。一方、実固定主枝`w_fixed`が理想CBFと有限精度で異なる場合、差分は次となる。
+
+\[
+q_{EBAE}=w_{fixed}-w_0
+\]
+
+この場合、差分枝は完全な無出力ではなく、固定遅延＋小数遅延FIRの実応答を理想CBFへ合わせる実装誤差補正を含む。`Ns=0`で差分枝を必ず0にしたい場合は、EBAE内部の`w_0`を実固定主枝応答と同じ規約で定義し直す必要があり、その方式は現在の理想steering基準EBAEとは別契約になる。
+
+### 11.4 方式C: 整数遅延＋EBAE補正方式
+
+待受beam`theta_b`に対応するchannel別整数遅延演算を、周波数bin上の行列`D_b[k]`で表す。整数遅延後のセンサ入力、共分散、steeringは次となる。
+
+\[
+X_D(\theta_b,k)=D_b[k]X[k]
+\]
+
+\[
+R_D(\theta_b,k)
+=E\{X_D(\theta_b,k)X_D(\theta_b,k)^H\}
+=D_b[k]R[k]D_b[k]^H
+\]
+
+\[
+a_D(\theta,\theta_b,k)=D_b[k]a(\theta,k)
+\]
+
+`D_b`は待受beamごとに異なるため、共分散とsteeringも`theta_b`ごとの座標を持つ。整数遅延後のEBAE重みを`v_opt(theta_b,k)`とすると、出力は次である。
+
+\[
+Y_{integer+EBAE}(\theta_b,k)
+=v_{opt}(\theta_b,k)^H X_D(\theta_b,k)
+\]
+
+元センサ座標で等価な重みは次となる。
+
+\[
+w_{equivalent}(\theta_b,k)=D_b[k]^H v_{opt}(\theta_b,k)
+\]
+
+理想的な周波数領域位相回転として`D_b`を適用し、`R_D=D_b R_S0 D_b^H`と`a_D=D_b a`を厳密に使い、EBAEの全量を同じ座標へ変換する場合、これはunitaryな座標変換である。固有値、N/E AICの信号数、MUSIC値、元座標へ戻した完成重みは理論上、直接S0-EBAEと等価になり得る。
+
+しかし、実時間の整数遅延bufferをFFT前に適用し、そのblockから共分散を再推定する場合は旧S1に相当する。channelごとの切り出し時刻、block境界、過渡波形、有限窓がS0と異なるため、一般には次が成立しない。
+
+\[
+R_{S1}(\theta_b,k)
+\neq D_b[k]R_{S0}[k]D_b[k]^H
+\]
+
+この場合、固有値、N/E AICの推定信号数、雑音部分空間、MUSIC対応方位、`delta_i`、最終EBAE重みのすべてが変わり得る。したがって、実bufferによる整数遅延＋EBAE補正方式は、直接S0-EBAEの実装違いではなく、**待受beam別S1共分散を使う別のEBAE方式**として扱う。
+
+また、現在のEBAE公開APIは共通のS0共分散`[n_bin,M,M]`を全待受beamへ使用する。整数遅延後に共分散を再推定する方式では、概念上`[n_beam,n_bin,M,M]`の共分散、またはbeamごとに独立した逐次状態が必要であり、現在の実装契約には含まれない。
+
+### 11.5 小数遅延整相の意味
+
+3方式では小数遅延整相の担当が異なる。
+
+| 方式 | 整数遅延 | 小数遅延・残留位相 | 固有mode除外 |
+|---|---|---|---|
+| 直接EBAE | 前段では使用しない | `w_opt`の周波数依存位相が担当 | `w_opt`が担当 |
+| EBAE差分補正枝 | 固定主枝が担当 | 固定主枝の小数遅延FIRを基準に、差分枝を含む合成重みが最終応答を担当 | 差分枝を含む合成重みが担当 |
+| 整数遅延＋EBAE補正 | 前段bufferが担当 | 整数遅延後の`v_opt`が残留小数遅延と位相を担当 | `v_opt`が担当 |
+
+したがって「整数遅延＋EBAE補正」は、整数遅延後にEBAEを単なる妨害除去器として足す方式ではない。残留小数遅延整相と固有mode除外を同じ重みが同時に担う。steering、共分散、正規化を整数遅延前の座標のまま混在させてはならない。
+
+### 11.6 採否ではなく切り分けとしての3方式評価
+
+正式評価では同じ入力波形、active channel、方位軸、周波数軸、更新時刻を用い、次の順で切り分ける。
+
+1. `direct_s0_ebae`でEBAE数式自体の信号数推定、方位対応、target保持、非target抑圧を確認する。
+2. `fixed_integer_fractional_ebae_difference`と`direct_s0_ebae`を比較し、差をFIR近似、主枝応答、群遅延、係数切替へ限定できるか確認する。
+3. `integer_delay_then_ebae`と`direct_s0_ebae`を比較し、S0/S1共分散差、信号数差、MUSIC方位差、残留小数遅延整相を確認する。
+
+各方式について、少なくとも次を保存する。
+
+- `Ns[k]`とN/E AIC値
+- MUSIC疑似スペクトルと対応beam index
+- `w^H a`または整数遅延座標の`v^H a_D`
+- target-only、noise-only、interferer-only、mixedの帯域積分RMS
+- BLのtarget peak、guard外peak、source分離valley
+- 差分枝方式では`w_fixed-q_FIR-w_opt`の周波数応答誤差
+- 整数遅延前段方式では`R_S1-D_b R_S0 D_b^H`の相対誤差
+- latency、block境界、重み更新境界、fallback状態
+
+3方式のBL/FRAZ/BTRは同じ表示条件とdB基準で比較する。絶対levelは`dB re input RMS`などの基準、相対差は`dB re direct S0 EBAE`または`dB re fixed integer+fractional output`を明記する。直接方式との差が観測された場合、EBAE方式の優劣と即断せず、まず共分散座標、steering座標、FIR再現誤差、時間整合のどこで差が生じたかを判定する。
