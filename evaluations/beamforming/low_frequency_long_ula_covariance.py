@@ -27,6 +27,7 @@ from scene_renderer import (  # noqa: E402
     SceneRenderer,
     SourceComponent,
     StaticPose,
+    ToneSpectrum,
 )
 from spflow.beamforming import (  # noqa: E402
     DirectionMatchedCovarianceAccumulator,
@@ -70,6 +71,8 @@ def _render(
     noise: bool,
     seed: int,
     source_azimuth_deg: float = SOURCE_AZIMUTH_DEG,
+    source_band_hz: tuple[float, float] = (SOURCE_LOW_HZ, SOURCE_HIGH_HZ),
+    tone_frequency_hz: float | None = None,
 ) -> NDArray[np.float32]:
     """指定方位の80--120 Hz広帯域信号を生成する。
 
@@ -78,6 +81,8 @@ def _render(
         noise: 空間白色雑音を重畳する場合はTrue。
         seed: 信号と雑音の乱数seed。
         source_azimuth_deg: 信号到来方位。単位はdegree、範囲は0--180度。
+        source_band_hz: 広帯域信号の下限・上限周波数。単位はHz。
+        tone_frequency_hz: 単一tone周波数。指定時はsource_band_hzを使用しない。
 
     Returns:
         受波信号。shapeは`[n_ch,n_sample]`、dtypeはfloat32。
@@ -88,13 +93,22 @@ def _render(
 
     if not 0.0 <= source_azimuth_deg <= 180.0:
         raise ValueError("source_azimuth_deg must be in [0, 180].")
+    source_low_hz, source_high_hz = source_band_hz
+    if tone_frequency_hz is None and not 0.0 < source_low_hz < source_high_hz < FS_HZ / 2.0:
+        raise ValueError("source_band_hz must satisfy 0 < low < high < Nyquist.")
+    if tone_frequency_hz is not None and not 0.0 < tone_frequency_hz < FS_HZ / 2.0:
+        raise ValueError("tone_frequency_hz must be between 0 and Nyquist.")
 
     receiver = Receiver(
         trajectory=StaticPose(position_world=[0.0, 0.0, 0.0], heading_deg=0.0),
         array=CoordinateArray(positions_m),
     )
     component = SourceComponent(
-        spectrum=BandLimitedNoiseSpectrum(SOURCE_LOW_HZ, SOURCE_HIGH_HZ),
+        spectrum=(
+            ToneSpectrum(tone_frequency_hz)
+            if tone_frequency_hz is not None
+            else BandLimitedNoiseSpectrum(source_low_hz, source_high_hz)
+        ),
         envelope=ConstantEnvelope(),
         amplitude=None,
         level_db=0.0,
