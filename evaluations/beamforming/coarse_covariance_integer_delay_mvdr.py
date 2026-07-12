@@ -31,6 +31,8 @@ SCAN_AZIMUTH_DEG = np.linspace(0.0, 180.0, 721, dtype=np.float64)
 DIRECT_METHOD_ID = "direction_cut_direct_mvdr"
 INTEGER_DELAY_METHOD_ID = "direction_cut_integer_delay_mvdr"
 METHOD_IDS = (DIRECT_METHOD_ID, INTEGER_DELAY_METHOD_ID)
+SWEEP_ANALYSIS_WIDTHS_HZ = (16.0, 32.0, 64.0, 128.0)
+SWEEP_TARGET_AZIMUTHS_DEG = (15.0, 30.0, 60.0, 120.0, 150.0, 165.0)
 
 
 def sensor_positions_m() -> NDArray[np.float64]:
@@ -65,11 +67,14 @@ def arrival_delays_s(
     )
 
 
-def steering(delays_s: NDArray[np.float64]) -> NDArray[np.complex128]:
+def steering(
+    delays_s: NDArray[np.float64], *, frequency_hz: float = CENTER_FREQUENCY_HZ
+) -> NDArray[np.complex128]:
     """中心周波数のsteeringを返す。
 
     Args:
         delays_s: 相対遅延。shapeは`[...,n_ch]`、単位はs。
+        frequency_hz: 周波数。単位はHz。
 
     Returns:
         複素steering。shapeは入力と同じ。
@@ -77,7 +82,7 @@ def steering(delays_s: NDArray[np.float64]) -> NDArray[np.complex128]:
 
     # a=exp(-j 2πfτ)とし、R=a a^Hの位相規約を全方式で共通化する。
     return np.asarray(
-        np.exp(-1j * 2.0 * np.pi * CENTER_FREQUENCY_HZ * delays_s),
+        np.exp(-1j * 2.0 * np.pi * frequency_hz * delays_s),
         dtype=np.complex128,
     )
 
@@ -85,12 +90,15 @@ def steering(delays_s: NDArray[np.float64]) -> NDArray[np.complex128]:
 def _source_covariance(
     coherence_residual_s: NDArray[np.float64],
     output_steering: NDArray[np.complex128],
+    *,
+    analysis_width_hz: float = ANALYSIS_WIDTH_HZ,
 ) -> NDArray[np.complex128]:
     """平坦1-bin広帯域信号の解析共分散を返す。
 
     Args:
         coherence_residual_s: 窓内に残る遅延。shapeは`[n_ch]`、単位はs。
         output_steering: 共分散を表す座標のsteering。shapeは`[n_ch]`。
+        analysis_width_hz: 1-bin広帯域信号の帯域幅。単位はHz。
 
     Returns:
         信号共分散。shapeは`[n_ch,n_ch]`。
@@ -99,7 +107,7 @@ def _source_covariance(
     # 平坦な幅Δfの矩形周波数積分は、pair間残留遅延に
     # sinc(Δf(τ_i-τ_j))のcoherence低下を与える。
     pair_residual_s = coherence_residual_s[:, np.newaxis] - coherence_residual_s[np.newaxis, :]
-    coherence = np.sinc(ANALYSIS_WIDTH_HZ * pair_residual_s)
+    coherence = np.sinc(analysis_width_hz * pair_residual_s)
     source_outer = output_steering[:, np.newaxis] * output_steering.conj()[np.newaxis, :]
     return np.asarray(coherence * source_outer, dtype=np.complex128)
 
@@ -251,6 +259,160 @@ def evaluate_methods() -> tuple[list[dict[str, Any]], dict[str, NDArray[np.float
     return rows, patterns
 
 
+def _pattern_metrics(
+    weight: NDArray[np.complex128],
+    scan_steering: NDArray[np.complex128],
+    target_azimuth_deg: float,
+) -> dict[str, float]:
+    """固定weight beam patternのpeak誤差とguard外peakを返す。
+
+    Args:
+        weight: MVDR重み。shapeは`[n_ch]`。
+        scan_steering: 入力方位sweepのsteering。shapeは`[n_direction,n_ch]`。
+        target_azimuth_deg: 保護方位。単位はdeg。
+
+    Returns:
+        peak方位誤差とguard外peak。角度はdeg、levelは`dB re target response`。
+    """
+
+    response = np.asarray(np.abs(scan_steering.conj() @ weight), dtype=np.float64)
+    response_db = 20.0 * np.log10(np.maximum(response, 1.0e-12))
+    peak_index = int(np.argmax(response))
+    outside = np.abs(SCAN_AZIMUTH_DEG - target_azimuth_deg) >= 10.0
+    return {
+        "peak_azimuth_deg": float(SCAN_AZIMUTH_DEG[peak_index]),
+        "peak_error_deg": float(abs(SCAN_AZIMUTH_DEG[peak_index] - target_azimuth_deg)),
+        "guard_outside_peak_db_re_target": float(np.max(response_db[outside])),
+    }
+
+
+def evaluate_failure_condition_sweep() -> list[dict[str, Any]]:
+    """通常共分散が破綻する複数条件で2整相方式を評価する。
+
+    Returns:
+        分析幅・target方位ごとの評価行。角度はdeg、周波数はHz。
+
+    Notes:
+        同一時間block共分散は整相候補ではなく、試験条件が実際に
+        破綻条件であることを確認する参照値としてのみ使う。
+    """
+
+    positions = sensor_positions_m()
+    scan_delay = arrival_delays_s(positions, SCAN_AZIMUTH_DEG)
+    scan_physical = steering(scan_delay)
+    identity = np.eye(N_CHANNEL, dtype=np.complex128)
+    rows: list[dict[str, Any]] = []
+    for analysis_width_hz in SWEEP_ANALYSIS_WIDTHS_HZ:
+        for target_azimuth_deg in SWEEP_TARGET_AZIMUTHS_DEG:
+            target_delay = arrival_delays_s(
+                positions, np.asarray([target_azimuth_deg], dtype=np.float64)
+            )[0]
+            target_steering = steering(target_delay)
+            quantized_delay = np.rint(target_delay * FS_HZ) / FS_HZ
+            residual_delay = target_delay - quantized_delay
+            integer_alignment = np.exp(
+                1j * 2.0 * np.pi * CENTER_FREQUENCY_HZ * quantized_delay
+            )
+
+            # 参照は同一時間blockの全到来遅延が粗いbin内に残る条件である。
+            reference_covariance = _source_covariance(
+                target_delay,
+                target_steering,
+                analysis_width_hz=analysis_width_hz,
+            )
+            reference_weight, _ = _mvdr_weight(
+                reference_covariance + NOISE_POWER_RE_TARGET * identity,
+                target_steering,
+            )
+            reference_metrics = _pattern_metrics(
+                reference_weight, scan_physical, target_azimuth_deg
+            )
+
+            # 直接MVDRは切り出し時刻差の位相補正後の共分散を
+            # 元の多channel入力と同じ位相基準で使う。
+            direct_covariance = _source_covariance(
+                residual_delay,
+                target_steering,
+                analysis_width_hz=analysis_width_hz,
+            )
+            direct_weight, _ = _mvdr_weight(
+                direct_covariance + NOISE_POWER_RE_TARGET * identity,
+                target_steering,
+            )
+            direct_metrics = _pattern_metrics(
+                direct_weight, scan_physical, target_azimuth_deg
+            )
+
+            # 整数遅延前段方式は、同じ完成共分散とsteeringに
+            # 整数遅延分のchannel位相を与え、遅延後入力と整合させる。
+            integer_covariance = np.asarray(
+                integer_alignment[:, np.newaxis]
+                * direct_covariance
+                * integer_alignment.conj()[np.newaxis, :],
+                dtype=np.complex128,
+            )
+            integer_constraint = np.asarray(
+                integer_alignment * target_steering, dtype=np.complex128
+            )
+            integer_scan = np.asarray(
+                scan_physical * integer_alignment[np.newaxis, :], dtype=np.complex128
+            )
+            integer_weight, _ = _mvdr_weight(
+                integer_covariance + NOISE_POWER_RE_TARGET * identity,
+                integer_constraint,
+            )
+            integer_metrics = _pattern_metrics(
+                integer_weight, integer_scan, target_azimuth_deg
+            )
+            reference_failed = bool(
+                reference_metrics["peak_error_deg"] > 2.0
+                or reference_metrics["guard_outside_peak_db_re_target"] >= 0.0
+            )
+            direct_passed = bool(
+                direct_metrics["peak_error_deg"] <= 2.0
+                and direct_metrics["guard_outside_peak_db_re_target"] < 0.0
+            )
+            integer_passed = bool(
+                integer_metrics["peak_error_deg"] <= 2.0
+                and integer_metrics["guard_outside_peak_db_re_target"] < 0.0
+            )
+            rows.append(
+                {
+                    "analysis_width_hz": analysis_width_hz,
+                    "center_frequency_hz": CENTER_FREQUENCY_HZ,
+                    "target_azimuth_deg": target_azimuth_deg,
+                    "same_time_reference_failed": reference_failed,
+                    "same_time_reference_peak_error_deg": reference_metrics["peak_error_deg"],
+                    "same_time_reference_guard_outside_peak_db_re_target": reference_metrics[
+                        "guard_outside_peak_db_re_target"
+                    ],
+                    "direct_mvdr_passed": direct_passed,
+                    "direct_mvdr_peak_error_deg": direct_metrics["peak_error_deg"],
+                    "direct_mvdr_guard_outside_peak_db_re_target": direct_metrics[
+                        "guard_outside_peak_db_re_target"
+                    ],
+                    "integer_delay_mvdr_passed": integer_passed,
+                    "integer_delay_mvdr_peak_error_deg": integer_metrics["peak_error_deg"],
+                    "integer_delay_mvdr_guard_outside_peak_db_re_target": integer_metrics[
+                        "guard_outside_peak_db_re_target"
+                    ],
+                    "direct_integer_delay_pattern_max_abs_error_db": float(
+                        max(
+                            abs(
+                                direct_metrics["guard_outside_peak_db_re_target"]
+                                - integer_metrics["guard_outside_peak_db_re_target"]
+                            ),
+                            abs(
+                                direct_metrics["peak_error_deg"]
+                                - integer_metrics["peak_error_deg"]
+                            ),
+                        )
+                    ),
+                }
+            )
+    return rows
+
+
 def _write_artifacts(
     rows: list[dict[str, Any]], patterns: dict[str, NDArray[np.float64]]
 ) -> None:
@@ -320,6 +482,13 @@ def main() -> None:
 
     rows, patterns = evaluate_methods()
     _write_artifacts(rows, patterns)
+    sweep_rows = evaluate_failure_condition_sweep()
+    with (OUTPUT_DIR / "failure_condition_sweep.csv").open(
+        "w", encoding="utf-8", newline=""
+    ) as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(sweep_rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(sweep_rows)
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ import numpy as np
 from evaluations.beamforming.coarse_covariance_integer_delay_mvdr import (
     DIRECT_METHOD_ID,
     INTEGER_DELAY_METHOD_ID,
+    evaluate_failure_condition_sweep,
     evaluate_methods,
     method_covariances,
 )
@@ -40,3 +41,18 @@ def test_direct_and_integer_delay_methods_preserve_the_same_target() -> None:
         rtol=0.0,
         atol=1.0e-9,
     )
+
+
+def test_multiple_same_time_failure_conditions_are_recovered() -> None:
+    """通常共分散が破綻する複数条件で2方式が成立する。"""
+
+    rows = evaluate_failure_condition_sweep()
+    failed_reference_rows = [row for row in rows if bool(row["same_time_reference_failed"])]
+
+    # 単一条件の偶然ではないことを固定するため、異なる分析幅と方位を
+    # 含む6条件以上の破綻参照で直接MVDRと整数遅延前段MVDRを確認する。
+    assert len(failed_reference_rows) >= 6
+    assert len({float(row["analysis_width_hz"]) for row in failed_reference_rows}) >= 2
+    assert len({float(row["target_azimuth_deg"]) for row in failed_reference_rows}) >= 3
+    assert all(bool(row["direct_mvdr_passed"]) for row in failed_reference_rows)
+    assert all(bool(row["integer_delay_mvdr_passed"]) for row in failed_reference_rows)
