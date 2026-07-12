@@ -71,6 +71,9 @@ class DirectionCovarianceSelectionResult:
         completed_cycle_count: 完成周期数。
         eta: 完成eta。shapeは`[n_direction,n_bin]`。
         eta_valid: eta有効mask。shapeは`[n_direction,n_bin]`。
+        active_channel_count: etaで使用したchannel数。shapeは`[n_bin]`。
+        effective_channel_count: shadingを含む`N_eff`。shapeは`[n_bin]`。
+        noise_eta_reference: 空間白色雑音の`1/N_eff`。shapeは`[n_bin]`。
         completed_weight: 今周期etaから作り次周期に使うWeight。shapeは`[n_direction,n_bin]`。
         applied_weight: 今周期共分散へ適用した前周期Weight。shapeは`[n_direction,n_bin]`。
         weighted_covariance: fallback後の公開候補。shapeは`[n_ch,n_ch,n_bin]`。
@@ -84,6 +87,9 @@ class DirectionCovarianceSelectionResult:
     completed_cycle_count: int
     eta: NDArray[np.float32]
     eta_valid: NDArray[np.bool_]
+    active_channel_count: NDArray[np.int32]
+    effective_channel_count: NDArray[np.float32]
+    noise_eta_reference: NDArray[np.float32]
     completed_weight: NDArray[np.float32]
     applied_weight: NDArray[np.float32]
     weighted_covariance: NDArray[np.complex64]
@@ -108,8 +114,25 @@ class DirectionMatchedCovarianceSelector:
         config: DirectionCovarianceSelectionConfig,
         *,
         integration_time_seconds: float,
+        channel_weight_table: NDArray[Any] | None = None,
     ) -> None:
-        """固定steering、soft threshold、積分時間を設定する。"""
+        """固定steering、soft threshold、積分時間、周波数別shadingを設定する。
+
+        Args:
+            schedule: 2秒中心sample・方位一致表。
+            steering_table: 物理steering。shapeは`[n_ch,n_bin,n_direction]`。
+            config: 周波数別thresholdとfallback成立条件。
+            integration_time_seconds: 方位別指数積分時間。単位はs。
+            channel_weight_table: steering power用shading。shapeは`[n_ch,n_bin]`。
+                `None`では全channelを係数1で使用する。
+
+        Raises:
+            ValueError: threshold、shading、shapeまたは成立条件が不正な場合。
+
+        境界条件:
+            shadingが0のchannelは該当binのetaへ寄与しないが、方位別共分散自体は
+            fallbackやMVDRで使えるよう全channelのまま保持する。
+        """
 
         self.schedule = schedule
         self.config = config
@@ -132,6 +155,7 @@ class DirectionMatchedCovarianceSelector:
             schedule,
             integration_time_seconds=integration_time_seconds,
             steering_table=steering_table,
+            channel_weight_table=channel_weight_table,
             eta_denominator_floor=config.power_floor,
         )
         n_direction = int(schedule.global_direction_azimuth_deg.size)
@@ -188,6 +212,9 @@ class DirectionMatchedCovarianceSelector:
             applied_weight,
             metrics.eta,
             metrics.eta_valid,
+            metrics.active_channel_count,
+            metrics.effective_channel_count,
+            metrics.noise_eta_reference,
             completed_weight,
             metrics.completed_cycle_count,
             method2_covariance,
@@ -213,6 +240,9 @@ class DirectionMatchedCovarianceSelector:
         applied_weight: NDArray[np.float32],
         eta: NDArray[np.float32],
         eta_valid: NDArray[np.bool_],
+        active_channel_count: NDArray[np.int32],
+        effective_channel_count: NDArray[np.float32],
+        noise_eta_reference: NDArray[np.float32],
         completed_weight: NDArray[np.float32],
         cycle_count: int,
         method2_covariance: NDArray[Any] | None,
@@ -292,6 +322,9 @@ class DirectionMatchedCovarianceSelector:
             completed_cycle_count=cycle_count,
             eta=eta.copy(),
             eta_valid=eta_valid.copy(),
+            active_channel_count=active_channel_count.copy(),
+            effective_channel_count=effective_channel_count.copy(),
+            noise_eta_reference=noise_eta_reference.copy(),
             completed_weight=completed_weight.copy(),
             applied_weight=applied_weight,
             weighted_covariance=output,

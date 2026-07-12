@@ -10,6 +10,10 @@ from numpy.typing import NDArray
 
 from .._validation import require, require_positive_float, require_positive_int
 from .geometry import relative_arrival_delay
+from .steering_power_weighting import (
+    SteeringPowerChannelWeighting,
+    prepare_steering_power_channel_weighting,
+)
 
 
 FloatArray = NDArray[np.floating[Any]]
@@ -215,6 +219,9 @@ class CompletedDirectionSteeringMetrics:
         total_power: `norm(X)^2`の方位別指数積分。shapeは`[n_direction,n_bin]`。
         eta: `steering_power/total_power`。shapeは`[n_direction,n_bin]`。
         eta_valid: 分母と有限性が有効なmask。shapeは`[n_direction,n_bin]`。
+        active_channel_count: 正のshading係数を持つchannel数。shapeは`[n_bin]`。
+        effective_channel_count: shadingを含む`N_eff`。shapeは`[n_bin]`。
+        noise_eta_reference: 空間白色雑音の`1/N_eff`。shapeは`[n_bin]`。
         completed_cycle_count: 完成した2秒周期数。
     """
 
@@ -222,6 +229,9 @@ class CompletedDirectionSteeringMetrics:
     total_power: NDArray[np.float32]
     eta: NDArray[np.float32]
     eta_valid: NDArray[np.bool_]
+    active_channel_count: NDArray[np.int32]
+    effective_channel_count: NDArray[np.float32]
+    noise_eta_reference: NDArray[np.float32]
     completed_cycle_count: int
 
 
@@ -341,6 +351,7 @@ class DirectionMatchedCovarianceAccumulator:
         integration_time_seconds: float | None = None,
         beam_chunk_size: int = 8,
         steering_table: NDArray[Any] | None = None,
+        channel_weight_table: NDArray[Any] | None = None,
         eta_denominator_floor: float = 1.0e-20,
     ) -> None:
         """再利用するscheduleと瞬時共分散の更新係数を設定する。
@@ -352,7 +363,9 @@ class DirectionMatchedCovarianceAccumulator:
                 実更新rateを求め、`coef=2/(1+rate*T)`を方位ごとに設定する。
             beam_chunk_size: FFTと瞬時共分散を一括処理するbeam数。
             steering_table: 物理steering。shapeは`[n_ch,n_bin,n_direction]`。
-                指定時はchannel norm 1へ正規化し、瞬時steering/total powerも同時積分する。
+                指定時は瞬時steering/total powerも同時積分する。
+            channel_weight_table: 周波数別channel shading。shapeは`[n_ch,n_bin]`、
+                非負の線形値。`None`では全channelを係数1で使用する。
             eta_denominator_floor: eta分母の数値下限。
 
         Raises:
@@ -388,21 +401,22 @@ class DirectionMatchedCovarianceAccumulator:
             require(0.0 < update_coef <= 1.0, "coef must satisfy 0 < coef <= 1.")
             self.direction_update_coef = np.full(n_direction, update_coef, dtype=np.float32)
         self.n_bin = schedule.snapshot_length_samples // 2 + 1
-        self._normalized_steering_table: NDArray[np.complex64] | None = None
+        self._steering_power_weighting: SteeringPowerChannelWeighting | None = None
         self.steering_power: NDArray[np.float32] | None = None
         self.total_power: NDArray[np.float32] | None = None
+        require(
+            steering_table is not None or channel_weight_table is None,
+            "channel_weight_table requires steering_table.",
+        )
         if steering_table is not None:
             steering = np.asarray(steering_table, dtype=np.complex64)
             require(
                 steering.shape == (schedule.n_ch, self.n_bin, n_direction),
                 "steering_table must have shape (n_ch, n_bin, n_direction).",
             )
-            require(bool(np.all(np.isfinite(steering))), "steering_table must be finite.")
-            steering_norm = np.sqrt(np.sum(np.abs(steering) ** 2, axis=0, keepdims=True))
-            require(bool(np.all(steering_norm > 0.0)), "steering_table channel norm must be positive.")
-            self._normalized_steering_table = np.asarray(
-                steering / steering_norm,
-                dtype=np.complex64,
+            self._steering_power_weighting = prepare_steering_power_channel_weighting(
+                steering,
+                channel_weight_table,
             )
             self.steering_power = np.zeros((n_direction, self.n_bin), dtype=np.float32)
             self.total_power = np.zeros((n_direction, self.n_bin), dtype=np.float32)
@@ -479,22 +493,32 @@ class DirectionMatchedCovarianceAccumulator:
                 beam_start:beam_stop,
             ]
             chunk_direction_indices = direction_indices[beam_start:beam_stop]
-            if self._normalized_steering_table is not None:
+            if self._steering_power_weighting is not None:
                 steering_power = self.steering_power
                 total_power = self.total_power
                 if steering_power is None or total_power is None:
                     raise RuntimeError("steering power state must exist when steering_table is configured.")
-                normalized_steering = self._normalized_steering_table[:, :, chunk_direction_indices]
-                # u^H Xをchannel axis=0で内積し、`[n_bin,n_chunk]`から`[n_chunk,n_bin]`へ転置する。
+                projection_table = self._steering_power_weighting.projection_table[
+                    :, :, chunk_direction_indices
+                ]
+                # projection^H Xをchannel axis=0で内積する。projectionはshading gを一度含み、
+                # total powerにも同じgを使うため、整合targetのeta上限を1に保つ。
                 projected = np.einsum(
                     "ikb,ikb->kb",
-                    normalized_steering.conj(),
+                    projection_table.conj(),
                     spectrum,
                     optimize=True,
                 )
                 steering_power_instantaneous = np.asarray(np.abs(projected.T) ** 2, dtype=np.float32)
+                # spectrum shapeは`[n_ch,n_bin,n_chunk]`、weight shapeは`[n_ch,n_bin]`。
+                # channel axis=0を縮約し、重み付きtotal power `[n_bin,n_chunk]`を得る。
                 total_power_instantaneous = np.asarray(
-                    np.sum(np.abs(spectrum) ** 2, axis=0).T,
+                    np.einsum(
+                        "ik,ikb->kb",
+                        self._steering_power_weighting.channel_weight_table,
+                        np.abs(spectrum) ** 2,
+                        optimize=True,
+                    ).T,
                     dtype=np.float32,
                 )
                 active_power_coef = self.direction_update_coef[chunk_direction_indices, np.newaxis]
@@ -549,7 +573,7 @@ class DirectionMatchedCovarianceAccumulator:
             1秒目の片側方位だけを外部公開しないため、処理秒数が偶数の完成境界でのみ返す。
         """
 
-        if self.steering_power is None or self.total_power is None:
+        if self.steering_power is None or self.total_power is None or self._steering_power_weighting is None:
             raise RuntimeError("steering_table was not configured.")
         if self._processed_second_count < 2 or self._processed_second_count % 2 != 0:
             raise RuntimeError("steering metrics are available only at a completed two-second cycle.")
@@ -572,14 +596,28 @@ class DirectionMatchedCovarianceAccumulator:
             total_power=self.total_power.copy(),
             eta=eta,
             eta_valid=np.asarray(valid, dtype=np.bool_),
+            active_channel_count=self._steering_power_weighting.active_channel_count.copy(),
+            effective_channel_count=self._steering_power_weighting.effective_channel_count.copy(),
+            noise_eta_reference=self._steering_power_weighting.noise_eta_reference.copy(),
             completed_cycle_count=self._processed_second_count // 2,
         )
 
     @property
     def steering_state_bytes(self) -> int:
-        """正規化steering tableと2個のpower積分状態の常駐byte数を返す。"""
+        """重み付きprojection tableと2個のpower積分状態の常駐byte数を返す。"""
 
-        steering_bytes = 0 if self._normalized_steering_table is None else int(self._normalized_steering_table.nbytes)
+        if self._steering_power_weighting is None:
+            steering_bytes = 0
+        else:
+            # 常駐量にはprojectionだけでなく、runtime監査に公開するshadingと
+            # active/N_eff/noise基準表も含め、追加memoryを過小報告しない。
+            steering_bytes = int(
+                self._steering_power_weighting.projection_table.nbytes
+                + self._steering_power_weighting.channel_weight_table.nbytes
+                + self._steering_power_weighting.active_channel_count.nbytes
+                + self._steering_power_weighting.effective_channel_count.nbytes
+                + self._steering_power_weighting.noise_eta_reference.nbytes
+            )
         power_bytes = 0 if self.steering_power is None else int(self.steering_power.nbytes)
         power_bytes += 0 if self.total_power is None else int(self.total_power.nbytes)
         return steering_bytes + power_bytes

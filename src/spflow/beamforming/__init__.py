@@ -194,6 +194,10 @@ from .spatial_correlation_statistics import (
     calculate_sparse_array_spatial_correlation_statistics,
     calculate_spatial_correlation_statistics,
 )
+from .steering_power_weighting import (
+    SteeringPowerChannelWeighting,
+    prepare_steering_power_channel_weighting,
+)
 from .sparse_single_side_array_design import (
     SparseSingleSideArrayDesignConfig,
     SparseSingleSideArrayDesignResult,
@@ -272,6 +276,8 @@ __all__ = [
     "BinnedSpatialCorrelationStatistics",
     "PairCompositionSpatialCorrelationStatistics",
     "SparseArraySpatialCorrelationStatistics",
+    "SteeringPowerChannelWeighting",
+    "prepare_steering_power_channel_weighting",
     "build_two_second_covariance_snapshot_schedule",
     "calculate_maximum_spatial_correlation_table",
     "calculate_covariance_subspace_metrics",
