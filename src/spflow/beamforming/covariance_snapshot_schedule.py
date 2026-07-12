@@ -334,10 +334,10 @@ def calculate_maximum_spatial_correlation_table(
 
 
 class DirectionMatchedCovarianceAccumulator:
-    """1秒ごとに中心表と方位一致表を切り替え、同一方位だけを指数積分する。
+    """1秒ごとに左右の更新側を切り替え、方位別に指数積分する。
 
-    偶数秒は0–90度、奇数秒は180–90度の159 snapshotを使う。各beamは1秒につき
-    1 snapshotだけを持ち、同じglobal方位slotへ到来する次回snapshotと指数積分する。
+    偶数秒は0–90度、奇数秒は180–90度側の159 snapshotを使う。
+    片側79方位を各2回、共有境界90度を1回観測し、globalには159方位だけを保持する。
 
     入力は1秒信号`[n_ch,fs]`、出力は今回更新した159方位の共分散である。
     相関閾値による採否、beam方向集約、MVDR重み設計は責務に含めない。
@@ -451,7 +451,7 @@ class DirectionMatchedCovarianceAccumulator:
         self._processed_second_count = 0
 
     def process_one_second(self, signal: NDArray[Any]) -> DirectionMatchedCovarianceUpdate:
-        """現在秒の159方位について、各1 snapshotで共分散を更新する。
+        """現在秒の159 snapshotを対応するglobal方位へ順次積分する。
 
         Args:
             signal: 1秒実信号。shapeは`[n_ch,fs]`。
@@ -493,10 +493,10 @@ class DirectionMatchedCovarianceAccumulator:
                 beam_start:beam_stop,
             ]
             chunk_direction_indices = direction_indices[beam_start:beam_stop]
+            steering_power_instantaneous: NDArray[np.float32] | None = None
+            total_power_instantaneous: NDArray[np.float32] | None = None
             if self._steering_power_weighting is not None:
-                steering_power = self.steering_power
-                total_power = self.total_power
-                if steering_power is None or total_power is None:
+                if self.steering_power is None or self.total_power is None:
                     raise RuntimeError("steering power state must exist when steering_table is configured.")
                 projection_table = self._steering_power_weighting.projection_table[
                     :, :, chunk_direction_indices
@@ -521,33 +521,42 @@ class DirectionMatchedCovarianceAccumulator:
                     ).T,
                     dtype=np.float32,
                 )
-                active_power_coef = self.direction_update_coef[chunk_direction_indices, np.newaxis]
-                steering_power[chunk_direction_indices] = np.asarray(
-                    (1.0 - active_power_coef) * steering_power[chunk_direction_indices]
-                    + active_power_coef * steering_power_instantaneous,
-                    dtype=np.float32,
-                )
-                total_power[chunk_direction_indices] = np.asarray(
-                    (1.0 - active_power_coef) * total_power[chunk_direction_indices]
-                    + active_power_coef * total_power_instantaneous,
-                    dtype=np.float32,
-                )
             instantaneous_covariance = np.asarray(
                 np.einsum("ikb,jkb->bijk", spectrum, spectrum.conj(), optimize=True),
                 dtype=np.complex64,
             )
-            previous_covariance = self.direction_covariance[chunk_direction_indices]
-            active_coef = self.direction_update_coef[
-                chunk_direction_indices,
-                np.newaxis,
-                np.newaxis,
-                np.newaxis,
-            ]
-            updated_chunk = np.asarray(
-                (1.0 - active_coef) * previous_covariance + active_coef * instantaneous_covariance,
-                dtype=np.complex64,
-            )
-            self.direction_covariance[chunk_direction_indices] = updated_chunk
+            # direction_matchは同一global indexを1秒内に2回含む。advanced indexingの
+            # 一括代入では2回目だけが残るため、観測順にR1→R2を更新する。
+            for chunk_snapshot_index, global_direction_index_value in enumerate(chunk_direction_indices):
+                global_direction_index = int(global_direction_index_value)
+                update_coef = self.direction_update_coef[global_direction_index]
+                self.direction_covariance[global_direction_index] = np.asarray(
+                    (np.float32(1.0) - update_coef) * self.direction_covariance[global_direction_index]
+                    + update_coef * instantaneous_covariance[chunk_snapshot_index],
+                    dtype=np.complex64,
+                )
+                if self._steering_power_weighting is not None:
+                    # steering/total powerも共分散と同じsnapshot順序と係数で更新し、
+                    # 直接積分etaと共分散からのetaの数学的同値性を保つ。
+                    steering_power = self.steering_power
+                    total_power = self.total_power
+                    if (
+                        steering_power is None
+                        or total_power is None
+                        or steering_power_instantaneous is None
+                        or total_power_instantaneous is None
+                    ):
+                        raise RuntimeError("steering power state must exist when steering_table is configured.")
+                    steering_power[global_direction_index] = np.asarray(
+                        (np.float32(1.0) - update_coef) * steering_power[global_direction_index]
+                        + update_coef * steering_power_instantaneous[chunk_snapshot_index],
+                        dtype=np.float32,
+                    )
+                    total_power[global_direction_index] = np.asarray(
+                        (np.float32(1.0) - update_coef) * total_power[global_direction_index]
+                        + update_coef * total_power_instantaneous[chunk_snapshot_index],
+                        dtype=np.float32,
+                    )
 
         self._processed_second_count += 1
         return DirectionMatchedCovarianceUpdate(
@@ -638,7 +647,8 @@ def build_two_second_covariance_snapshot_schedule(
         fs_hz: サンプリング周波数。単位はHz。1秒が整数sampleである必要がある。
         sound_speed_m_s: 音速。単位はm/s。
         snapshot_length_samples: 各beam中心から取得する長さ。単位はsample。
-        beams_per_half: 90度当たりのbeam数。
+        beams_per_half: 1秒当たりのsnapshot数。片側方位を2回ずつと
+            90度を1回含むため、奇数である必要がある。
 
     Returns:
         `channel_center_samples` shapeが`[2,n_ch,n_beam]`のschedule。
@@ -659,6 +669,7 @@ def build_two_second_covariance_snapshot_schedule(
     require_positive_float("sound_speed_m_s", sound_speed)
     require_positive_int("snapshot_length_samples", snapshot_length)
     require_positive_int("beams_per_half", beam_count)
+    require(beam_count % 2 == 1, "beams_per_half must be odd so one boundary snapshot remains.")
     require(positions.ndim == 2 and positions.shape[1] == 3, "sensor_positions_m must have shape (n_ch, 3).")
     require(positions.shape[0] > 0, "sensor_positions_m must contain at least one channel.")
     require(bool(np.all(np.isfinite(positions))), "sensor_positions_m must be finite.")
@@ -670,12 +681,28 @@ def build_two_second_covariance_snapshot_schedule(
         "sensor_positions_m must be centrosymmetric in channel order.",
     )
 
-    first_azimuth_deg = np.linspace(0.0, 90.0, beam_count, dtype=np.float32)
-    second_azimuth_deg = 180.0 - first_azimuth_deg
+    # 1秒の159 snapshotは79方位を各2回と90度を1回観測する。
+    # local snapshot数とglobal方位数は同じ159だが、対応は一対一ではない。
+    direction_count_per_side = (beam_count - 1) // 2
+    global_direction_azimuth_deg = np.linspace(0.0, 180.0, beam_count, dtype=np.float32)
+    first_direction_match = np.concatenate(
+        (
+            np.repeat(np.arange(direction_count_per_side, dtype=np.int32), 2),
+            np.array([direction_count_per_side], dtype=np.int32),
+        )
+    )
+    second_direction_match = np.concatenate(
+        (
+            np.repeat(
+                np.arange(beam_count - 1, direction_count_per_side, -1, dtype=np.int32),
+                2,
+            ),
+            np.array([direction_count_per_side], dtype=np.int32),
+        )
+    )
+    first_azimuth_deg = global_direction_azimuth_deg[first_direction_match]
+    second_azimuth_deg = global_direction_azimuth_deg[second_direction_match]
     beam_azimuth_deg = np.stack((first_azimuth_deg, second_azimuth_deg), axis=0).astype(np.float32, copy=False)
-    global_direction_azimuth_deg = np.linspace(0.0, 180.0, 2 * beam_count - 1, dtype=np.float32)
-    first_direction_match = np.arange(beam_count, dtype=np.int32)
-    second_direction_match = np.arange(2 * beam_count - 2, beam_count - 2, -1, dtype=np.int32)
     direction_match_indices = np.stack((first_direction_match, second_direction_match), axis=0)
 
     azimuth_rad = np.deg2rad(first_azimuth_deg.astype(np.float64))

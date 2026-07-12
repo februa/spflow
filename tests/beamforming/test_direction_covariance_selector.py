@@ -29,8 +29,10 @@ def test_direct_eta_matches_quadratic_form_of_integrated_covariance() -> None:
 
     schedule = _small_schedule()
     rng = np.random.default_rng(1234)
+    n_direction = int(schedule.global_direction_azimuth_deg.size)
     steering = (
-        rng.standard_normal((3, 65, 9)) + 1j * rng.standard_normal((3, 65, 9))
+        rng.standard_normal((3, 65, n_direction))
+        + 1j * rng.standard_normal((3, 65, n_direction))
     ).astype(np.complex64)
     accumulator = DirectionMatchedCovarianceAccumulator(
         schedule,
@@ -65,8 +67,10 @@ def test_shaded_direct_eta_matches_weighted_covariance_quadratic_form() -> None:
 
     schedule = _small_schedule()
     generator = np.random.default_rng(1235)
+    n_direction = int(schedule.global_direction_azimuth_deg.size)
     steering = (
-        generator.standard_normal((3, 65, 9)) + 1j * generator.standard_normal((3, 65, 9))
+        generator.standard_normal((3, 65, n_direction))
+        + 1j * generator.standard_normal((3, 65, n_direction))
     ).astype(np.complex64)
     weights = np.ones((3, 65), dtype=np.float32)
     # 高域側は3番目channelを無効化し、中域は連続shadingとして0.5を与える。
@@ -114,7 +118,7 @@ def test_selector_applies_completed_weight_one_cycle_later() -> None:
     """周期tのWeightを周期t+1へ適用し、初回は方式2へfallbackする。"""
 
     schedule = _small_schedule()
-    steering = np.ones((3, 65, 9), dtype=np.complex64)
+    steering = np.ones((3, 65, schedule.global_direction_azimuth_deg.size), dtype=np.complex64)
     selector = DirectionMatchedCovarianceSelector(
         schedule,
         steering,
@@ -150,7 +154,7 @@ def test_selector_discards_previous_state_when_input_series_changes() -> None:
     schedule = _small_schedule()
     selector = DirectionMatchedCovarianceSelector(
         schedule,
-        np.ones((3, 65, 9), dtype=np.complex64),
+        np.ones((3, 65, schedule.global_direction_azimuth_deg.size), dtype=np.complex64),
         DirectionCovarianceSelectionConfig(
             gamma_off=np.zeros(65, dtype=np.float32),
             gamma_on=np.full(65, 0.5, dtype=np.float32),

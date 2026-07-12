@@ -341,8 +341,8 @@ def main() -> None:
         "minimum_adjacent_spacing_m": MINIMUM_SPACING_M,
         "maximum_adjacent_spacing_m": MAXIMUM_SPACING_M,
         "adjacent_spacing_m": ADJACENT_SPACING_M.tolist(),
-        "normal_direction_update_rate_hz": 0.5,
-        "effective_snapshots_at_10s": 5.0,
+        "direction_update_rate_hz": 1.0,
+        "effective_snapshots_at_10s": 10.0,
     }
     payload = {
         "configuration": configuration,

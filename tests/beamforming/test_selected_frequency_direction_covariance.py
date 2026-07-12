@@ -21,8 +21,10 @@ def test_selected_frequency_accumulator_matches_full_bin_result() -> None:
         beams_per_half=5,
     )
     generator = np.random.default_rng(8401)
+    n_direction = int(schedule.global_direction_azimuth_deg.size)
     steering_full = (
-        generator.standard_normal((3, 65, 9)) + 1j * generator.standard_normal((3, 65, 9))
+        generator.standard_normal((3, 65, n_direction))
+        + 1j * generator.standard_normal((3, 65, n_direction))
     ).astype(np.complex64)
     selected_bin = 16
     full = DirectionMatchedCovarianceAccumulator(
@@ -66,7 +68,7 @@ def test_selected_frequency_accumulator_reports_shading_noise_reference() -> Non
     )
     accumulator = SelectedFrequencyDirectionCovarianceAccumulator(
         schedule,
-        np.ones((3, 9), dtype=np.complex64),
+        np.ones((3, schedule.global_direction_azimuth_deg.size), dtype=np.complex64),
         np.array([1.0, 0.5, 0.0], dtype=np.float32),
         frequency_bin_index=16,
         coef=0.25,

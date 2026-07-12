@@ -187,23 +187,26 @@ class SelectedFrequencyDirectionCovarianceAccumulator:
                 np.einsum("ib,jb->bij", spectrum, spectrum.conj(), optimize=True),
                 dtype=np.complex64,
             )
-            active_coef = self._coef[active_directions]
-            self._steering_power[active_directions] = np.asarray(
-                (1.0 - active_coef) * self._steering_power[active_directions]
-                + active_coef * steering_instantaneous,
-                dtype=np.float32,
-            )
-            self._total_power[active_directions] = np.asarray(
-                (1.0 - active_coef) * self._total_power[active_directions]
-                + active_coef * total_instantaneous,
-                dtype=np.float32,
-            )
-            covariance_coef = active_coef[:, np.newaxis, np.newaxis]
-            self._covariance[active_directions] = np.asarray(
-                (1.0 - covariance_coef) * self._covariance[active_directions]
-                + covariance_coef * covariance_instantaneous,
-                dtype=np.complex64,
-            )
+            # 1秒内に同一global方位が2回現れる。advanced indexingでは
+            # 2回更新にならないため、snapshot順にEMAを適用する。
+            for chunk_snapshot_index, global_direction_index_value in enumerate(active_directions):
+                global_direction_index = int(global_direction_index_value)
+                update_coef = self._coef[global_direction_index]
+                self._steering_power[global_direction_index] = np.asarray(
+                    (np.float32(1.0) - update_coef) * self._steering_power[global_direction_index]
+                    + update_coef * steering_instantaneous[chunk_snapshot_index],
+                    dtype=np.float32,
+                )
+                self._total_power[global_direction_index] = np.asarray(
+                    (np.float32(1.0) - update_coef) * self._total_power[global_direction_index]
+                    + update_coef * total_instantaneous[chunk_snapshot_index],
+                    dtype=np.float32,
+                )
+                self._covariance[global_direction_index] = np.asarray(
+                    (np.float32(1.0) - update_coef) * self._covariance[global_direction_index]
+                    + update_coef * covariance_instantaneous[chunk_snapshot_index],
+                    dtype=np.complex64,
+                )
         self._processed_second_count += 1
 
     def completed_result(self) -> SelectedFrequencyDirectionCovarianceResult:

@@ -80,12 +80,27 @@ def _render_segment(
     seed: int,
     tone_frequency_hz: float | None = None,
     ambient_covariance: NDArray[np.float32] | None = None,
+    array_positions_m: NDArray[np.float32] = ARRAY_POSITIONS_M,
 ) -> NDArray[np.float32]:
-    """scene_rendererで指定方位sourceと独立channel雑音を生成する。"""
+    """scene_rendererで指定方位sourceとchannel雑音を生成する。
 
+    Args:
+        duration_s: 信号長。単位はs。
+        bearings_deg: source方位。単位はdeg。
+        noise: ambient noiseを加える場合はTrue。
+        seed: sourceと雑音の乱数seed。
+        tone_frequency_hz: toneの周波数。Noneでは128--1024 Hz広帯域信号。
+        ambient_covariance: 空間雑音共分散。shapeは`[n_ch,n_ch]`。
+        array_positions_m: 受波器座標。shapeは`[n_ch,3]`、単位はm。
+
+    Returns:
+        実数受波信号。shapeは`[n_ch,duration_s*fs]`。
+    """
+
+    positions = np.asarray(array_positions_m, dtype=np.float32)
     receiver = Receiver(
         trajectory=StaticPose(position_world=[0.0, 0.0, 0.0], heading_deg=0.0),
-        array=CoordinateArray(ARRAY_POSITIONS_M),
+        array=CoordinateArray(positions),
     )
     sources = []
     for source_index, bearing_deg in enumerate(bearings_deg):
@@ -117,7 +132,7 @@ def _render_segment(
                 BandLimitedNoiseSpectrum(0.0, FS_HZ / 2.0),
                 NOISE_LEVEL_DB_RE_INPUT_RMS_PER_SQRT_HZ,
                 covariance=(
-                    np.eye(64, dtype=np.float32)
+                    np.eye(positions.shape[0], dtype=np.float32)
                     if ambient_covariance is None
                     else np.asarray(ambient_covariance, dtype=np.float32)
                 ),

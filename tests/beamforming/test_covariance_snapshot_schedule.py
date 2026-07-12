@@ -60,9 +60,17 @@ def test_schedule_assigns_one_overlapping_snapshot_to_each_beam() -> None:
 
     assert schedule.channel_center_samples.shape == (2, 3, 159)
     assert schedule.direction_match_indices.shape == (2, 159)
-    assert schedule.global_direction_azimuth_deg.shape == (317,)
-    np.testing.assert_array_equal(schedule.direction_match_indices[0, [0, -1]], [0, 158])
-    np.testing.assert_array_equal(schedule.direction_match_indices[1, [0, -1]], [316, 158])
+    assert schedule.global_direction_azimuth_deg.shape == (159,)
+    np.testing.assert_array_equal(schedule.direction_match_indices[0, [0, 1, -1]], [0, 0, 79])
+    np.testing.assert_array_equal(schedule.direction_match_indices[1, [0, 1, -1]], [158, 158, 79])
+    for segment_index in (0, 1):
+        unique_indices, observation_counts = np.unique(
+            schedule.direction_match_indices[segment_index],
+            return_counts=True,
+        )
+        assert unique_indices.size == 80
+        assert int(np.count_nonzero(observation_counts == 2)) == 79
+        assert int(np.count_nonzero(observation_counts == 1)) == 1
     np.testing.assert_allclose(
         schedule.global_direction_azimuth_deg[schedule.direction_match_indices],
         schedule.beam_azimuth_deg,
@@ -111,8 +119,8 @@ def test_extract_snapshots_returns_n_ch_by_128_by_159_and_reuses_table() -> None
     np.testing.assert_array_equal(snapshot_chunk, snapshots[:, :, 20:28])
 
 
-def test_direction_matched_accumulator_updates_each_selected_direction_once() -> None:
-    """各秒159方位を1 snapshotずつ更新し、非選択方位を保持する。"""
+def test_direction_matched_accumulator_updates_duplicate_directions_in_observation_order() -> None:
+    """片側方位を2回順次更新し、非選択側は減衰させず保持する。"""
 
     positions_m = np.array([[-1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32)
     schedule = build_two_second_covariance_snapshot_schedule(
@@ -130,15 +138,35 @@ def test_direction_matched_accumulator_updates_each_selected_direction_once() ->
     ).astype(np.float32)
 
     first_update = accumulator.process_one_second(signal)
-    np.testing.assert_array_equal(first_update.global_direction_indices, [0, 1, 2, 3, 4])
+    np.testing.assert_array_equal(first_update.global_direction_indices, [0, 0, 1, 1, 2])
     covariance_after_first = accumulator.direction_covariance.copy()
-    assert bool(np.any(np.abs(covariance_after_first[:5]) > 0.0))
-    assert bool(np.all(covariance_after_first[5:] == 0.0))
+    assert bool(np.any(np.abs(covariance_after_first[:3]) > 0.0))
+    assert bool(np.all(covariance_after_first[3:] == 0.0))
+
+    # global 0へ入るlocal snapshot 0,1の瞬時共分散Q1,Q2を取り出し、
+    # R1=(1-a)R0+aQ1、R2=(1-a)R1+aQ2の2回更新と一致することを直接確認する。
+    snapshots = schedule.extract_snapshot_chunk(
+        signal,
+        azimuth_segment_index=0,
+        beam_start_index=0,
+        beam_stop_index=2,
+    )
+    spectrum = np.asarray(np.fft.rfft(snapshots, axis=1), dtype=np.complex64)
+    spectrum *= schedule.calculate_time_axis_restoration_phase(azimuth_segment_index=0)[:, :, :2]
+    instantaneous = np.asarray(
+        np.einsum("ikb,jkb->bijk", spectrum, spectrum.conj(), optimize=True),
+        dtype=np.complex64,
+    )
+    expected_after_two_updates = np.asarray(
+        np.float32(0.25 * 0.75) * instantaneous[0] + np.float32(0.25) * instantaneous[1],
+        dtype=np.complex64,
+    )
+    np.testing.assert_allclose(covariance_after_first[0], expected_after_two_updates, rtol=1.0e-5, atol=1.0e-4)
 
     second_update = accumulator.process_one_second(signal)
-    np.testing.assert_array_equal(second_update.global_direction_indices, [8, 7, 6, 5, 4])
-    np.testing.assert_array_equal(accumulator.direction_covariance[:4], covariance_after_first[:4])
-    assert bool(np.any(np.abs(accumulator.direction_covariance[5:]) > 0.0))
+    np.testing.assert_array_equal(second_update.global_direction_indices, [4, 4, 3, 3, 2])
+    np.testing.assert_array_equal(accumulator.direction_covariance[:2], covariance_after_first[:2])
+    assert bool(np.any(np.abs(accumulator.direction_covariance[3:]) > 0.0))
     # 共有90度だけは両segmentで同じ積分先へ入り、2回目のEMA更新を受ける。
     assert bool(np.any(accumulator.direction_covariance[4] != covariance_after_first[4]))
 
@@ -173,8 +201,8 @@ def test_maximum_spatial_correlation_excludes_diagonal_and_handles_zero_power() 
     np.testing.assert_array_equal(chunked_result.maximum_correlation, result.maximum_correlation)
 
 
-def test_ten_second_integration_uses_actual_direction_update_rate() -> None:
-    """通常方位0.5回/sと共有90度1回/sで10秒coefを分ける。"""
+def test_integration_time_uses_one_update_per_second_for_all_directions() -> None:
+    """片側方位の2重観測を含め、全方位の平均更新率を1回/sとする。"""
 
     schedule = build_two_second_covariance_snapshot_schedule(
         np.zeros((1, 3), dtype=np.float32),
@@ -188,6 +216,18 @@ def test_ten_second_integration_uses_actual_direction_update_rate() -> None:
         integration_time_seconds=10.0,
     )
 
-    # 通常方位は2秒周期に1回なのでrate=0.5/s、共有90度は2回なのでrate=1/s。
-    np.testing.assert_allclose(accumulator.direction_update_coef[[0, 8]], [2.0 / 6.0, 2.0 / 6.0])
-    np.testing.assert_allclose(accumulator.direction_update_coef[4], 2.0 / 11.0)
+    # 非境界方位は2秒に2回、90度も2秒に2回なので、全てrate=1/sである。
+    np.testing.assert_allclose(accumulator.direction_update_coef, np.full(5, 2.0 / 11.0), rtol=1.0e-6)
+
+    # rate*Tが概算有効snapshot数なので、10/40/128 sはそれぞれ10/40/128観測となる。
+    for integration_time_seconds in (10.0, 40.0, 128.0):
+        integration_accumulator = DirectionMatchedCovarianceAccumulator(
+            schedule,
+            integration_time_seconds=integration_time_seconds,
+        )
+        expected_coef = 2.0 / (1.0 + integration_time_seconds)
+        np.testing.assert_allclose(
+            integration_accumulator.direction_update_coef,
+            np.full(5, expected_coef),
+            rtol=1.0e-6,
+        )

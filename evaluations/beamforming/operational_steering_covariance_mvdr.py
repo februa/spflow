@@ -56,6 +56,9 @@ TARGET_AZIMUTH_DEG = 40.0
 INTERFERER_AZIMUTH_DEG = 75.0
 NOISE_LEVEL_DB_RE_INPUT_RMS_PER_SQRT_HZ = -32.0
 DIAGONAL_LOADING = 1.0e-2
+MAXIMUM_ACCEPTED_PEAK_ERROR_DEG = 3.0
+MAXIMUM_ACCEPTED_OUTSIDE_PEAK_DB = 0.0
+MAXIMUM_ACCEPTED_WHITE_NOISE_GAIN_DB = 0.0
 
 
 def _directions(azimuth_deg: NDArray[np.float32]) -> NDArray[np.float64]:
@@ -232,7 +235,8 @@ def main() -> None:
     fs_hz = float(array_definition.fs_hz)
     sound_speed_m_s = float(array_definition.sound_speed_m_s)
     positions_all = np.asarray(array_definition.positions_m, dtype=np.float32)
-    scan_azimuth_deg = np.linspace(0.0, 180.0, 317, dtype=np.float32)
+    # BL走査軸も保持共分散の159方位に合わせ、317保持との誤認を防ぐ。
+    scan_azimuth_deg = np.linspace(0.0, 180.0, 159, dtype=np.float32)
     records: list[dict[str, Any]] = []
 
     for frequency_hz in EVALUATION_FREQUENCY_HZ:
@@ -388,6 +392,19 @@ def main() -> None:
             metrics, curve = _beam_metrics(beam_weight, steering_scan, scan_azimuth_deg)
             beam_results[name] = metrics
             curves[name] = curve
+        selected_metrics = beam_results["steering_selected_MVDR"]
+        # 共分散がHermitian/PSDでもMVDRの下流応答が安全とは限らない。peak誤差、
+        # mainlobe外peak、白色雑音利得の全条件を満たさない場合は方式2へfallbackする。
+        selection_accepted = bool(
+            selected_metrics["peak_error_deg"] <= MAXIMUM_ACCEPTED_PEAK_ERROR_DEG
+            and selected_metrics["outside_peak_db_re_target"] <= MAXIMUM_ACCEPTED_OUTSIDE_PEAK_DB
+            and selected_metrics["white_noise_gain_db10_re_input_channel"]
+            <= MAXIMUM_ACCEPTED_WHITE_NOISE_GAIN_DB
+        )
+        adopted_source = "steering_selected" if selection_accepted else "method2_fallback"
+        adopted_metrics = (
+            selected_metrics if selection_accepted else beam_results["method2_MVDR"]
+        )
         _write_bl_overlay(
             OUTPUT_DIR / f"bl_{int(round(frequency_hz))}_hz.png",
             scan_azimuth_deg,
@@ -417,6 +434,17 @@ def main() -> None:
                 "selected_covariance_health": _covariance_health(selected_covariance),
                 "method2_covariance_health": _covariance_health(method2_covariance),
                 "beam_metrics": beam_results,
+                "adoption": {
+                    "source": adopted_source,
+                    "steering_selected_accepted": selection_accepted,
+                    "fallback_reason": None if selection_accepted else "MVDR_RESPONSE_CONDITION_FAILED",
+                    "criteria": {
+                        "maximum_peak_error_deg": MAXIMUM_ACCEPTED_PEAK_ERROR_DEG,
+                        "maximum_outside_peak_db_re_target": MAXIMUM_ACCEPTED_OUTSIDE_PEAK_DB,
+                        "maximum_white_noise_gain_db10_re_input_channel": MAXIMUM_ACCEPTED_WHITE_NOISE_GAIN_DB,
+                    },
+                    "adopted_beam_metrics": adopted_metrics,
+                },
                 "configuration_signature": signature,
             }
         )
