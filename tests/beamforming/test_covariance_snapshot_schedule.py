@@ -7,6 +7,7 @@ from spflow.beamforming import (
     DirectionMatchedCovarianceAccumulator,
     build_two_second_covariance_snapshot_schedule,
     calculate_maximum_spatial_correlation_table,
+    relative_arrival_delay,
 )
 
 
@@ -117,6 +118,39 @@ def test_extract_snapshots_returns_n_ch_by_128_by_159_and_reuses_table() -> None
         beam_stop_index=28,
     )
     np.testing.assert_array_equal(snapshot_chunk, snapshots[:, :, 20:28])
+
+
+def test_center_table_preserves_physical_delay_for_long_low_frequency_ula() -> None:
+    """100 Hz向け長大ULAでも、行別scaleせず両端到来遅延を保つ。"""
+
+    # 100 Hz、音速1500 m/sの半波長間隔7.5 mで64chを等間隔配置する。
+    # 開口長472.5 m、エンドファイア両端遅延は315 msである。
+    positions_m = np.zeros((64, 3), dtype=np.float32)
+    positions_m[:, 0] = np.linspace(-236.25, 236.25, 64, dtype=np.float32)
+    schedule = build_two_second_covariance_snapshot_schedule(
+        positions_m,
+        fs_hz=2048.0,
+        sound_speed_m_s=1500.0,
+        snapshot_length_samples=256,
+        beams_per_half=159,
+    )
+    endfire_direction = np.array([[1.0, 0.0, 0.0]], dtype=np.float64)
+    theoretical_delay_s = relative_arrival_delay(
+        positions_m,
+        endfire_direction,
+        sound_speed_m_per_s=1500.0,
+    )[:, 0]
+    endfire_local_indices = np.flatnonzero(schedule.direction_match_indices[0] == 0)
+    for local_index in endfire_local_indices:
+        observed_end_delay_samples = int(
+            schedule.channel_center_samples[0, -1, local_index]
+            - schedule.channel_center_samples[0, 0, local_index]
+        )
+        expected_end_delay_samples = float(
+            (theoretical_delay_s[-1] - theoretical_delay_s[0]) * schedule.fs_hz
+        )
+        # 各中心を個別に整数化するため、両端差の許容誤差は1 sampleとする。
+        assert abs(observed_end_delay_samples - expected_end_delay_samples) <= 1.0
 
 
 def test_direction_matched_accumulator_updates_duplicate_directions_in_observation_order() -> None:

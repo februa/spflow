@@ -708,17 +708,23 @@ def build_two_second_covariance_snapshot_schedule(
     azimuth_rad = np.deg2rad(first_azimuth_deg.astype(np.float64))
     directions = np.stack((np.cos(azimuth_rad), np.sin(azimuth_rad), np.zeros_like(azimuth_rad)), axis=1)
     arrival_delay_s = relative_arrival_delay(positions, directions, sound_speed_m_per_s=sound_speed)
-    progress_s = np.linspace(0.0, 1.0, beam_count, dtype=np.float64)
-    raw_first_centers_s = progress_s[np.newaxis, :] + arrival_delay_s
-    raw_start_s = raw_first_centers_s[:, :1]
-    raw_span_s = raw_first_centers_s[:, -1:] - raw_start_s
-    require(bool(np.all(raw_span_s > 0.0)), "raw center rows must increase from 0 to 90 degrees.")
-
     left_extent = snapshot_length // 2
     right_extent = snapshot_length - left_extent
-    usable_samples = samples_per_second - left_extent - right_extent
-    normalized_progress = (raw_first_centers_s - raw_start_s) / raw_span_s
-    first_centers = np.rint(left_extent + usable_samples * normalized_progress).astype(np.int32)
+    # 全channel共通の基準中心だけを1秒内に配置し、到来遅延tauはscaleせず加える。
+    # channelごとに行を正規化すると、center[i]-center[j]がfs*(tau[i]-tau[j])
+    # と一致せず、長大開口で同一波面の時間区間を切り出せない。
+    minimum_delay_s = float(np.min(arrival_delay_s))
+    maximum_delay_s = float(np.max(arrival_delay_s))
+    base_start_s = left_extent / sample_rate - minimum_delay_s
+    base_stop_s = 1.0 - right_extent / sample_rate - maximum_delay_s
+    require(
+        base_stop_s > base_start_s,
+        "array delay aperture and snapshot length must fit inside one second without scaling delays.",
+    )
+    base_center_s = np.linspace(base_start_s, base_stop_s, beam_count, dtype=np.float64)
+    first_centers = np.rint(sample_rate * (base_center_s[np.newaxis, :] + arrival_delay_s)).astype(
+        np.int32
+    )
     second_centers = np.flip(first_centers, axis=0)
     channel_center_samples = np.stack((first_centers, second_centers), axis=0).astype(np.int32, copy=False)
 
