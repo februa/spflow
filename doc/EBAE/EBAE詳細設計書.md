@@ -764,3 +764,119 @@ D[k]^H v_{S1}[k]
 \]
 
 理想等価性試験では、この相対norm、同一入力に対するcomplex出力最大絶対誤差、RMS誤差を数値床近傍で確認する。その後にFIR化、streaming境界、latencyの実装差を評価する。
+
+### 11.10 整数遅延への線形位相分離とFIR短縮可能性
+
+S1と差分補正枝が数学的に同じ完成出力を持つことは、実装量まで同じであることを意味しない。大きな到来遅延を整数sample delay lineへ分離し、後段FIRには残留小数遅延と適応補正だけを表現させることで、必要FIR tap数を短くできる可能性がある。
+
+#### 遅延の因数分解
+
+channel`m`、待受beam`theta_b`の物理遅延をsample単位で次のように分ける。
+
+\[
+\tau_m(\theta_b)f_s
+=d_{int,m}(\theta_b)+d_{frac,m}(\theta_b)
+\]
+
+ここで`d_int`は整数sample、`d_frac`は丸め規約により概ね`[-0.5,0.5] sample`へ収める。周波数応答の線形位相も次の積へ分けられる。
+
+\[
+e^{-j2\pi f\tau_m}
+=e^{-j2\pi f d_{int,m}/f_s}
+e^{-j2\pi f d_{frac,m}/f_s}
+\]
+
+第1項は整数delay lineで厳密に実装できる。第2項だけをFIRで近似すれば、FIRはアレイ開口全体の大きな遅延差ではなく、1 sample未満の残留小数遅延を表現すればよい。
+
+したがって、整数遅延へ大きな線形位相を担当させることで、FIR長を短くする設計は成立し得る。これはS1の主要な実装上の意味であり、S0と完成出力が同値であることと矛盾しない。
+
+#### S1座標の残留適応重み
+
+元入力座標の完成適応重みを`w_adaptive[k]`とする。整数遅延位相行列を`D[k]`とすると、整数遅延後座標の重みは次である。
+
+\[
+v_{residual}[k]=D[k]w_{adaptive}[k]
+\]
+
+`D`が`w_adaptive`に含まれる大きなchannel別線形位相を取り除けば、`v_residual[k]`の周波数応答は`w_adaptive[k]`より緩やかになり、そのIFFT energyが短いtap範囲へ集中する可能性がある。実時間処理は次となる。
+
+\[
+X_D[k]=D[k]X[k]
+\]
+
+\[
+Y[k]=v_{residual}[k]^H X_D[k]
+\]
+
+この構造では、長い幾何遅延はdelay lineのbuffer長として保持し、乗算加算を必要とするFIR tap数だけを短縮できる。総algorithmic latencyや必要履歴長が消えるわけではない。
+
+#### 差分補正枝で同じ短縮を得る条件
+
+元入力座標の固定主枝と完成適応重みを、同じ整数遅延因子で次のように表す。
+
+\[
+w_{fixed}[k]=D[k]^H v_{fixed}[k]
+\]
+
+\[
+w_{adaptive}[k]=D[k]^H v_{adaptive}[k]
+\]
+
+元入力座標の差分重みは次である。
+
+\[
+q_{original}[k]
+=w_{fixed}[k]-w_{adaptive}[k]
+=D[k]^H\left(v_{fixed}[k]-v_{adaptive}[k]\right)
+\]
+
+整数遅延後座標の残留差分を次とする。
+
+\[
+q_{residual}[k]=v_{fixed}[k]-v_{adaptive}[k]
+\]
+
+差分補正枝を元入力へ直接適用する場合、`q_original`のFIRはchannel別整数遅延を含むため、tap配置または別delay lineでその遅延開口を表現する必要がある。一方、固定主枝と差分補正枝で同じ整数delay line出力`X_D`を共有し、`q_residual`だけをFIR化すれば、補正FIRも大きな整数遅延を持たずに済む。
+
+\[
+Y[k]
+=v_{fixed}[k]^H X_D[k]
+-q_{residual}[k]^H X_D[k]
+=v_{adaptive}[k]^H X_D[k]
+\]
+
+したがって、FIR短縮の本質は「S1という名称」や「差分補正枝の有無」ではなく、主枝と補正枝の両方から共通の整数遅延因子`D`を明示的に括り出すことである。
+
+#### FIR長が短くなる保証はない
+
+整数遅延で除去できるのは、主として幾何遅延に対応するchannel別線形位相である。必要FIR長は残った周波数応答の時間支持で決まるため、次の要因は整数遅延後も残る。
+
+1. 小数遅延近似に要求する帯域端誤差とstopband条件。
+2. MVDRまたはEBAE適応重みの周波数方向の急峻な変化。
+3. narrow null、共分散条件数、loadingによるbin間weight変動。
+4. EBAEのN/E AIC信号数、MUSIC対応beam、`delta_i`がbin間で切り替わる不連続。
+5. real FIRを要求する場合の共役対称性、因果化shift、窓による広がり。
+6. channel shadingまたはactive channelが周波数で切り替わる不連続。
+
+特に現行EBAEは各FFT binを完全に独立に処理するため、隣接binで`Ns`または対応方位が変わると`v_residual[k]`が不連続になり、IFFT energyが長いtapへ広がり得る。整数遅延を入れただけで短いFIRを保証してはならない。
+
+#### FIR長の決定方法
+
+FIR長は整数遅延前後のweight IFFTを実測して決める。各channel・beamについて、因果化前のimpulse response energyを計算し、最短の連続tap区間`I_L`に含まれるenergy比を次で記録する。
+
+\[
+\eta_L
+=\frac{\sum_{n\in I_L}|h[n]|^2}
+{\sum_n|h[n]|^2}
+\]
+
+少なくとも次をtap長sweepで比較する。
+
+- 元入力座標の直接適応FIR
+- 元入力座標の差分補正FIR`q_original`
+- 整数遅延後座標の残留適応FIR`v_residual`
+- 整数遅延後座標の残留差分FIR`q_residual`
+
+各tap長で、周波数応答relative error、待受応答`w^H a`、target-only level差`dB re input RMS`、interferer低減`dB re fixed output`、BL、波形RMS誤差、group delay、runtimeを確認する。短いtapでtarget保持またはEBAEの固有mode除外効果が崩れる場合、そのtap長は採用しない。
+
+現時点の結論は「整数遅延を前段へ置けばFIRを短くできる可能性がある」であり、「必ず所定tap数まで短縮できる」ではない。正式なtap数は、整数遅延因数分解後の残留weightについて上記sweepを実施して決定する。
