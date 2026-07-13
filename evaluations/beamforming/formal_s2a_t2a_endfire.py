@@ -51,6 +51,7 @@ RANDOM_SEED = 20260713
 SOURCE_RMS = 1.0
 NOISE_RMS_PER_CHANNEL = 0.1
 AIC_SNAPSHOT_COUNT = N_CHANNEL * N_CHANNEL
+LOW_INPUT_BAND_SNR_DB = 0.0
 
 
 @dataclass(frozen=True)
@@ -823,6 +824,122 @@ def run_evaluation(output_dir: Path = OUTPUT_DIR) -> None:
     bl_figure.savefig(output_dir / "bl_target_noise_components.png", dpi=160)
     plt.close(bl_figure)
 
+    # 現noiseはfull-band RMSで定義されるため、占有帯域へ積分した入力SNRを明示する。
+    occupied_bandwidth_hz = OCCUPIED_BAND_HZ[1] - OCCUPIED_BAND_HZ[0]
+    high_input_band_noise_power = (
+        NOISE_RMS_PER_CHANNEL**2 * occupied_bandwidth_hz / (FS_HZ / 2.0)
+    )
+    high_input_band_snr_db = 10.0 * np.log10(
+        SOURCE_RMS**2 / high_input_band_noise_power
+    )
+    low_noise_power_scale = 10.0 ** (
+        (high_input_band_snr_db - LOW_INPUT_BAND_SNR_DB) / 10.0
+    )
+    mixed_rows: list[dict[str, Any]] = []
+    mixed_arrays: dict[str, Any] = {"azimuth_deg": AZIMUTH_DEG}
+    mixed_records: dict[str, list[tuple[int, int, int, FloatArray]]] = {
+        "high": [],
+        "low": [],
+    }
+    for scenario_index, method_index, tap_count, target_bl, noise_bl in bl_records:
+        target_power = 10.0 ** (target_bl / 10.0)
+        high_noise_power = 10.0 ** (noise_bl / 10.0)
+        for condition_id, input_snr_db, noise_power in (
+            ("high", high_input_band_snr_db, high_noise_power),
+            ("low", LOW_INPUT_BAND_SNR_DB, high_noise_power * low_noise_power_scale),
+        ):
+            mixed_bl = 10.0 * np.log10(
+                np.maximum(target_power + noise_power, 1.0e-12)
+            )
+            mixed_records[condition_id].append(
+                (scenario_index, method_index, tap_count, mixed_bl)
+            )
+            peak_index = int(np.argmax(mixed_bl))
+            mixed_rows.append(
+                {
+                    "condition": condition_id,
+                    "input_band_snr_db": float(input_snr_db),
+                    "target_deg": TARGET_AZIMUTH_DEG[scenario_index],
+                    "method": METHOD_IDS[method_index],
+                    "tap_count": tap_count,
+                    "mixed_peak_deg": float(AZIMUTH_DEG[peak_index]),
+                    "mixed_peak_error_deg": float(
+                        abs(AZIMUTH_DEG[peak_index] - TARGET_AZIMUTH_DEG[scenario_index])
+                    ),
+                    "mixed_target_level_db_re_input_rms": float(
+                        mixed_bl[
+                            int(
+                                np.argmin(
+                                    np.abs(
+                                        AZIMUTH_DEG - TARGET_AZIMUTH_DEG[scenario_index]
+                                    )
+                                )
+                            )
+                        ]
+                    ),
+                }
+            )
+            key = (
+                f"{condition_id}_target_{int(TARGET_AZIMUTH_DEG[scenario_index])}_"
+                f"{METHOD_IDS[method_index]}_{tap_count}tap_db_re_input_rms"
+            )
+            mixed_arrays[key] = mixed_bl
+    _write_rows(output_dir / "mixed_bl_metrics.csv", mixed_rows)
+    np.savez_compressed(output_dir / "mixed_bl_arrays.npz", **mixed_arrays)
+
+    for condition_id, title, input_snr_db in (
+        ("high", "High-SNR mixed BL", high_input_band_snr_db),
+        ("low", "Low-SNR mixed BL", LOW_INPUT_BAND_SNR_DB),
+    ):
+        mixed_figure, mixed_axes = plt.subplots(
+            2, 2, figsize=(14.0, 8.0), sharex=True, sharey=True
+        )
+        condition_levels = np.concatenate(
+            [record[3] for record in mixed_records[condition_id]]
+        )
+        mixed_lower = float(
+            np.floor((np.min(condition_levels) - 5.0) / 10.0) * 10.0
+        )
+        mixed_upper = float(
+            np.ceil((np.max(condition_levels) + 3.0) / 5.0) * 5.0
+        )
+        for scenario_index, method_index, tap_count, mixed_bl in mixed_records[condition_id]:
+            axis = mixed_axes[scenario_index, method_index]
+            axis.plot(AZIMUTH_DEG, mixed_bl, label=f"{tap_count} tap")
+        for scenario_index in range(len(TARGET_AZIMUTH_DEG)):
+            for method_index in range(len(METHOD_IDS)):
+                axis = mixed_axes[scenario_index, method_index]
+                axis.axvline(
+                    TARGET_AZIMUTH_DEG[scenario_index],
+                    color="black",
+                    linestyle="--",
+                    linewidth=1.0,
+                )
+                axis.set(
+                    title=(
+                        f"{METHOD_IDS[method_index]}, target "
+                        f"{TARGET_AZIMUTH_DEG[scenario_index]:g} deg"
+                    ),
+                    ylabel="Mixed RMS Level [dB re input RMS]",
+                    ylim=(mixed_lower, mixed_upper),
+                )
+                axis.grid(alpha=0.25)
+                axis.legend(fontsize=8)
+        for axis in mixed_axes[-1]:
+            axis.set_xlabel("Waiting-beam azimuth [deg]")
+        # BL単独でも狭帯域試験と誤読されないよう、信号種別と占有帯域をタイトルへ残す。
+        mixed_figure.suptitle(
+            f"{title}: broadband {OCCUPIED_BAND_HZ[0]:g}--"
+            f"{OCCUPIED_BAND_HZ[1]:g} Hz, input band SNR {input_snr_db:.2f} dB"
+        )
+        mixed_figure.tight_layout()
+        mixed_figure.savefig(
+            output_dir / f"bl_broadband_mixed_{condition_id}_snr.png",
+            dpi=160,
+            facecolor="white",
+        )
+        plt.close(mixed_figure)
+
     frequency_figure, frequency_axes = plt.subplots(
         2, 2, figsize=(14.0, 8.0), sharex=True, sharey=True
     )
@@ -873,6 +990,8 @@ def run_evaluation(output_dir: Path = OUTPUT_DIR) -> None:
         "N/E AICはL=M^2=4096を使用する。\n\n"
         "S2a/T2aとも実整数delay buffer、32--2048 tap残差FIR、257 sample blockを通す。"
         "target-only、noise-only、target+noiseを分離し、noise-only BLを物理noise floorとして描く。\n\n"
+        "主表示は約30.28 dB入力帯域SNRのmixed BLとし、同じ完成weightへ0 dB相当noiseを"
+        "与えた固定weight stressを別図にする。低SNRでの重み再推定試験とは区別する。\n\n"
         "合否観点はMUSIC peak誤差2 deg以下、有限BL peak誤差2 deg以下、target level誤差0.5 dB以下、"
         "帯域内端2 Hzを除く振幅誤差1 dB以下、波形相関0.99以上、energy包含率0.98以上、"
         "block/monolithic最大差1e-6以下とする。AIC信号数は真値1との一致を独立判定する。\n\n"
@@ -883,6 +1002,8 @@ def run_evaluation(output_dir: Path = OUTPUT_DIR) -> None:
         "- `abc_arrays.npz`: 図と監査用配列\n"
         "- `abc_summary.png`: A--C概要\n"
         "- `bl_target_noise_components.png`: target/noise分離BL\n"
+        "- `bl_broadband_mixed_high_snr.png`: 40--88 Hz広帯域・高SNRの主表示mixed BL\n"
+        "- `bl_broadband_mixed_low_snr.png`: 40--88 Hz広帯域・0 dB入力帯域SNRのmixed BL\n"
         "- `frequency_response.png`: 帯域内振幅応答\n"
         "- `waveform_block_boundary.png`: 一括/streaming境界比較\n",
         encoding="utf-8",
