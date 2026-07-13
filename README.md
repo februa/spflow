@@ -31,6 +31,27 @@ If you want to modify `spflow` while developing another project, use editable in
 pip install -e .
 ```
 
+## API Documentation
+
+実装済み機能は、リポジトリ内の
+[`doc/SpFlow/実装済み機能一覧.md`](doc/SpFlow/実装済み機能一覧.md) から責務と import パスを検索できる。
+この一覧は Python の module docstring、公開クラス、公開関数、`__all__` から自動生成する。
+
+型、引数、戻り値、docstring を含む HTML API リファレンスを生成する場合は、
+ドキュメント用の追加依存を導入して生成ツールを実行する。
+
+```bash
+pip install -e ".[docs]"
+python tools/build_api_docs.py
+```
+
+HTML は `build/api-docs/` に生成される。実装変更後に、コミット済みの機能一覧が
+最新であることだけを検査する場合は次を実行する。
+
+```bash
+python tools/build_api_docs.py --check
+```
+
 ## Beamforming Evaluation Environment
 
 Beamforming examples that render figures or use the vendored scene renderer need the optional development tools and vendor package.

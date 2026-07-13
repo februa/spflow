@@ -9,3 +9,4 @@ pytest-cache-files-*/
 *.egg-info/
 artifacts/
 artifacts.zip
+build/

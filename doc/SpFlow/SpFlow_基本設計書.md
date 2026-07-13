@@ -1050,7 +1050,25 @@ Option:
 
 ---
 
-## 17. 今後の拡張候補
+## 17. 実装済み API の参照
+
+部品数の増加に対して、利用者が既存機能を再実装せずに発見できるよう、
+次の二つの出力を同じ生成ツールから作る。
+
+- `doc/SpFlow/実装済み機能一覧.md`: module の責務、import パス、公開クラス・関数を検索するための索引
+- `build/api-docs/`: 型、引数、戻り値、docstring を参照するための pdoc HTML
+
+一覧の情報源は Python の module docstring、公開定義、`__all__` とし、実装と別の台帳を
+手作業で維持しない。生成は `python tools/build_api_docs.py`、一覧の更新漏れの検査は
+`python tools/build_api_docs.py --check` で行う。HTML は閲覧用の生成物であるため Git 管理せず、
+レビュー可能な Markdown 一覧だけを Git 管理する。
+
+この仕組みは API を独自モデルへ登録させるものではない。通常の Python の docstring と型注釈を
+情報源とすることで、ドキュメント生成のための規約が信号処理コードの構造を支配しないようにする。
+
+---
+
+## 18. 今後の拡張候補
 
 初期実装では含めないが、将来的に以下を検討できる。
 
@@ -1061,7 +1079,6 @@ Option:
 - FrameBuffer の複数軸対応強化
 - DoubleBufferCallback の辞書型 work 対応
 - Probe ユーティリティ
-- Markdown ドキュメント生成
 ```
 
 ただし、初期実装では機能を増やしすぎず、以下の5点に絞る。
