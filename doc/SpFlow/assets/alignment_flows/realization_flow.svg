@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="720" viewBox="0 0 1600 720">
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#2E5D7B"/></marker></defs>
+<rect width="1600" height="720" fill="white"/>
+<text x="800" y="48" text-anchor="middle" font-family="Yu Gothic" font-size="30" font-weight="bold" fill="#173A55">a/b実現構造フロー</text>
+<rect x="50" y="270" width="280" height="140" rx="16" fill="#E8EEF5" stroke="#426B8A" stroke-width="3"/>
+<foreignObject x="62" y="280" width="256" height="120"><div xmlns="http://www.w3.org/1999/xhtml" style="font-family:Yu Gothic;font-size:23px;text-align:center;color:#132638;display:flex;align-items:center;justify-content:center;height:100%;">整数遅延後入力 X_D
+完成残差重み v_C</div></foreignObject>
+<rect x="480" y="100" width="340" height="130" rx="16" fill="#EAF4EA" stroke="#426B8A" stroke-width="3"/>
+<foreignObject x="492" y="110" width="316" height="110"><div xmlns="http://www.w3.org/1999/xhtml" style="font-family:Yu Gothic;font-size:23px;text-align:center;color:#132638;display:flex;align-items:center;justify-content:center;height:100%;">2a: 残差完成重みを
+1枝で直接FIR化</div></foreignObject>
+<rect x="480" y="430" width="340" height="130" rx="16" fill="#FFF4CE" stroke="#426B8A" stroke-width="3"/>
+<foreignObject x="492" y="440" width="316" height="110"><div xmlns="http://www.w3.org/1999/xhtml" style="font-family:Yu Gothic;font-size:23px;text-align:center;color:#132638;display:flex;align-items:center;justify-content:center;height:100%;">差分重み q_C=f-v_C
+固定主枝と差分枝</div></foreignObject>
+<rect x="980" y="100" width="300" height="130" rx="16" fill="#E8EEF5" stroke="#426B8A" stroke-width="3"/>
+<foreignObject x="992" y="110" width="276" height="110"><div xmlns="http://www.w3.org/1999/xhtml" style="font-family:Yu Gothic;font-size:23px;text-align:center;color:#132638;display:flex;align-items:center;justify-content:center;height:100%;">Y_2a=v_C^H X_D</div></foreignObject>
+<rect x="980" y="430" width="300" height="130" rx="16" fill="#FCE8E6" stroke="#426B8A" stroke-width="3"/>
+<foreignObject x="992" y="440" width="276" height="110"><div xmlns="http://www.w3.org/1999/xhtml" style="font-family:Yu Gothic;font-size:23px;text-align:center;color:#132638;display:flex;align-items:center;justify-content:center;height:100%;">主枝出力－差分枝出力</div></foreignObject>
+<rect x="1400" y="270" width="180" height="140" rx="16" fill="#EAF4EA" stroke="#426B8A" stroke-width="3"/>
+<foreignObject x="1412" y="280" width="156" height="120"><div xmlns="http://www.w3.org/1999/xhtml" style="font-family:Yu Gothic;font-size:23px;text-align:center;color:#132638;display:flex;align-items:center;justify-content:center;height:100%;">Y_2a = Y_2b</div></foreignObject>
+<line x1="330" y1="310" x2="480" y2="165" stroke="#2E5D7B" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="405" y="221" text-anchor="middle" font-family="Yu Gothic" font-size="22" font-weight="bold" fill="#2E5D7B">a</text>
+<line x1="330" y1="370" x2="480" y2="495" stroke="#2E5D7B" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="405" y="416" text-anchor="middle" font-family="Yu Gothic" font-size="22" font-weight="bold" fill="#2E5D7B">b</text>
+<line x1="820" y1="165" x2="980" y2="165" stroke="#2E5D7B" stroke-width="4" marker-end="url(#arrow)"/>
+<line x1="820" y1="495" x2="980" y2="495" stroke="#2E5D7B" stroke-width="4" marker-end="url(#arrow)"/>
+<line x1="1280" y1="165" x2="1400" y2="315" stroke="#2E5D7B" stroke-width="4" marker-end="url(#arrow)"/>
+<line x1="1280" y1="495" x2="1400" y2="365" stroke="#2E5D7B" stroke-width="4" marker-end="url(#arrow)"/>
+</svg>

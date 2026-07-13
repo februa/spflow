@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="720" viewBox="0 0 1600 720">
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#2E5D7B"/></marker></defs>
+<rect width="1600" height="720" fill="white"/>
+<text x="800" y="48" text-anchor="middle" font-family="Yu Gothic" font-size="30" font-weight="bold" fill="#173A55">1/2 FIR実現座標フロー</text>
+<rect x="50" y="270" width="250" height="140" rx="16" fill="#E8EEF5" stroke="#426B8A" stroke-width="3"/>
+<foreignObject x="62" y="280" width="226" height="120"><div xmlns="http://www.w3.org/1999/xhtml" style="font-family:Yu Gothic;font-size:23px;text-align:center;color:#132638;display:flex;align-items:center;justify-content:center;height:100%;">完成共分散 R_C
+steering a</div></foreignObject>
+<rect x="430" y="100" width="330" height="130" rx="16" fill="#F2F4F7" stroke="#426B8A" stroke-width="3"/>
+<foreignObject x="442" y="110" width="306" height="110"><div xmlns="http://www.w3.org/1999/xhtml" style="font-family:Yu Gothic;font-size:23px;text-align:center;color:#132638;display:flex;align-items:center;justify-content:center;height:100%;">方式1
+元入力座標重み w_C</div></foreignObject>
+<rect x="430" y="440" width="330" height="130" rx="16" fill="#EAF4EA" stroke="#426B8A" stroke-width="3"/>
+<foreignObject x="442" y="450" width="306" height="110"><div xmlns="http://www.w3.org/1999/xhtml" style="font-family:Yu Gothic;font-size:23px;text-align:center;color:#132638;display:flex;align-items:center;justify-content:center;height:100%;">方式2
+R_C2=D R_C D^H
+a_C2=D a</div></foreignObject>
+<rect x="900" y="100" width="340" height="130" rx="16" fill="#E8EEF5" stroke="#426B8A" stroke-width="3"/>
+<foreignObject x="912" y="110" width="316" height="110"><div xmlns="http://www.w3.org/1999/xhtml" style="font-family:Yu Gothic;font-size:23px;text-align:center;color:#132638;display:flex;align-items:center;justify-content:center;height:100%;">元入力 X に直接FIR
+Y=w_C^H X</div></foreignObject>
+<rect x="900" y="440" width="340" height="130" rx="16" fill="#FFF4CE" stroke="#426B8A" stroke-width="3"/>
+<foreignObject x="912" y="450" width="316" height="110"><div xmlns="http://www.w3.org/1999/xhtml" style="font-family:Yu Gothic;font-size:23px;text-align:center;color:#132638;display:flex;align-items:center;justify-content:center;height:100%;">整数遅延入力 X_D=D X
+残差重み v_C</div></foreignObject>
+<rect x="1370" y="270" width="200" height="140" rx="16" fill="#FCE8E6" stroke="#426B8A" stroke-width="3"/>
+<foreignObject x="1382" y="280" width="176" height="120"><div xmlns="http://www.w3.org/1999/xhtml" style="font-family:Yu Gothic;font-size:23px;text-align:center;color:#132638;display:flex;align-items:center;justify-content:center;height:100%;">同じ完成出力
+D^H v_C=w_C</div></foreignObject>
+<line x1="300" y1="310" x2="430" y2="165" stroke="#2E5D7B" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="365" y="221" text-anchor="middle" font-family="Yu Gothic" font-size="22" font-weight="bold" fill="#2E5D7B">1</text>
+<line x1="300" y1="370" x2="430" y2="505" stroke="#2E5D7B" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="365" y="421" text-anchor="middle" font-family="Yu Gothic" font-size="22" font-weight="bold" fill="#2E5D7B">2</text>
+<line x1="760" y1="165" x2="900" y2="165" stroke="#2E5D7B" stroke-width="4" marker-end="url(#arrow)"/>
+<line x1="760" y1="505" x2="900" y2="505" stroke="#2E5D7B" stroke-width="4" marker-end="url(#arrow)"/>
+<line x1="1240" y1="165" x2="1370" y2="315" stroke="#2E5D7B" stroke-width="4" marker-end="url(#arrow)"/>
+<line x1="1240" y1="505" x2="1370" y2="365" stroke="#2E5D7B" stroke-width="4" marker-end="url(#arrow)"/>
+</svg>

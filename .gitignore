@@ -1,5 +1,8 @@
 __pycache__/
 .DS_Store
+*.swp
+~$*.docx
+tmp/
 *.py[cod]
 .pytest_cache/
 pytest-cache-files-*/

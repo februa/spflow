@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="720" viewBox="0 0 1600 720">
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#2E5D7B"/></marker></defs>
+<rect width="1600" height="720" fill="white"/>
+<text x="800" y="48" text-anchor="middle" font-family="Yu Gothic" font-size="30" font-weight="bold" fill="#173A55">整相方式を構成する3軸と重み設計部品</text>
+<rect x="40" y="250" width="230" height="140" rx="16" fill="#E8EEF5" stroke="#426B8A" stroke-width="3"/>
+<foreignObject x="52" y="260" width="206" height="120"><div xmlns="http://www.w3.org/1999/xhtml" style="font-family:Yu Gothic;font-size:23px;text-align:center;color:#132638;display:flex;align-items:center;justify-content:center;height:100%;">整数遅延前センサ入力 X</div></foreignObject>
+<rect x="330" y="100" width="240" height="120" rx="16" fill="#F2F4F7" stroke="#426B8A" stroke-width="3"/>
+<foreignObject x="342" y="110" width="216" height="100"><div xmlns="http://www.w3.org/1999/xhtml" style="font-family:Yu Gothic;font-size:23px;text-align:center;color:#132638;display:flex;align-items:center;justify-content:center;height:100%;">S共分散
+同一時刻block</div></foreignObject>
+<rect x="330" y="420" width="240" height="120" rx="16" fill="#EAF4EA" stroke="#426B8A" stroke-width="3"/>
+<foreignObject x="342" y="430" width="216" height="100"><div xmlns="http://www.w3.org/1999/xhtml" style="font-family:Yu Gothic;font-size:23px;text-align:center;color:#132638;display:flex;align-items:center;justify-content:center;height:100%;">T共分散
+候補方位別整合</div></foreignObject>
+<rect x="650" y="250" width="250" height="140" rx="16" fill="#FFF4CE" stroke="#426B8A" stroke-width="3"/>
+<foreignObject x="662" y="260" width="226" height="120"><div xmlns="http://www.w3.org/1999/xhtml" style="font-family:Yu Gothic;font-size:23px;text-align:center;color:#132638;display:flex;align-items:center;justify-content:center;height:100%;">EBAE または MVDR
+完成重み設計</div></foreignObject>
+<rect x="980" y="80" width="280" height="120" rx="16" fill="#E8EEF5" stroke="#426B8A" stroke-width="3"/>
+<foreignObject x="992" y="90" width="256" height="100"><div xmlns="http://www.w3.org/1999/xhtml" style="font-family:Yu Gothic;font-size:23px;text-align:center;color:#132638;display:flex;align-items:center;justify-content:center;height:100%;">S1 / T1
+元入力座標の直接FIR</div></foreignObject>
+<rect x="980" y="290" width="280" height="120" rx="16" fill="#F2F4F7" stroke="#426B8A" stroke-width="3"/>
+<foreignObject x="992" y="300" width="256" height="100"><div xmlns="http://www.w3.org/1999/xhtml" style="font-family:Yu Gothic;font-size:23px;text-align:center;color:#132638;display:flex;align-items:center;justify-content:center;height:100%;">整数遅延位相 D で
+残差座標へ回転</div></foreignObject>
+<rect x="1320" y="210" width="240" height="120" rx="16" fill="#EAF4EA" stroke="#426B8A" stroke-width="3"/>
+<foreignObject x="1332" y="220" width="216" height="100"><div xmlns="http://www.w3.org/1999/xhtml" style="font-family:Yu Gothic;font-size:23px;text-align:center;color:#132638;display:flex;align-items:center;justify-content:center;height:100%;">S2a / T2a
+残差直接FIR</div></foreignObject>
+<rect x="1320" y="430" width="240" height="120" rx="16" fill="#FCE8E6" stroke="#426B8A" stroke-width="3"/>
+<foreignObject x="1332" y="440" width="216" height="100"><div xmlns="http://www.w3.org/1999/xhtml" style="font-family:Yu Gothic;font-size:23px;text-align:center;color:#132638;display:flex;align-items:center;justify-content:center;height:100%;">S2b / T2b
+主枝－差分枝</div></foreignObject>
+<line x1="270" y1="300" x2="330" y2="160" stroke="#2E5D7B" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="300" y="214" text-anchor="middle" font-family="Yu Gothic" font-size="22" font-weight="bold" fill="#2E5D7B">S</text>
+<line x1="270" y1="340" x2="330" y2="480" stroke="#2E5D7B" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="300" y="394" text-anchor="middle" font-family="Yu Gothic" font-size="22" font-weight="bold" fill="#2E5D7B">T</text>
+<line x1="570" y1="160" x2="650" y2="300" stroke="#2E5D7B" stroke-width="4" marker-end="url(#arrow)"/>
+<line x1="570" y1="480" x2="650" y2="340" stroke="#2E5D7B" stroke-width="4" marker-end="url(#arrow)"/>
+<line x1="900" y1="300" x2="980" y2="140" stroke="#2E5D7B" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="940" y="204" text-anchor="middle" font-family="Yu Gothic" font-size="22" font-weight="bold" fill="#2E5D7B">1</text>
+<line x1="900" y1="350" x2="980" y2="350" stroke="#2E5D7B" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="940" y="334" text-anchor="middle" font-family="Yu Gothic" font-size="22" font-weight="bold" fill="#2E5D7B">2</text>
+<line x1="1260" y1="350" x2="1320" y2="270" stroke="#2E5D7B" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="1290" y="294" text-anchor="middle" font-family="Yu Gothic" font-size="22" font-weight="bold" fill="#2E5D7B">a</text>
+<line x1="1260" y1="370" x2="1320" y2="490" stroke="#2E5D7B" stroke-width="4" marker-end="url(#arrow)"/>
+<text x="1290" y="414" text-anchor="middle" font-family="Yu Gothic" font-size="22" font-weight="bold" fill="#2E5D7B">b</text>
+</svg>

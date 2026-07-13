@@ -18,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "latex2mathml>=3.78",
   "matplotlib>=3.7",
   "pyright>=1.1.380",
   "pytest>=8.0",
@@ -47,4 +48,3 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
-
