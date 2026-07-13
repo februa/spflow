@@ -53,6 +53,8 @@ Use this skill to choose and document evaluation criteria for beamforming and SL
    - A uniform finite ULA has a Dirichlet-type array factor, approximating sinc for many sensors. Its first sidelobe is near `-13 dB re mainlobe peak`; do not require an exact sinc curve.
    - Grating-lobe onset is governed primarily by sensor spacing relative to wavelength and steering direction. Aperture length primarily controls mainlobe width and null spacing.
 
+14. Before running or interpreting a BL sweep, calculate deterministic array-geometry predictions from the declared sensor positions, frequency, and steering direction. For a ULA, solve `d(cos(theta_g)-cos(theta_0))=m lambda` over the visible region. Record and draw predicted grating-lobe directions; for broadband input record the frequency-dependent direction range. Classify observed peaks as target/mainlobe, predicted spatial alias, or unexplained implementation/evaluation artifact before attributing them to FIR truncation or an adaptive method. If FIR truncation lowers the true target until a pre-existing grating lobe becomes the global maximum, report target loss and peak-order reversal separately; do not say that truncation created the grating lobe.
+
 ## spflow-Specific Hooks
 
 When working in the `spflow` repository:

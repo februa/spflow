@@ -96,6 +96,23 @@ Use the mixed curve to judge operational source visibility only after target-onl
 
 For a ULA, grating-lobe existence is governed primarily by spacing-to-wavelength ratio `d/lambda`, steering direction, and visible direction-cosine range. Aperture length `D` primarily determines mainlobe width and null spacing. When a grating-lobe candidate is detected, compare its direction with the spatial phase-alias condition; do not explain it from aperture length alone.
 
+Perform this check before inspecting the computed BL, not only after an unexpected peak appears. For steering direction `theta_0`, solve the ULA alias equation
+
+```text
+d * (cos(theta_g) - cos(theta_0)) = m * lambda
+```
+
+for every nonzero integer `m` whose `cos(theta_g)` lies in `[-1, 1]`. Record the predicted `theta_g` values in scenario metadata and draw them on narrowband BL figures. For broadband input, solve the equation across occupied frequencies and record or shade the resulting direction ranges; broadband power integration may smear a frequency-dependent alias but does not make the array unaliased.
+
+Classify every relevant observed peak into one of these roles before diagnosing the method:
+
+- `target_mainlobe`: consistent with the source direction and expected beam-grid resolution,
+- `predicted_grating_lobe`: consistent with a geometry/frequency prediction,
+- `sidelobe`: consistent with the finite-aperture reference pattern,
+- `unexplained_artifact`: inconsistent with all declared physical predictions and therefore a candidate FIR, sign, conjugation, normalization, boundary, or evaluation error.
+
+When finite-length FIR realization suppresses the target enough that an already predicted grating lobe becomes the global maximum, report two separate observations: target-level loss caused by FIR realization, and peak-order reversal caused by the pre-existing spatial alias. Do not state that FIR truncation generated the grating lobe.
+
 ## dB Reference Rules
 
 - Never write dB as if it were a standalone physical unit.
