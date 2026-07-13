@@ -15,6 +15,22 @@ from spflow.simulation import (
     approximate_frequency_weights_with_fir,
     design_alignment_weights,
 )
+from spflow.simulation.alignment_config import AlignmentSimulationConfig as DirectConfig
+from spflow.simulation.alignment_weight_design import (
+    design_alignment_weights as direct_design_alignment_weights,
+)
+from spflow.simulation.integer_delay import StatefulIntegerDelay as DirectIntegerDelay
+from spflow.simulation.signal_block import SignalBlock as DirectSignalBlock
+from spflow.simulation.versioned_fir import VersionedCausalFIR as DirectVersionedFIR
+
+
+def test_responsibility_modules_and_convenience_exports_are_identical() -> None:
+    """責務別moduleと便利な一括importが同じ公開部品を参照することを確認する。"""
+    assert AlignmentSimulationConfig is DirectConfig
+    assert design_alignment_weights is direct_design_alignment_weights
+    assert SignalBlock is DirectSignalBlock
+    assert StatefulIntegerDelay is DirectIntegerDelay
+    assert VersionedCausalFIR is DirectVersionedFIR
 
 
 @pytest.mark.parametrize(
