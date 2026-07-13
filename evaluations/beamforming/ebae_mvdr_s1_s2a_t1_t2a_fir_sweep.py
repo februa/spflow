@@ -318,6 +318,21 @@ def design_reference_weights() -> WeightDesignResult:
             phase = np.asarray(positive_integer_phase[frequency_index, beam_index], dtype=np.complex128)
             rotated_scan = np.asarray(phase[:, np.newaxis] * steering_scan, dtype=np.complex128)
             rotated_constraint = np.asarray(phase * constraint, dtype=np.complex128)
+            if source_power == 0.0:
+                # 空間白色雑音だけのbinではR=sigma^2 Iであり、MVDRはa/(a^H a)、
+                # EBAEはNs=0 fallbackの同じCBFへ厳密に帰着する。64ch長大アレイで
+                # 不要な固有値分解を全未使用binへ繰り返さず、数式上同値な完成重みを直接置く。
+                original_cbf = np.asarray(constraint / np.vdot(constraint, constraint), dtype=np.complex128)
+                residual_cbf = np.asarray(
+                    rotated_constraint / np.vdot(rotated_constraint, rotated_constraint),
+                    dtype=np.complex128,
+                )
+                for algorithm in ALGORITHM_IDS:
+                    positive_weights[algorithm]["S1"][frequency_index, beam_index] = original_cbf
+                    positive_weights[algorithm]["T1"][frequency_index, beam_index] = original_cbf
+                    positive_weights[algorithm]["S2a"][frequency_index, beam_index] = residual_cbf
+                    positive_weights[algorithm]["T2a"][frequency_index, beam_index] = residual_cbf
+                continue
             s_residual_covariance = np.asarray(
                 phase[:, np.newaxis] * s_covariance * phase.conj()[np.newaxis, :],
                 dtype=np.complex128,

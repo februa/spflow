@@ -8,12 +8,12 @@ from evaluations.beamforming.low_frequency_narrow_broad_tap_sweep import (
 
 
 def test_predicts_150_hz_grating_lobe_from_array_spacing() -> None:
-    """150 Hz・6 m間隔・150 deg信号の理論偽像を約36.8 degに求める。"""
+    """150 Hz・6.25 m間隔・150 deg信号の理論偽像を約42.8 degに求める。"""
     predicted = predict_grating_lobe_azimuths(
         150.0, np.asarray([150.0], dtype=np.float64)
     )
 
-    np.testing.assert_allclose(predicted, np.asarray([36.808618], dtype=np.float64), atol=1.0e-6)
+    np.testing.assert_allclose(predicted, np.asarray([42.779358], dtype=np.float64), atol=1.0e-6)
 
 
 def test_64_hz_has_no_visible_grating_lobe() -> None:

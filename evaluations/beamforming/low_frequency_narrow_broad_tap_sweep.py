@@ -15,6 +15,8 @@ from evaluations.beamforming import ebae_mvdr_s1_s2a_t1_t2a_fir_sweep as engine
 
 OUTPUT_DIR = Path("artifacts/beamforming/low_frequency_narrow_broad_tap_sweep/review_pack")
 TAP_COUNTS = (32, 128, 256, 512, 1024)
+LONG_ARRAY_N_CHANNEL = 64
+LONG_ARRAY_SPACING_M = 6.25
 BAND_CASES = {
     "narrow_64Hz": (64.0, 64.0),
     "narrow_150Hz": (150.0, 150.0),
@@ -49,7 +51,7 @@ def predict_grating_lobe_azimuths(
         # d(cos(theta_g)-cos(theta_0))=m lambdaを満たす方位は、センサ間位相が2πmだけ
         # 異なるためサンプル済みアレイから識別できない。m=±1から可視領域だけを列挙する。
         for order in (-1, 1):
-            candidate_cosine = source_cosine + order * wavelength_m / engine.SPACING_M
+            candidate_cosine = source_cosine + order * wavelength_m / LONG_ARRAY_SPACING_M
             if -1.0 <= candidate_cosine <= 1.0:
                 predicted.append(float(np.rad2deg(np.arccos(candidate_cosine))))
     if not predicted:
@@ -82,6 +84,11 @@ def _calculate_case(
         指標行とBL曲線。各BLのshapeは``[n_beam]``、単位はdB re input RMS。
     """
     engine.FFT_SIZE = 4096
+    # 共分散検討で使用した64ch・6.25 m間隔・393.75 m開口の長大ULAへ合わせる。
+    # fsは150 Hzを2 Hz刻みのbin中心に保ち、off-bin誤差を混ぜないため8192 Hzを維持する。
+    engine.FS_HZ = 8192.0
+    engine.N_CHANNEL = LONG_ARRAY_N_CHANNEL
+    engine.SPACING_M = LONG_ARRAY_SPACING_M
     # 各DFT binを独立したrank-1信号共分散として扱い、共分散内の周波数積分は行わない。
     engine.ANALYSIS_WIDTH_HZ = 0.0
     engine.TARGET_AZIMUTH_DEG = 150.0
