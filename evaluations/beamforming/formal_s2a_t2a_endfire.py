@@ -17,11 +17,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from spflow.beamforming.ebae import EbaeConfig, design_ebae_weights_band
-from evaluations.beamforming.stateful_delay_fir_runtime import (
-    ResidualCausalFIRStage,
-    StatefulIntegerDelayStage,
-)
-
+from spflow.simulation import SignalBlock, StatefulIntegerDelay, VersionedCausalFIR
 
 FloatArray = NDArray[np.float64]
 ComplexArray = NDArray[np.complex128]
@@ -453,12 +449,12 @@ def apply_runtime_blocks(
     output = np.empty((n_beam, signal.shape[1]), dtype=np.complex128)
     valid = np.empty(output.shape, dtype=np.bool_)
     for beam_index in range(n_beam):
-        delay_stage = StatefulIntegerDelayStage(realization.integer_delays[beam_index])
-        fir_stage = ResidualCausalFIRStage(realization.coefficients[beam_index])
+        delay_stage = StatefulIntegerDelay(realization.integer_delays[beam_index])
+        fir_stage = VersionedCausalFIR(realization.coefficients[beam_index])
         for start in range(0, signal.shape[1], block_size):
             stop = min(start + block_size, signal.shape[1])
             delayed = delay_stage.process(signal[:, start:stop])
-            filtered = fir_stage.process(delayed.data, delayed.valid_mask)
+            filtered = fir_stage.process(SignalBlock(delayed.data, delayed.valid_mask))
             # 各channel FIRは完成weightの実適用応答を含むため、ここではchannel軸を加算する。
             output[beam_index, start:stop] = np.sum(filtered.data, axis=0)
             valid[beam_index, start:stop] = np.all(filtered.valid_mask, axis=0)

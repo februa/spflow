@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import csv
-from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 
 from evaluations.beamforming import ebae_mvdr_s1_s2a_t1_t2a_fir_sweep as engine
-
+from spflow.simulation import (
+    AlignmentSimulationConfig,
+    approximate_frequency_weights_with_fir,
+    design_alignment_weights,
+    to_original_input_coordinates,
+)
 
 OUTPUT_DIR = Path("artifacts/beamforming/alignment_single_source_validation_matrix/review_pack")
 AZIMUTHS_DEG = (0.0, 90.0, 150.0)
@@ -42,22 +46,13 @@ BAND_CASES = (
 )
 
 
-@contextmanager
-def _configured_engine(
+def _simulation_config(
     band_case: BandCase,
     azimuth_deg: float,
     signal_level_db: float,
     input_snr_db: float,
-) -> Iterator[None]:
-    """正式評価engineへ試験条件を設定し、終了時に復元する。"""
-    old_values = (
-        engine.ANALYSIS_WIDTH_HZ,
-        engine.TARGET_BAND_HZ,
-        engine.TARGET_AZIMUTH_DEG,
-        engine.SOURCE_BAND_RMS_POWER,
-        engine.NOISE_POWER_PER_BIN_RE_INPUT_RMS2,
-        engine.SCENARIO_ID,
-    )
+) -> tuple[AlignmentSimulationConfig, str]:
+    """1試験条件の不変シミュレーション設定と成果物識別子を返す。"""
     signal_power = 10.0 ** (signal_level_db / 10.0)
     noise_band_power = signal_power / (10.0 ** (input_snr_db / 10.0))
     positive_frequency_hz = np.fft.rfftfreq(engine.FFT_SIZE, d=1.0 / engine.FS_HZ)
@@ -67,26 +62,17 @@ def _configured_engine(
     occupied_count = int(np.count_nonzero(occupied))
     if occupied_count <= 0:
         raise ValueError("occupied band must contain at least one positive-frequency bin.")
-    engine.ANALYSIS_WIDTH_HZ = band_case.analysis_width_hz
-    engine.TARGET_BAND_HZ = band_case.occupied_band_hz
-    engine.TARGET_AZIMUTH_DEG = azimuth_deg
-    engine.SOURCE_BAND_RMS_POWER = signal_power
-    # engineの雑音値はbinごとのchannel雑音powerなので、帯域積分値をbin数へ等配分する。
-    engine.NOISE_POWER_PER_BIN_RE_INPUT_RMS2 = noise_band_power / float(occupied_count)
-    engine.SCENARIO_ID = (
-        f"{band_case.case_id}_az{azimuth_deg:g}_sl{signal_level_db:g}_snr{input_snr_db:g}"
+    scenario_id = f"{band_case.case_id}_az{azimuth_deg:g}_sl{signal_level_db:g}_snr{input_snr_db:g}"
+    # 雑音値はbinごとのchannel powerなので、帯域積分値を占有bin数へ等配分する。
+    config = replace(
+        engine.DEFAULT_ALIGNMENT_CONFIG,
+        analysis_width_hz=band_case.analysis_width_hz,
+        target_band_hz=band_case.occupied_band_hz,
+        target_azimuth_deg=azimuth_deg,
+        source_band_rms_power=signal_power,
+        noise_power_per_bin_re_input_rms2=noise_band_power / float(occupied_count),
     )
-    try:
-        yield
-    finally:
-        (
-            engine.ANALYSIS_WIDTH_HZ,
-            engine.TARGET_BAND_HZ,
-            engine.TARGET_AZIMUTH_DEG,
-            engine.SOURCE_BAND_RMS_POWER,
-            engine.NOISE_POWER_PER_BIN_RE_INPUT_RMS2,
-            engine.SCENARIO_ID,
-        ) = old_values
+    return config, scenario_id
 
 
 def _method_rows(
@@ -96,75 +82,73 @@ def _method_rows(
     input_snr_db: float,
 ) -> list[dict[str, Any]]:
     """1物理条件について全方式・全tapの成分power指標を返す。"""
-    with _configured_engine(band_case, azimuth_deg, signal_level_db, input_snr_db):
-        design = engine.design_reference_weights()
-        target_index = int(np.argmin(np.abs(engine.AZIMUTH_DEG - azimuth_deg)))
-        source_power = 10.0 ** (signal_level_db / 10.0)
-        noise_band_power = source_power / (10.0 ** (input_snr_db / 10.0))
-        rows: list[dict[str, Any]] = []
-        for algorithm in engine.ALGORITHM_IDS:
-            for direct_method in engine.METHOD_IDS:
-                for tap_count in TAP_COUNTS:
-                    approximation = engine.approximate_weights_with_fir(
-                        design.weights[algorithm][direct_method], tap_count
-                    )
-                    original = engine._original_coordinate_weights(
-                        direct_method, approximation.reconstructed_weights, design.integer_phase
-                    )
-                    band_weights = original[design.source_bin_mask, target_index, :]
-                    band_steering = design.source_steering[design.source_bin_mask]
-                    response = np.einsum("fc,fc->f", band_weights.conj(), band_steering)
-                    target_power = source_power * float(np.mean(np.abs(response) ** 2))
-                    # channel間無相関かつ帯域内総powerがnoise_band_powerになる条件の理論出力。
-                    noise_power = noise_band_power * float(
-                        np.mean(np.sum(np.abs(band_weights) ** 2, axis=1))
-                    )
-                    output_snr_db = 10.0 * np.log10(
-                        max(target_power, np.finfo(np.float64).tiny)
-                        / max(noise_power, np.finfo(np.float64).tiny)
-                    )
-                    method_id = direct_method
-                    if direct_method == "S2a":
-                        paired_method = "S2b"
-                    elif direct_method == "T2a":
-                        paired_method = "T2b"
-                    else:
-                        paired_method = ""
-                    rows.append(
-                        {
-                            "scenario": engine.SCENARIO_ID,
-                            "evaluation_pattern": "fixed_beam_single_source",
-                            "band_case": band_case.case_id,
-                            "analysis_width_hz": band_case.analysis_width_hz,
-                            "occupied_band_low_hz": band_case.occupied_band_hz[0],
-                            "occupied_band_high_hz": band_case.occupied_band_hz[1],
-                            "source_azimuth_deg": azimuth_deg,
-                            "signal_level_db_re_input_rms": signal_level_db,
-                            "noise_band_level_db_re_input_rms": signal_level_db - input_snr_db,
-                            "input_snr_db": input_snr_db,
-                            "algorithm": algorithm,
-                            "method": method_id,
-                            "equivalent_difference_branch_method": paired_method,
-                            "tap_count": tap_count,
-                            "target_level_db_re_input_rms": 10.0
-                            * np.log10(max(target_power, np.finfo(np.float64).tiny)),
-                            "target_level_error_db": 10.0
-                            * np.log10(max(target_power / source_power, np.finfo(np.float64).tiny)),
-                            "noise_output_db_re_input_rms": 10.0
-                            * np.log10(max(noise_power, np.finfo(np.float64).tiny)),
-                            "output_snr_db": output_snr_db,
-                            "snr_gain_db": output_snr_db - input_snr_db,
-                            "target_energy_ratio": float(
-                                approximation.energy_ratio[target_index]
-                            ),
-                            "finite": bool(
-                                np.isfinite(target_power)
-                                and np.isfinite(noise_power)
-                                and np.isfinite(output_snr_db)
-                            ),
-                        }
-                    )
-        return rows
+    config, scenario_id = _simulation_config(band_case, azimuth_deg, signal_level_db, input_snr_db)
+    design = design_alignment_weights(config)
+    target_index = int(np.argmin(np.abs(config.beam_azimuth_deg - azimuth_deg)))
+    source_power = 10.0 ** (signal_level_db / 10.0)
+    noise_band_power = source_power / (10.0 ** (input_snr_db / 10.0))
+    rows: list[dict[str, Any]] = []
+    for algorithm in engine.ALGORITHM_IDS:
+        for direct_method in engine.METHOD_IDS:
+            for tap_count in TAP_COUNTS:
+                approximation = approximate_frequency_weights_with_fir(
+                    design.weights[algorithm][direct_method], tap_count
+                )
+                original = to_original_input_coordinates(
+                    direct_method, approximation.reconstructed_weights, design.integer_phase
+                )
+                band_weights = original[design.source_bin_mask, target_index, :]
+                band_steering = design.source_steering[design.source_bin_mask]
+                response = np.einsum("fc,fc->f", band_weights.conj(), band_steering)
+                target_power = source_power * float(np.mean(np.abs(response) ** 2))
+                # channel間無相関かつ帯域内総powerがnoise_band_powerになる条件の理論出力。
+                noise_power = noise_band_power * float(
+                    np.mean(np.sum(np.abs(band_weights) ** 2, axis=1))
+                )
+                output_snr_db = 10.0 * np.log10(
+                    max(target_power, np.finfo(np.float64).tiny)
+                    / max(noise_power, np.finfo(np.float64).tiny)
+                )
+                method_id = direct_method
+                if direct_method == "S2a":
+                    paired_method = "S2b"
+                elif direct_method == "T2a":
+                    paired_method = "T2b"
+                else:
+                    paired_method = ""
+                rows.append(
+                    {
+                        "scenario": scenario_id,
+                        "evaluation_pattern": "fixed_beam_single_source",
+                        "band_case": band_case.case_id,
+                        "analysis_width_hz": band_case.analysis_width_hz,
+                        "occupied_band_low_hz": band_case.occupied_band_hz[0],
+                        "occupied_band_high_hz": band_case.occupied_band_hz[1],
+                        "source_azimuth_deg": azimuth_deg,
+                        "signal_level_db_re_input_rms": signal_level_db,
+                        "noise_band_level_db_re_input_rms": signal_level_db - input_snr_db,
+                        "input_snr_db": input_snr_db,
+                        "algorithm": algorithm,
+                        "method": method_id,
+                        "equivalent_difference_branch_method": paired_method,
+                        "tap_count": tap_count,
+                        "target_level_db_re_input_rms": 10.0
+                        * np.log10(max(target_power, np.finfo(np.float64).tiny)),
+                        "target_level_error_db": 10.0
+                        * np.log10(max(target_power / source_power, np.finfo(np.float64).tiny)),
+                        "noise_output_db_re_input_rms": 10.0
+                        * np.log10(max(noise_power, np.finfo(np.float64).tiny)),
+                        "output_snr_db": output_snr_db,
+                        "snr_gain_db": output_snr_db - input_snr_db,
+                        "target_energy_ratio": float(approximation.energy_ratio[target_index]),
+                        "finite": bool(
+                            np.isfinite(target_power)
+                            and np.isfinite(noise_power)
+                            and np.isfinite(output_snr_db)
+                        ),
+                    }
+                )
+    return rows
 
 
 def calculate_validation_matrix() -> tuple[dict[str, Any], ...]:
@@ -214,9 +198,7 @@ def write_review_pack(output_dir: Path = OUTPUT_DIR) -> None:
                 values.append(max(selected))
             axis.plot(TAP_COUNTS, values, marker="o", label=label)
         title = (
-            "Narrowband bin-center tone"
-            if band_case.analysis_width_hz == 0.0
-            else "Flat broadband"
+            "Narrowband bin-center tone" if band_case.analysis_width_hz == 0.0 else "Flat broadband"
         )
         axis.set(title=title, xlabel="FIR tap count", xticks=TAP_COUNTS)
         axis.grid(axis="y", alpha=0.25)

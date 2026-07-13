@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +12,12 @@ import numpy as np
 from numpy.typing import NDArray
 
 from evaluations.beamforming import ebae_mvdr_s1_s2a_t1_t2a_fir_sweep as engine
-
+from spflow.simulation import (
+    approximate_frequency_weights_with_fir,
+    calculate_source_beam_level_db,
+    design_alignment_weights,
+    to_original_input_coordinates,
+)
 
 OUTPUT_DIR = Path("artifacts/beamforming/low_frequency_narrow_broad_tap_sweep/review_pack")
 TAP_COUNTS = (32, 128, 256, 512, 1024)
@@ -22,7 +28,7 @@ BAND_CASES = {
     "narrow_150Hz": (150.0, 150.0),
     "broad_64_256Hz": (64.0, 256.0),
 }
-FloatArray = NDArray[np.float64]
+FloatArray = NDArray[np.floating[Any]]
 
 
 def predict_grating_lobe_azimuths(
@@ -64,9 +70,10 @@ def _peak_class(peak_azimuth_deg: float, grating_azimuths_deg: FloatArray) -> st
     # 待受beam間隔10 degのため、信号方位の隣接beamまでは主ローブ近傍として区別する。
     if abs(peak_azimuth_deg - 150.0) <= 10.0:
         return "target_mainlobe_neighborhood"
-    if grating_azimuths_deg.size > 0 and float(
-        np.min(np.abs(grating_azimuths_deg - peak_azimuth_deg))
-    ) <= 5.0:
+    if (
+        grating_azimuths_deg.size > 0
+        and float(np.min(np.abs(grating_azimuths_deg - peak_azimuth_deg))) <= 5.0
+    ):
         return "predicted_grating_lobe"
     return "fir_or_other_artifact"
 
@@ -83,45 +90,53 @@ def _calculate_case(
     Returns:
         指標行とBL曲線。各BLのshapeは``[n_beam]``、単位はdB re input RMS。
     """
-    engine.FFT_SIZE = 4096
+    fft_size = 4096
     # 共分散検討で使用した64ch・6.25 m間隔・393.75 m開口の長大ULAへ合わせる。
     # fsは150 Hzを2 Hz刻みのbin中心に保ち、off-bin誤差を混ぜないため8192 Hzを維持する。
-    engine.FS_HZ = 8192.0
-    engine.N_CHANNEL = LONG_ARRAY_N_CHANNEL
-    engine.SPACING_M = LONG_ARRAY_SPACING_M
-    # 各DFT binを独立したrank-1信号共分散として扱い、共分散内の周波数積分は行わない。
-    engine.ANALYSIS_WIDTH_HZ = 0.0
-    engine.TARGET_AZIMUTH_DEG = 150.0
-    engine.TARGET_BAND_HZ = band_hz
-    engine.SOURCE_BAND_RMS_POWER = 1.0
-    engine.NOISE_POWER_PER_BIN_RE_INPUT_RMS2 = 1.0e-2
-    engine.SCENARIO_ID = case_id
-
-    design = engine.design_reference_weights()
-    positive_frequency_hz = np.fft.rfftfreq(engine.FFT_SIZE, d=1.0 / engine.FS_HZ)
+    fs_hz = 8192.0
+    aperture_m = LONG_ARRAY_SPACING_M * (LONG_ARRAY_N_CHANNEL - 1)
+    # 各DFT binを独立rank-1共分散として扱い、共分散内の周波数積分は行わない。
+    config = replace(
+        engine.DEFAULT_ALIGNMENT_CONFIG,
+        fs_hz=fs_hz,
+        fft_size=fft_size,
+        sensor_positions_m=np.linspace(
+            -aperture_m / 2.0,
+            aperture_m / 2.0,
+            LONG_ARRAY_N_CHANNEL,
+            dtype=np.float64,
+        ),
+        analysis_width_hz=0.0,
+        target_azimuth_deg=150.0,
+        target_band_hz=band_hz,
+        source_band_rms_power=1.0,
+        noise_power_per_bin_re_input_rms2=1.0e-2,
+    )
+    design = design_alignment_weights(config)
+    positive_frequency_hz = np.fft.rfftfreq(config.fft_size, d=1.0 / config.fs_hz)
     occupied_frequency_hz = positive_frequency_hz[
         (positive_frequency_hz >= band_hz[0]) & (positive_frequency_hz <= band_hz[1])
     ]
     grating_azimuths_deg = predict_grating_lobe_azimuths(150.0, occupied_frequency_hz)
-    target_index = int(np.argmin(np.abs(engine.AZIMUTH_DEG - engine.TARGET_AZIMUTH_DEG)))
+    target_index = int(np.argmin(np.abs(config.beam_azimuth_deg - config.target_azimuth_deg)))
     rows: list[dict[str, Any]] = []
     curves: dict[str, dict[int, FloatArray]] = {}
     for algorithm in engine.ALGORITHM_IDS:
         for method in engine.METHOD_IDS:
             key = f"{algorithm}_{method}"
             curves[key] = {}
-            reference = engine._original_coordinate_weights(
+            reference = to_original_input_coordinates(
                 method, design.weights[algorithm][method], design.integer_phase
             )
-            reference_bl = engine._band_bl_db(reference, design)
+            reference_bl = calculate_source_beam_level_db(reference, design)
             for tap_count in TAP_COUNTS:
-                approximation = engine.approximate_weights_with_fir(
+                approximation = approximate_frequency_weights_with_fir(
                     design.weights[algorithm][method], tap_count
                 )
-                reconstructed = engine._original_coordinate_weights(
+                reconstructed = to_original_input_coordinates(
                     method, approximation.reconstructed_weights, design.integer_phase
                 )
-                bl_db = engine._band_bl_db(reconstructed, design)
+                bl_db = calculate_source_beam_level_db(reconstructed, design)
                 curves[key][tap_count] = bl_db
                 peak_index = int(np.argmax(bl_db))
                 rows.append(
@@ -137,12 +152,12 @@ def _calculate_case(
                         "target_level_error_db": float(
                             bl_db[target_index] - reference_bl[target_index]
                         ),
-                        "peak_azimuth_deg": float(engine.AZIMUTH_DEG[peak_index]),
+                        "peak_azimuth_deg": float(config.beam_azimuth_deg[peak_index]),
                         "peak_error_deg": float(
-                            abs(engine.AZIMUTH_DEG[peak_index] - engine.TARGET_AZIMUTH_DEG)
+                            abs(config.beam_azimuth_deg[peak_index] - config.target_azimuth_deg)
                         ),
                         "peak_class": _peak_class(
-                            float(engine.AZIMUTH_DEG[peak_index]), grating_azimuths_deg
+                            float(config.beam_azimuth_deg[peak_index]), grating_azimuths_deg
                         ),
                         "predicted_grating_low_deg": (
                             float(np.min(grating_azimuths_deg))
@@ -154,9 +169,7 @@ def _calculate_case(
                             if grating_azimuths_deg.size > 0
                             else ""
                         ),
-                        "bl_rms_error_db": float(
-                            np.sqrt(np.mean((bl_db - reference_bl) ** 2))
-                        ),
+                        "bl_rms_error_db": float(np.sqrt(np.mean((bl_db - reference_bl) ** 2))),
                         "target_energy_ratio": float(approximation.energy_ratio[target_index]),
                     }
                 )
@@ -173,7 +186,7 @@ def _write_bl_figure(
     figure, axes = plt.subplots(
         2, len(TAP_COUNTS), figsize=(22.0, 8.0), sharex=True, sharey=True, constrained_layout=True
     )
-    positive_frequency_hz = np.fft.rfftfreq(engine.FFT_SIZE, d=1.0 / engine.FS_HZ)
+    positive_frequency_hz = np.fft.rfftfreq(4096, d=1.0 / 8192.0)
     occupied_frequency_hz = positive_frequency_hz[
         (positive_frequency_hz >= band_hz[0]) & (positive_frequency_hz <= band_hz[1])
     ]

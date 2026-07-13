@@ -635,3 +635,39 @@ source 65 degに対し、可視範囲`[-1,1]`へ入る理論alias方位は125.26
 | theoretical alias azimuth | 125.267 deg |
 
 第一副極は有限一様ULAの約-13 dBと整合し、grating-lobe候補は理論alias方位と0.267 deg差で一致した。高周波化によりmainlobeが狭くなる一方、`d/lambda=1`のためsourceとほぼ同levelの空間aliasが発生している。
+
+## 13. 信号処理開発支援部品としてのsimulation層
+
+2026-07-13に、複数evaluationで共有していた整相設計式と逐次実現部品を
+`src/spflow/simulation/`へ移した。ここでいうsimulation層は独自実行モデルではなく、通常の
+Python関数・dataclass・状態クラスを組み合わせて方式設計を再現するための公開部品である。
+
+依存方向は次に固定する。
+
+```text
+evaluations/ -> spflow.simulation -> spflow.beamforming
+```
+
+- `alignment.py`は明示的な`AlignmentSimulationConfig`からEBAE/MVDRの完成重みを設計し、
+  周波数重みの有限FIR化、整数遅延座標変換、source beam level計算を提供する。
+- `streaming.py`は整数sample遅延、valid mask、版番号付き因果FIRのblock逐次実現を提供する。
+- scenario ID、parameter sweep、図表、CSV、表示条件、採否閾値は`evaluations/`に残す。
+- module globalを書き換えて条件を切り替えず、不変configを呼出しごとに渡す。これにより並列評価と
+  例外後の再実行で別scenarioの条件が混ざらない。
+- 巨大なSimulation RuntimeやEvaluation基底クラスは導入しない。各部品は途中導入・離脱できる。
+
+### 13.1 数値精度
+
+`SimulationPrecision.SINGLE`は`float32/complex64`、`DOUBLE`は
+`float64/complex128`を対として選ぶ。既定は評価誤差を抑える`DOUBLE`である。
+
+変更可能なprocess-global dtypeは持たない。NumPyと同様、生成元のconfigで選んだdtypeを重み・
+FIR係数へ伝播させ、逐次遅延は入力dtype、因果FIRは係数dtypeを維持する。履歴を保持している途中で
+精度が変わった場合は暗黙castせず例外にする。EBAEの固有分解、MUSIC、重み生成も入力の
+complex64/complex128を維持し、「保存時だけ32 bit」の見かけ上の選択にはしない。
+
+### 13.2 完成状態の契約
+
+`SignalBlock`はshape `[n_series,n_sample]`の値と同shapeの`valid_mask`を固定型で運ぶ。
+`VersionedCausalFIR`は予約係数を次block先頭で一括反映し、全系列の計算成功後にだけactive版と
+信号履歴を更新する。係数設計、整数遅延、系列加算は別部品の責務とする。

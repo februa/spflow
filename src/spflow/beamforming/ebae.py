@@ -8,7 +8,6 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-
 FloatArray = NDArray[np.floating[Any]]
 ComplexArray = NDArray[np.complexfloating[Any, Any]]
 IntArray = NDArray[np.integer[Any]]
@@ -109,7 +108,9 @@ class EbaeResult:
     fallback_bins: BoolArray
 
 
-def estimate_signal_count_ne_aic(eigenvalues: ComplexArray | FloatArray, snapshot_count: int) -> tuple[int, FloatArray]:
+def estimate_signal_count_ne_aic(
+    eigenvalues: ComplexArray | FloatArray, snapshot_count: int
+) -> tuple[int, FloatArray]:
     """Nadakuditi/Edelman AIC により信号数を推定する。
 
     Args:
@@ -123,7 +124,13 @@ def estimate_signal_count_ne_aic(eigenvalues: ComplexArray | FloatArray, snapsho
     Raises:
         ValueError: 固有値が1次元でない、非有限、負、または ``L <= 0`` の場合。
     """
-    values = np.asarray(eigenvalues, dtype=np.float64)
+    input_values = np.asarray(eigenvalues)
+    real_dtype = (
+        np.dtype(np.float32)
+        if input_values.dtype in (np.dtype(np.float32), np.dtype(np.complex64))
+        else np.dtype(np.float64)
+    )
+    values = np.asarray(np.real(input_values), dtype=real_dtype)
     if values.ndim != 1 or values.size == 0:
         raise ValueError("eigenvalues must have shape (M,) with M > 0.")
     if not bool(np.all(np.isfinite(values))) or bool(np.any(values < 0.0)):
@@ -134,7 +141,7 @@ def estimate_signal_count_ne_aic(eigenvalues: ComplexArray | FloatArray, snapsho
     sensor_count = values.size
     candidate_count = min(sensor_count, snapshot_count)
     c = sensor_count / float(snapshot_count)
-    aic_values = np.empty(candidate_count, dtype=np.float64)
+    aic_values = np.empty(candidate_count, dtype=real_dtype)
     for signal_count in range(candidate_count):
         # lambda[n:M] は候補 n を信号部分として除いた雑音固有値である。
         # N/E AIC の t_n は雑音固有値の二次momentと一次moment二乗の比を用いる。
@@ -144,7 +151,9 @@ def estimate_signal_count_ne_aic(eigenvalues: ComplexArray | FloatArray, snapsho
             # 雑音powerが厳密に零なら統計量を定義できないため、その候補を選択不能にする。
             aic_values[signal_count] = np.inf
             continue
-        t_n = noise_values.size * float(np.sum(noise_values * noise_values)) / (noise_sum * noise_sum)
+        t_n = (
+            noise_values.size * float(np.sum(noise_values * noise_values)) / (noise_sum * noise_sum)
+        )
         t_d = sensor_count * (t_n - (1.0 + c))
         aic_values[signal_count] = (t_d * t_d) / (2.0 * c * c) + 2.0 * (signal_count + 1)
 
@@ -153,7 +162,9 @@ def estimate_signal_count_ne_aic(eigenvalues: ComplexArray | FloatArray, snapsho
     return int(np.argmin(aic_values)), aic_values
 
 
-def calculate_music_spectrum(noise_eigenvectors: ComplexArray, steering: ComplexArray) -> FloatArray:
+def calculate_music_spectrum(
+    noise_eigenvectors: ComplexArray, steering: ComplexArray
+) -> FloatArray:
     """雑音部分空間から MUSIC 疑似スペクトルを計算する。
 
     Args:
@@ -166,8 +177,16 @@ def calculate_music_spectrum(noise_eigenvectors: ComplexArray, steering: Complex
     Raises:
         ValueError: shape、有限性、または雑音固有vector数が不正な場合。
     """
-    noise_space = np.asarray(noise_eigenvectors, dtype=np.complex128)
-    steering_matrix = np.asarray(steering, dtype=np.complex128)
+    complex_dtype = (
+        np.dtype(np.complex64)
+        if np.result_type(noise_eigenvectors, steering) == np.dtype(np.complex64)
+        else np.dtype(np.complex128)
+    )
+    real_dtype = (
+        np.dtype(np.float32) if complex_dtype == np.dtype(np.complex64) else np.dtype(np.float64)
+    )
+    noise_space = np.asarray(noise_eigenvectors, dtype=complex_dtype)
+    steering_matrix = np.asarray(steering, dtype=complex_dtype)
     if noise_space.ndim != 2 or noise_space.shape[1] == 0:
         raise ValueError("noise_eigenvectors must have shape (n_ch, n_noise) with n_noise > 0.")
     if steering_matrix.ndim != 2 or steering_matrix.shape[0] != noise_space.shape[0]:
@@ -182,7 +201,7 @@ def calculate_music_spectrum(noise_eigenvectors: ComplexArray, steering: Complex
     return np.divide(
         1.0,
         denominator,
-        out=np.full(denominator.shape, np.inf, dtype=np.float64),
+        out=np.full(denominator.shape, np.inf, dtype=real_dtype),
         where=denominator > 0.0,
     )
 
@@ -223,15 +242,27 @@ def design_ebae_weights_band(
     Notes:
         異常な正規化分母が生じた beam は、未完成の適応重みを公開せず CBF へ戻す。
     """
-    covariance_matrix = np.asarray(covariance, dtype=np.complex128)
-    steering_matrix = np.asarray(steering, dtype=np.complex128)
+    complex_dtype = (
+        np.dtype(np.complex64)
+        if np.result_type(covariance, steering) == np.dtype(np.complex64)
+        else np.dtype(np.complex128)
+    )
+    real_dtype = (
+        np.dtype(np.float32) if complex_dtype == np.dtype(np.complex64) else np.dtype(np.float64)
+    )
+    covariance_matrix = np.asarray(covariance, dtype=complex_dtype)
+    steering_matrix = np.asarray(steering, dtype=complex_dtype)
     if covariance_matrix.ndim != 2 or covariance_matrix.shape[0] != covariance_matrix.shape[1]:
         raise ValueError("covariance must have shape (n_ch, n_ch).")
     if steering_matrix.ndim != 2 or steering_matrix.shape[0] != covariance_matrix.shape[0]:
         raise ValueError("steering must have shape (n_ch, n_beam).")
-    if not bool(np.all(np.isfinite(covariance_matrix))) or not bool(np.all(np.isfinite(steering_matrix))):
+    if not bool(np.all(np.isfinite(covariance_matrix))) or not bool(
+        np.all(np.isfinite(steering_matrix))
+    ):
         raise ValueError("covariance and steering must be finite.")
-    if not bool(np.allclose(covariance_matrix, covariance_matrix.conj().T, rtol=1.0e-5, atol=1.0e-8)):
+    if not bool(
+        np.allclose(covariance_matrix, covariance_matrix.conj().T, rtol=1.0e-5, atol=1.0e-8)
+    ):
         raise ValueError("covariance must be Hermitian.")
 
     channel_count = covariance_matrix.shape[0]
@@ -276,8 +307,10 @@ def design_ebae_weights_band(
         signal_vector = eigenvectors[:, signal_index]
         signal_eigenvalue = float(eigenvalues[signal_index])
         beta_denominator = signal_eigenvalue + config.diagonal_loading * noise_power
-        beta = 0.0 if beta_denominator <= config.normalization_floor else (
-            (signal_eigenvalue - noise_power) / beta_denominator
+        beta = (
+            0.0
+            if beta_denominator <= config.normalization_floor
+            else ((signal_eigenvalue - noise_power) / beta_denominator)
         )
 
         # overlap[beam] = u_i^H w0(theta_b)。固有modeをCBF重みから除く射影係数である。
@@ -290,7 +323,7 @@ def design_ebae_weights_band(
         # δ_i(theta_b) は、対応方位以外では1、対応方位ではご提示の反転sigmoid式を使う。
         # 1 - 1/(1+exp(-sigm_a*(|u_i^H w0|^2/|w0^H w0|-sigm_b)))
         # により、対応信号とCBF重みの整合が高いほど、その固有modeを除外しない。
-        delta = np.ones(steering_matrix.shape[1], dtype=np.float64)
+        delta = np.ones(steering_matrix.shape[1], dtype=real_dtype)
         matched_beam_index = int(associated_beam_indices[signal_index])
         sigmoid_argument = config.sigmoid_slope * (
             rho_i[matched_beam_index] - config.sigmoid_midpoint
@@ -342,21 +375,32 @@ def design_ebae_weights(
     Raises:
         ValueError: 入力 shape または ``rate*T=M^2`` の契約を満たさない場合。
     """
-    covariance_array = np.asarray(covariance, dtype=np.complex128)
-    steering_array = np.asarray(steering, dtype=np.complex128)
+    complex_dtype = (
+        np.dtype(np.complex64)
+        if np.result_type(covariance, steering) == np.dtype(np.complex64)
+        else np.dtype(np.complex128)
+    )
+    real_dtype = (
+        np.dtype(np.float32) if complex_dtype == np.dtype(np.complex64) else np.dtype(np.float64)
+    )
+    covariance_array = np.asarray(covariance, dtype=complex_dtype)
+    steering_array = np.asarray(steering, dtype=complex_dtype)
     if covariance_array.ndim != 3 or covariance_array.shape[1] != covariance_array.shape[2]:
         raise ValueError("covariance must have shape (n_bin, n_ch, n_ch).")
     if steering_array.ndim != 3:
         raise ValueError("steering must have shape (n_ch, n_beam, n_bin).")
-    if covariance_array.shape[0] != steering_array.shape[2] or covariance_array.shape[1] != steering_array.shape[0]:
+    if (
+        covariance_array.shape[0] != steering_array.shape[2]
+        or covariance_array.shape[1] != steering_array.shape[0]
+    ):
         raise ValueError("covariance and steering must agree on n_bin and n_ch.")
 
     bin_count, channel_count = covariance_array.shape[0], covariance_array.shape[1]
     beam_count = steering_array.shape[1]
     snapshot_count = channel_count * channel_count
-    weights = np.empty((channel_count, beam_count, bin_count), dtype=np.complex128)
+    weights = np.empty((channel_count, beam_count, bin_count), dtype=complex_dtype)
     signal_counts = np.empty(bin_count, dtype=np.int64)
-    music_spectra = np.empty((beam_count, bin_count), dtype=np.float64)
+    music_spectra = np.empty((beam_count, bin_count), dtype=real_dtype)
     associated = np.full((bin_count, max(channel_count - 1, 0)), -1, dtype=np.int64)
     fallback_bins = np.empty(bin_count, dtype=np.bool_)
     for bin_index in range(bin_count):

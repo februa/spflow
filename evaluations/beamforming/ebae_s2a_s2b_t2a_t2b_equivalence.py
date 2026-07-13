@@ -10,7 +10,12 @@ import numpy as np
 from numpy.typing import NDArray
 
 from evaluations.beamforming import ebae_mvdr_s1_s2a_t1_t2a_fir_sweep as reference
-
+from spflow.simulation import (
+    AlignmentWeightDesign,
+    approximate_frequency_weights_with_fir,
+    design_alignment_weights,
+    to_original_input_coordinates,
+)
 
 ComplexArray = NDArray[np.complex128]
 OUTPUT_DIR = Path("artifacts/beamforming/ebae_s2a_s2b_t2a_t2b_equivalence/review_pack")
@@ -63,7 +68,7 @@ def _truncate_with_declared_window(
     return reconstructed
 
 
-def _fixed_residual_weights(design: reference.WeightDesignResult) -> ComplexArray:
+def _fixed_residual_weights(design: AlignmentWeightDesign) -> ComplexArray:
     """整数遅延後座標の固定CBF主枝重みを返す。
 
     Args:
@@ -83,7 +88,7 @@ def calculate_equivalence_rows() -> tuple[dict[str, Any], ...]:
     Returns:
         評価行。各行は複素重み、``w^H a``、BL、決定論的波形の最大誤差を含む。
     """
-    design = reference.design_reference_weights()
+    design = design_alignment_weights(reference.DEFAULT_ALIGNMENT_CONFIG)
     fixed_residual = _fixed_residual_weights(design)
     rows: list[dict[str, Any]] = []
     source_spectrum = np.zeros(reference.FFT_SIZE, dtype=np.complex128)
@@ -98,7 +103,7 @@ def calculate_equivalence_rows() -> tuple[dict[str, Any], ...]:
                 fixed_residual - adaptive_residual, dtype=np.complex128
             )
             for tap_count in TAP_COUNTS:
-                direct = reference.approximate_weights_with_fir(adaptive_residual, tap_count)
+                direct = approximate_frequency_weights_with_fir(adaptive_residual, tap_count)
                 starts = direct.window_start_samples
                 fixed_fir = _truncate_with_declared_window(fixed_residual, tap_count, starts)
                 difference_fir = _truncate_with_declared_window(
@@ -108,10 +113,10 @@ def calculate_equivalence_rows() -> tuple[dict[str, Any], ...]:
                 direct_fir = direct.reconstructed_weights
 
                 weight_error = float(np.max(np.abs(branch_combined - direct_fir)))
-                direct_original = reference._original_coordinate_weights(
+                direct_original = to_original_input_coordinates(
                     direct_method, direct_fir, design.integer_phase
                 )
-                branch_original = reference._original_coordinate_weights(
+                branch_original = to_original_input_coordinates(
                     direct_method, branch_combined, design.integer_phase
                 )
                 direct_response = np.einsum(

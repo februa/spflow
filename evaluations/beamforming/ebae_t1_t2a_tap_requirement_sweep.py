@@ -3,19 +3,26 @@
 from __future__ import annotations
 
 import csv
-from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
 
 from evaluations.beamforming import ebae_mvdr_s1_s2a_t1_t2a_fir_sweep as reference
+from spflow.simulation import (
+    AlignmentSimulationConfig,
+    AlignmentWeightDesign,
+    FrequencyWeightFirApproximation,
+    approximate_frequency_weights_with_fir,
+    calculate_ula_arrival_delays_s,
+    design_alignment_weights,
+    to_original_input_coordinates,
+)
 
-
-FloatArray = NDArray[np.float64]
-ComplexArray = NDArray[np.complex128]
+FloatArray = NDArray[np.floating[Any]]
+ComplexArray = NDArray[np.complexfloating[Any, Any]]
 
 OUTPUT_DIR = Path("artifacts/beamforming/ebae_t1_t2a_tap_requirement_sweep/review_pack")
 TAP_COUNTS = (8, 16, 32, 64, 128, 256, 512)
@@ -69,45 +76,30 @@ SCENARIOS = (
 )
 
 
-@contextmanager
-def _reference_scenario(scenario: TapScenario) -> Iterator[None]:
-    """既存の方式実装を指定条件へ設定し、終了時に定数を復元する。
+def _simulation_config(scenario: TapScenario) -> AlignmentSimulationConfig:
+    """一つのtap評価条件を不変シミュレーション設定へ変換する。
 
     Args:
         scenario: 適用する物理条件。
 
-    Yields:
-        なし。context内でreference moduleの設計関数を呼び出す。
-
-    Notes:
-        評価条件だけを差し替え、共分散・符号・共役・FFT規約は正式な評価実装と共有する。
-        module globalを使うため並列呼び出しは行わない。
+    Returns:
+        共分散・符号・共役・FFT規約を公開部品と共有する明示設定。
     """
-    old_values = (
-        reference.SPACING_M,
-        reference.TARGET_AZIMUTH_DEG,
-        reference.ANALYSIS_WIDTH_HZ,
-        reference.TARGET_BAND_HZ,
-        reference.SCENARIO_ID,
+    return replace(
+        reference.DEFAULT_ALIGNMENT_CONFIG,
+        sensor_positions_m=np.linspace(
+            -scenario.aperture_m / 2.0,
+            scenario.aperture_m / 2.0,
+            reference.N_CHANNEL,
+            dtype=np.float64,
+        ),
+        target_azimuth_deg=scenario.target_azimuth_deg,
+        analysis_width_hz=scenario.analysis_width_hz,
+        target_band_hz=scenario.occupied_band_hz,
     )
-    reference.SPACING_M = scenario.aperture_m / float(reference.N_CHANNEL - 1)
-    reference.TARGET_AZIMUTH_DEG = scenario.target_azimuth_deg
-    reference.ANALYSIS_WIDTH_HZ = scenario.analysis_width_hz
-    reference.TARGET_BAND_HZ = scenario.occupied_band_hz
-    reference.SCENARIO_ID = scenario.scenario_id
-    try:
-        yield
-    finally:
-        (
-            reference.SPACING_M,
-            reference.TARGET_AZIMUTH_DEG,
-            reference.ANALYSIS_WIDTH_HZ,
-            reference.TARGET_BAND_HZ,
-            reference.SCENARIO_ID,
-        ) = old_values
 
 
-def _response(weights: ComplexArray, design: reference.WeightDesignResult) -> ComplexArray:
+def _response(weights: ComplexArray, design: AlignmentWeightDesign) -> ComplexArray:
     """信号占有binにおける全beamの複素応答 ``w^H a`` を返す。
 
     Args:
@@ -144,7 +136,9 @@ def _spectrum_amplitude(scenario: TapScenario, n_bin: int) -> FloatArray:
     raise ValueError(f"unsupported spectrum_kind: {scenario.spectrum_kind}")
 
 
-def _bl_features(response: ComplexArray) -> tuple[float, float, float, float]:
+def _bl_features(
+    response: ComplexArray, beam_azimuth_deg: FloatArray
+) -> tuple[float, float, float, float]:
     """BLからpeak方位、-3 dB幅、guard外peak、null床を返す。
 
     Args:
@@ -157,19 +151,17 @@ def _bl_features(response: ComplexArray) -> tuple[float, float, float, float]:
     power = np.mean(np.abs(response) ** 2, axis=0)
     peak_index = int(np.argmax(power))
     peak_power = max(float(power[peak_index]), np.finfo(np.float64).tiny)
-    raw_relative_db = 10.0 * np.log10(
-        np.maximum(power / peak_power, np.finfo(np.float64).tiny)
-    )
+    raw_relative_db = 10.0 * np.log10(np.maximum(power / peak_power, np.finfo(np.float64).tiny))
     # 深いnullの数値床は微小な丸め誤差で数十dB変化するため、形状比較範囲を-60 dBまでに限定する。
     relative_db = np.maximum(raw_relative_db, -60.0)
     main_mask = relative_db >= -3.0
     main_indices = np.flatnonzero(main_mask)
-    width_deg = float(reference.AZIMUTH_DEG[main_indices[-1]] - reference.AZIMUTH_DEG[main_indices[0]])
-    guard = np.abs(reference.AZIMUTH_DEG - reference.AZIMUTH_DEG[peak_index]) > 20.0
+    width_deg = float(beam_azimuth_deg[main_indices[-1]] - beam_azimuth_deg[main_indices[0]])
+    guard = np.abs(beam_azimuth_deg - beam_azimuth_deg[peak_index]) > 20.0
     if not bool(np.any(guard)):
         raise ValueError("azimuth grid must contain guard-outside beams.")
     return (
-        float(reference.AZIMUTH_DEG[peak_index]),
+        float(beam_azimuth_deg[peak_index]),
         width_deg,
         float(np.max(relative_db[guard])),
         float(np.min(relative_db[guard])),
@@ -180,13 +172,16 @@ def _error_metrics(
     scenario: TapScenario,
     method: str,
     tap_count: int,
-    design: reference.WeightDesignResult,
-    approximation: reference.FirApproximationResult,
+    design: AlignmentWeightDesign,
+    approximation: FrequencyWeightFirApproximation,
 ) -> dict[str, Any]:
     """完成重みを基準に有限長FIR実現誤差と合否を計算する。"""
-    target_index = int(np.argmin(np.abs(reference.AZIMUTH_DEG - scenario.target_azimuth_deg)))
-    full = reference._original_coordinate_weights(method, design.weights["ebae"][method], design.integer_phase)
-    finite = reference._original_coordinate_weights(
+    config = design.config
+    target_index = int(np.argmin(np.abs(config.beam_azimuth_deg - scenario.target_azimuth_deg)))
+    full = to_original_input_coordinates(
+        method, design.weights["ebae"][method], design.integer_phase
+    )
+    finite = to_original_input_coordinates(
         method, approximation.reconstructed_weights, design.integer_phase
     )
     band = design.source_bin_mask
@@ -206,32 +201,38 @@ def _error_metrics(
     level_error_db = float(np.max(np.abs(20.0 * np.log10(np.maximum(np.abs(ratio), 1.0e-12)))))
     phase_error_rad = np.unwrap(np.angle(ratio))
     phase_rms_deg = float(np.rad2deg(np.sqrt(np.mean(phase_error_rad**2))))
-    occupied_frequencies_hz = np.fft.fftfreq(reference.FFT_SIZE, d=1.0 / reference.FS_HZ)[band]
+    occupied_frequencies_hz = np.fft.fftfreq(config.fft_size, d=1.0 / config.fs_hz)[band]
     if occupied_frequencies_hz.size >= 2 and float(np.ptp(occupied_frequencies_hz)) > 0.0:
         order = np.argsort(occupied_frequencies_hz)
         phase_sorted = np.unwrap(np.angle(ratio[order]))
         frequency_sorted = occupied_frequencies_hz[order]
         group_delay_s = -np.gradient(phase_sorted, 2.0 * np.pi * frequency_sorted)
         group_delay_rms_sample = float(
-            reference.FS_HZ * np.sqrt(np.mean((group_delay_s - np.mean(group_delay_s)) ** 2))
+            config.fs_hz * np.sqrt(np.mean((group_delay_s - np.mean(group_delay_s)) ** 2))
         )
     else:
         # 単一toneでは群遅延を観測できないため、位相誤差だけを判定し群遅延誤差は0とする。
         group_delay_rms_sample = 0.0
 
     amplitude = _spectrum_amplitude(scenario, int(np.count_nonzero(band)))
-    reference_spectrum = np.zeros(reference.FFT_SIZE, dtype=np.complex128)
-    finite_spectrum = np.zeros(reference.FFT_SIZE, dtype=np.complex128)
+    reference_spectrum = np.zeros(config.fft_size, dtype=np.complex128)
+    finite_spectrum = np.zeros(config.fft_size, dtype=np.complex128)
     reference_spectrum[band] = amplitude * full_target
     finite_spectrum[band] = amplitude * finite_target
     reference_waveform = np.real(np.fft.ifft(reference_spectrum))
     finite_waveform = np.real(np.fft.ifft(finite_spectrum))
     waveform_denominator = max(float(np.linalg.norm(reference_waveform)), np.finfo(np.float64).tiny)
-    normalized_rms_error = float(np.linalg.norm(finite_waveform - reference_waveform) / waveform_denominator)
+    normalized_rms_error = float(
+        np.linalg.norm(finite_waveform - reference_waveform) / waveform_denominator
+    )
     correlation = float(np.corrcoef(reference_waveform, finite_waveform)[0, 1])
 
-    full_peak, full_width, full_sidelobe, full_null = _bl_features(full_response)
-    finite_peak, finite_width, finite_sidelobe, finite_null = _bl_features(finite_response)
+    full_peak, full_width, full_sidelobe, full_null = _bl_features(
+        full_response, config.beam_azimuth_deg
+    )
+    finite_peak, finite_width, finite_sidelobe, finite_null = _bl_features(
+        finite_response, config.beam_azimuth_deg
+    )
     width_relative_error = abs(finite_width - full_width) / max(full_width, 10.0)
     peak_error_deg = abs(finite_peak - scenario.target_azimuth_deg)
     fir_pass = bool(
@@ -278,7 +279,9 @@ def _error_metrics(
     }
 
 
-def calculate_tap_requirement_sweep() -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
+def calculate_tap_requirement_sweep() -> tuple[
+    tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]
+]:
     """全条件でT共分散成立性とT1/T2aの最短tap数を計算する。
 
     Returns:
@@ -287,51 +290,61 @@ def calculate_tap_requirement_sweep() -> tuple[tuple[dict[str, Any], ...], tuple
     detail_rows: list[dict[str, Any]] = []
     minimum_rows: list[dict[str, Any]] = []
     for scenario in SCENARIOS:
-        with _reference_scenario(scenario):
-            design = reference.design_reference_weights()
-            target_index = int(np.argmin(np.abs(reference.AZIMUTH_DEG - scenario.target_azimuth_deg)))
-            delays_s = reference._arrival_delays_s(np.asarray([scenario.target_azimuth_deg]))[0]
-            geometric_delay_span_sample = reference.FS_HZ * float(np.ptp(delays_s))
-            residual_s = delays_s - np.rint(delays_s * reference.FS_HZ) / reference.FS_HZ
-            residual_delay_span_sample = reference.FS_HZ * float(np.ptp(residual_s))
-            for method in METHOD_IDS:
-                full = reference._original_coordinate_weights(
-                    method, design.weights["ebae"][method], design.integer_phase
-                )
-                full_response = _response(full, design)
-                full_peak, _, _, _ = _bl_features(full_response)
-                signal_counts = design.ebae_signal_counts[method][design.source_bin_mask, target_index]
-                associated = design.ebae_associated_beams[method][design.source_bin_mask, target_index]
-                direction_pass = bool(
-                    abs(full_peak - scenario.target_azimuth_deg) <= PEAK_ERROR_LIMIT_DEG
-                    and bool(np.all(signal_counts == 1))
-                    and bool(np.all(np.abs(reference.AZIMUTH_DEG[associated] - scenario.target_azimuth_deg) <= PEAK_ERROR_LIMIT_DEG))
-                )
-                method_rows: list[dict[str, Any]] = []
-                for tap_count in TAP_COUNTS:
-                    approximation = reference.approximate_weights_with_fir(
-                        design.weights["ebae"][method], tap_count
+        config = _simulation_config(scenario)
+        design = design_alignment_weights(config)
+        target_index = int(np.argmin(np.abs(config.beam_azimuth_deg - scenario.target_azimuth_deg)))
+        delays_s = calculate_ula_arrival_delays_s(
+            config.sensor_positions_m,
+            np.asarray([scenario.target_azimuth_deg], dtype=np.float64),
+            config.sound_speed_m_per_s,
+        )[0]
+        geometric_delay_span_sample = config.fs_hz * float(np.ptp(delays_s))
+        residual_s = delays_s - np.rint(delays_s * config.fs_hz) / config.fs_hz
+        residual_delay_span_sample = config.fs_hz * float(np.ptp(residual_s))
+        for method in METHOD_IDS:
+            full = to_original_input_coordinates(
+                method, design.weights["ebae"][method], design.integer_phase
+            )
+            full_response = _response(full, design)
+            full_peak, _, _, _ = _bl_features(full_response, config.beam_azimuth_deg)
+            signal_counts = design.ebae_signal_counts[method][design.source_bin_mask, target_index]
+            associated = design.ebae_associated_beams[method][design.source_bin_mask, target_index]
+            direction_pass = bool(
+                abs(full_peak - scenario.target_azimuth_deg) <= PEAK_ERROR_LIMIT_DEG
+                and bool(np.all(signal_counts == 1))
+                and bool(
+                    np.all(
+                        np.abs(config.beam_azimuth_deg[associated] - scenario.target_azimuth_deg)
+                        <= PEAK_ERROR_LIMIT_DEG
                     )
-                    row = _error_metrics(scenario, method, tap_count, design, approximation)
-                    row["direction_estimation_pass"] = direction_pass
-                    row["overall_pass"] = bool(direction_pass and row["fir_realization_pass"])
-                    row["geometric_delay_span_sample"] = geometric_delay_span_sample
-                    row["residual_delay_span_sample"] = residual_delay_span_sample
-                    method_rows.append(row)
-                    detail_rows.append(row)
-                passing = [int(row["tap_count"]) for row in method_rows if bool(row["overall_pass"])]
-                minimum_rows.append(
-                    {
-                        "scenario": scenario.scenario_id,
-                        "method": method,
-                        "direction_estimation_pass": direction_pass,
-                        "minimum_passing_tap": min(passing) if passing else "",
-                        "geometric_delay_span_sample": geometric_delay_span_sample,
-                        "residual_delay_span_sample": residual_delay_span_sample,
-                        "analysis_width_hz": scenario.analysis_width_hz,
-                        "occupied_band_width_hz": scenario.occupied_band_hz[1] - scenario.occupied_band_hz[0],
-                    }
                 )
+            )
+            method_rows: list[dict[str, Any]] = []
+            for tap_count in TAP_COUNTS:
+                approximation = approximate_frequency_weights_with_fir(
+                    design.weights["ebae"][method], tap_count
+                )
+                row = _error_metrics(scenario, method, tap_count, design, approximation)
+                row["direction_estimation_pass"] = direction_pass
+                row["overall_pass"] = bool(direction_pass and row["fir_realization_pass"])
+                row["geometric_delay_span_sample"] = geometric_delay_span_sample
+                row["residual_delay_span_sample"] = residual_delay_span_sample
+                method_rows.append(row)
+                detail_rows.append(row)
+            passing = [int(row["tap_count"]) for row in method_rows if bool(row["overall_pass"])]
+            minimum_rows.append(
+                {
+                    "scenario": scenario.scenario_id,
+                    "method": method,
+                    "direction_estimation_pass": direction_pass,
+                    "minimum_passing_tap": min(passing) if passing else "",
+                    "geometric_delay_span_sample": geometric_delay_span_sample,
+                    "residual_delay_span_sample": residual_delay_span_sample,
+                    "analysis_width_hz": scenario.analysis_width_hz,
+                    "occupied_band_width_hz": scenario.occupied_band_hz[1]
+                    - scenario.occupied_band_hz[0],
+                }
+            )
     return tuple(detail_rows), tuple(minimum_rows)
 
 
