@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
-from examples.beamforming.external_fixed_delay_diff_mvdr_inputs import (  # noqa: E402
+from evaluations.beamforming.external_fixed_delay_diff_mvdr_inputs import (  # noqa: E402
     apply_frequency_shading_to_weights,
     load_complex_shading_matlab_raw,
     load_fractional_delay_filter_bank_matlab_raw,

@@ -476,6 +476,23 @@ DC〜Nyquist 全帯域の sample RMS:
 4. BL/FRAZ/BTR plot が共通の表示条件オブジェクトを受け取るようにする。
 5. `delay_and_sum.py` で信号生成規約を固定した後、別の校正入力生成処理から BL 群と人間評価入力を生成する。
 
+### 11.3 2026-07-13: 評価スクリプトの再配置
+
+Phase 5 のうち、parameter sweep、方式比較、review pack生成を主責務とする大規模スクリプトを
+`examples/beamforming/` から `evaluations/beamforming/` へ移した。評価専用の外部入力helperと
+再現条件JSONも同じ場所へ移し、evaluation同士の依存先、test、README、設計書の参照を更新した。
+
+この変更は方式の数式、metric、成果物定義を変更しないファイル再配置である。短い公開API使用例、
+係数生成CLI、200行前後のscene renderer例は、adapterと成果物層の分離方針を決めてから移行する。
+ファイル移動と同時に新しい巨大なevaluation基底クラスやruntimeは導入しない。
+
+残る設計課題は次の通りである。
+
+- evaluation script同士がprivate helperをimportしている箇所を、固定結果型と小さな関数へ分離する。
+- mutable module globalでscenarioを切り替える方式を、明示的な設定値へ置換する。
+- 整数遅延と残差FIRの逐次処理部品を実運用層へ昇格するか、既存部品との責務境界を確認する。
+- 可視性候補指標は人間の視覚評価との一致を校正するまでPendingとし、自動採否へ使用しない。
+
 ## 12. BL指標校正の基準出力
 
 ### 12.1 単一source基準条件

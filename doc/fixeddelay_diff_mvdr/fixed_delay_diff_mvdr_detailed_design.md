@@ -1332,7 +1332,7 @@ Beamforming Evaluation の分類では、本変更は差分 MVDR の統計推定
 実行コマンドは以下である。
 
 ```powershell
-.\.venv\Scripts\python.exe .\examples\beamforming\evaluate_streaming_diff_mvdr_covariance_compare.py
+.\.venv\Scripts\python.exe .\evaluations\beamforming\evaluate_streaming_diff_mvdr_covariance_compare.py
 ```
 
 出力先は以下である。
@@ -1416,7 +1416,7 @@ w^H a = 1
 `evaluate_streaming_diff_mvdr_covariance_compare.py` は、別環境でも同じ評価条件を再現できるように `--config` で JSON を受け取る。既定の 3 秒評価条件は以下に保存した。
 
 ```text
-examples/beamforming/streaming_diff_mvdr_covariance_compare_config.json
+evaluations/beamforming/streaming_diff_mvdr_covariance_compare_config.json
 ```
 
 この JSON は、サンプリング周波数、音速、channel 数、センサ間隔、FFT 長、積分時間、frame 長、diagonal loading、beam 数、beam 方位範囲、出力先、scenario/source 群を保持する。
@@ -1424,15 +1424,15 @@ examples/beamforming/streaming_diff_mvdr_covariance_compare_config.json
 実行例は以下である。
 
 ```powershell
-.\.venv\Scripts\python.exe .\examples\beamforming\evaluate_streaming_diff_mvdr_covariance_compare.py `
-  --config .\examples\beamforming\streaming_diff_mvdr_covariance_compare_config.json
+.\.venv\Scripts\python.exe .\evaluations\beamforming\evaluate_streaming_diff_mvdr_covariance_compare.py `
+  --config .\evaluations\beamforming\streaming_diff_mvdr_covariance_compare_config.json
 ```
 
 出力先だけを変える場合は、config を編集せず `--output-dir` で上書きできる。
 
 ```powershell
-.\.venv\Scripts\python.exe .\examples\beamforming\evaluate_streaming_diff_mvdr_covariance_compare.py `
-  --config .\examples\beamforming\streaming_diff_mvdr_covariance_compare_config.json `
+.\.venv\Scripts\python.exe .\evaluations\beamforming\evaluate_streaming_diff_mvdr_covariance_compare.py `
+  --config .\evaluations\beamforming\streaming_diff_mvdr_covariance_compare_config.json `
   --output-dir artifacts\beamforming\fixed_delay_diff_mvdr\streaming_covariance_compare_local
 ```
 

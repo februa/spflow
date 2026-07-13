@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
-from examples.beamforming.build_fixed_delay_diff_mvdr_review_pack import (  # noqa: E402
+from evaluations.beamforming.build_fixed_delay_diff_mvdr_review_pack import (  # noqa: E402
     LEVEL_UNIT_LABEL,
     METHOD_COLORS,
     METHOD_LABELS,

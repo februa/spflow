@@ -8,7 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from examples.beamforming import evaluate_streaming_diff_mvdr_covariance_compare as streaming_eval
+from evaluations.beamforming import (
+    evaluate_streaming_diff_mvdr_covariance_compare as streaming_eval,
+)
 
 
 def _small_config_payload(output_dir: Path) -> dict[str, object]:

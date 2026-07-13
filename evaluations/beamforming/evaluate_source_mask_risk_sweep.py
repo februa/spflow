@@ -16,7 +16,7 @@ from typing import TypeAlias
 import numpy as np
 from numpy.typing import NDArray
 
-from examples.beamforming.evaluate_lightweight_abf_like_august_shortlist import (
+from evaluations.beamforming.evaluate_lightweight_abf_like_august_shortlist import (
     SHORTLIST_CANDIDATES,
     WIDE_GUARD,
     CandidateEvaluation,
@@ -24,7 +24,7 @@ from examples.beamforming.evaluate_lightweight_abf_like_august_shortlist import 
     _evaluate_candidate,
     _evaluation_window,
 )
-from examples.beamforming.evaluate_lightweight_abf_like_comparison import (
+from evaluations.beamforming.evaluate_lightweight_abf_like_comparison import (
     ARRAY_DEFINITION_PATH,
     DETECTED_SOURCE_THRESHOLD_DB_BELOW_PEAK,
     FRACTIONAL_DELAY_FILTER_BANK_PATH,

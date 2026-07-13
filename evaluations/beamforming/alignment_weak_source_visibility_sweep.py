@@ -7,12 +7,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 from numpy.typing import NDArray
 
 from spflow.beamforming.ebae import EbaeConfig, design_ebae_weights_band
-
 
 FloatArray = NDArray[np.float64]
 ComplexArray = NDArray[np.complex128]
@@ -101,10 +100,15 @@ def _curves(
     curves["ebae_S"] = np.asarray(s_result.music_spectrum, dtype=np.float64)
     counts["ebae_S"] = s_result.signal_count
     for candidate in range(AZIMUTH_DEG.size):
-        covariance = (
-            s_covariance
-            if candidate == 0
-            else _covariance(sources, delays, steering, analysis_width_hz, candidate)
+        # candidate は方位 index であり、0 は「候補なし」ではなく 0 deg を表す。
+        # 全候補で同じ T 共分散式を使わないと、0 deg だけ S 共分散が混入し、
+        # endfire 条件の方式比較が別の数式になるため、index 0 も明示的に時間整合する。
+        covariance = _covariance(
+            sources,
+            delays,
+            steering,
+            analysis_width_hz,
+            candidate,
         )
         hermitian = 0.5 * (covariance + covariance.conj().T)
         loading = 1.0e-3 * float(np.real(np.trace(hermitian))) / N_CHANNEL
@@ -128,10 +132,27 @@ def _curves(
     return curves, counts
 
 
-def _visibility(
+def _uncalibrated_visibility_observations(
     curve: FloatArray, weak_azimuth_deg: float, strong_azimuth_deg: float
 ) -> tuple[float, float, bool]:
-    """強信号とは別の弱信号peakについて誤差、prominence、可視性を返す。"""
+    """弱信号 peak の観測値と未校正候補規則への適合状態を返す。
+
+    Args:
+        curve: 方位推定曲線。shape は ``[n_direction]``、線形 power 比。
+        weak_azimuth_deg: 弱信号の真値方位。単位は deg。
+        strong_azimuth_deg: 強信号の真値方位。単位は deg。
+
+    Returns:
+        ``(peak_error_deg, prominence_db, meets_candidate_rule)``。最後の値は
+        視覚評価との対応をまだ校正していない観測用候補規則であり、方式の合否や
+        「可視／不可視」の確定ラベルには使用しない。
+
+    Raises:
+        ValueError: 弱信号近傍に強信号以外の候補 beam が存在しない場合。
+
+    境界条件:
+        方位軸の端点は左右両側の局所 peak を定義できないため、候補規則には適合しない。
+    """
     nearest = int(np.argmin(np.abs(AZIMUTH_DEG - weak_azimuth_deg)))
     strong_index = int(np.argmin(np.abs(AZIMUTH_DEG - strong_azimuth_deg)))
     candidates = [
@@ -139,6 +160,8 @@ def _visibility(
         for index in range(max(0, nearest - 1), min(curve.size, nearest + 2))
         if index != strong_index
     ]
+    if not candidates:
+        raise ValueError("weak-source neighborhood must contain a beam other than the strong beam.")
     local = max(candidates, key=lambda index: float(curve[index]))
     normalized_db = 10.0 * np.log10(
         np.maximum(curve / max(float(np.max(curve)), np.finfo(np.float64).tiny), 1.0e-12)
@@ -169,8 +192,12 @@ def calculate_visibility_sweep() -> tuple[dict[str, Any], ...]:
                 for analysis_width_hz in ANALYSIS_WIDTHS_HZ:
                     curves, counts = _curves(sources, analysis_width_hz)
                     for key, curve in curves.items():
-                        error, prominence, visible = _visibility(
-                            curve, weak_azimuth, strong_azimuth
+                        error, prominence, meets_candidate_rule = (
+                            _uncalibrated_visibility_observations(
+                                curve,
+                                weak_azimuth,
+                                strong_azimuth,
+                            )
                         )
                         algorithm, method = key.split("_")
                         rows.append(
@@ -185,7 +212,8 @@ def calculate_visibility_sweep() -> tuple[dict[str, Any], ...]:
                                 "weak_level_delta_db_re_strong": weak_delta_db,
                                 "weak_peak_error_deg": error,
                                 "weak_peak_prominence_db": prominence,
-                                "weak_source_visible": visible,
+                                "meets_uncalibrated_visibility_rule": meets_candidate_rule,
+                                "visibility_validation_status": "pending_human_visual_calibration",
                                 "detected_source_count": counts.get(key, -1),
                             }
                         )
@@ -246,7 +274,7 @@ def write_review_pack(output_dir: Path = OUTPUT_DIR) -> None:
         for level_index, level_delta in enumerate(WEAK_LEVEL_DELTAS_DB):
             for separation_index, separation in enumerate(SEPARATIONS_DEG):
                 selected = [
-                    bool(row["weak_source_visible"])
+                    bool(row["meets_uncalibrated_visibility_rule"])
                     for row in rows
                     if row["algorithm"] == algorithm
                     and row["covariance_method"] == method
@@ -266,13 +294,16 @@ def write_review_pack(output_dir: Path = OUTPUT_DIR) -> None:
         )
     if image_handle is None:
         raise RuntimeError("visibility heatmap requires at least one method panel.")
-    figure.colorbar(image_handle, ax=axes, label="Weak-source visibility rate")
-    figure.savefig(figure_dir / "weak_source_visibility_heatmap.png", dpi=160)
+    figure.colorbar(image_handle, ax=axes, label="Uncalibrated candidate-rule rate")
+    figure.savefig(figure_dir / "uncalibrated_visibility_candidate_heatmap.png", dpi=160)
     plt.close(figure)
     (output_dir / "review_index.md").write_text(
-        "# 強弱近接信号の可視性sweep\n\n"
-        "弱信号peak誤差2 deg以下かつprominence 3 dB以上を可視とする。\n\n"
-        "S covariance familyはS1/S2a/S2b、T covariance familyはT1/T2a/T2bに共通する共分散構成を表す。"
+        "# 強弱近接信号の可視性候補指標 sweep（Pending）\n\n"
+        "弱信号 peak 誤差2 deg以下かつ prominence 3 dB以上という規則は、"
+        "視覚評価との対応を未校正の候補指標である。人間の順位、対比較、合否との一致率を"
+        "検証するまでは、方式の採否や可視／不可視の確定判定には使用しない。\n\n"
+        "S covariance familyはS1/S2a/S2b、T covariance familyは"
+        "T1/T2a/T2bに共通する共分散構成を表す。"
         "本図はFIR実現座標を適用する前の方位推定結果である。\n",
         encoding="utf-8",
     )

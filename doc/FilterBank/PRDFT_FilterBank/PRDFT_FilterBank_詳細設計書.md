@@ -1684,7 +1684,7 @@ prototype なし block DFT bank の帯域表現限界を反映している。
 
 この確認用として、
 
-- `examples/beamforming/scene_renderer_mvdr_stability_sweep.py`
+- `evaluations/beamforming/scene_renderer_mvdr_stability_sweep.py`
 
 を追加した。
 
@@ -1891,7 +1891,7 @@ interferer なしの target-only 条件を確認した。
 となるため、`0-10000 Hz` は空間サンプリング条件の内側に入る。
 
 この条件に合わせて、
-`examples/beamforming/scene_renderer_mvdr_stability_sweep.py`
+`evaluations/beamforming/scene_renderer_mvdr_stability_sweep.py`
 の default を以下へ変更した。
 
 - `fs = 32768 Hz`

@@ -35,10 +35,10 @@ from scene_renderer import (  # noqa: E402
 )
 from scene_renderer.receiver import ArrayGeometry  # noqa: E402
 
-from examples.beamforming.evaluate_external_fixed_delay_diff_mvdr_tap_tradeoff import (  # noqa: E402
+from evaluations.beamforming.evaluate_external_fixed_delay_diff_mvdr_tap_tradeoff import (  # noqa: E402
     _arrival_steering,
 )
-from examples.beamforming.external_fixed_delay_diff_mvdr_inputs import (  # noqa: E402
+from evaluations.beamforming.external_fixed_delay_diff_mvdr_inputs import (  # noqa: E402
     apply_frequency_shading_to_weights,
     load_complex_shading_matlab_raw,
     load_fractional_delay_filter_bank_matlab_raw,

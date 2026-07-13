@@ -52,15 +52,15 @@ pip install -e ".[dev,beamforming-eval,vendor]"
 The streaming diff-MVDR covariance comparison accepts a JSON parameter file:
 
 ```bash
-python examples/beamforming/evaluate_streaming_diff_mvdr_covariance_compare.py \
-  --config examples/beamforming/streaming_diff_mvdr_covariance_compare_config.json
+python evaluations/beamforming/evaluate_streaming_diff_mvdr_covariance_compare.py \
+  --config evaluations/beamforming/streaming_diff_mvdr_covariance_compare_config.json
 ```
 
 To regenerate the default 3 second evaluation config:
 
 ```bash
-python examples/beamforming/evaluate_streaming_diff_mvdr_covariance_compare.py \
-  --write-default-config examples/beamforming/streaming_diff_mvdr_covariance_compare_config.json
+python evaluations/beamforming/evaluate_streaming_diff_mvdr_covariance_compare.py \
+  --write-default-config evaluations/beamforming/streaming_diff_mvdr_covariance_compare_config.json
 ```
 
 The config controls sampling rate, channel count, FFT length, integration duration, beam axis, output directory, and source scenarios.

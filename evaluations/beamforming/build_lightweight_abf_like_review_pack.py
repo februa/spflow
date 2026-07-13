@@ -18,7 +18,7 @@ from typing import Any, TypeAlias
 import numpy as np
 from numpy.typing import NDArray
 
-from examples.beamforming.evaluate_lightweight_abf_like_august_shortlist import (
+from evaluations.beamforming.evaluate_lightweight_abf_like_august_shortlist import (
     LEVEL_UNIT_LABEL,
     TONE_FREQUENCIES_HZ,
     CandidateEvaluation,
@@ -794,5 +794,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 

@@ -188,7 +188,7 @@ Tier 0 では、target 90 deg / 10000 Hz、interferer 60 deg / 8192 Hz、offgrid
 
 ### 8.1 実行内容
 
-`examples/beamforming/evaluate_lightweight_abf_like_comparison.py` を追加し、固定整相 baseline、A2 source-mask SLC raw/effective、B1 FD/shading candidate を同じ `ABF_like_non_source_suppression` 指標で比較した。
+`evaluations/beamforming/evaluate_lightweight_abf_like_comparison.py` を追加し、固定整相 baseline、A2 source-mask SLC raw/effective、B1 FD/shading candidate を同じ `ABF_like_non_source_suppression` 指標で比較した。
 
 出力は次へ保存した。
 
@@ -246,10 +246,10 @@ A2 が上手くいかない条件は、まず実装ではなく評価 mask と s
 
 ### 9.2 生成した artifact
 
-絞り込み評価は `examples/beamforming/evaluate_lightweight_abf_like_august_shortlist.py` で実行した。実行時は repo root から module として呼び出す。
+絞り込み評価は `evaluations/beamforming/evaluate_lightweight_abf_like_august_shortlist.py` で実行した。実行時は repo root から module として呼び出す。
 
 ```text
-.venv\Scripts\python.exe -m examples.beamforming.evaluate_lightweight_abf_like_august_shortlist
+.venv\Scripts\python.exe -m evaluations.beamforming.evaluate_lightweight_abf_like_august_shortlist
 ```
 
 出力は次へ保存した。
@@ -330,7 +330,7 @@ runtime は Python example 全体ではなく、A2 kernel である `_run_a2_sou
 ### 9.8 検証コマンド
 
 ```text
-.venv\Scripts\python.exe -m ruff check src\spflow\beamforming\abf_like_metrics.py src\spflow\beamforming\source_mask_slc.py examples\beamforming\evaluate_lightweight_abf_like_comparison.py examples\beamforming\evaluate_lightweight_abf_like_august_shortlist.py tests\beamforming\test_abf_like_metrics.py tests\beamforming\test_source_mask_slc.py
+.venv\Scripts\python.exe -m ruff check src\spflow\beamforming\abf_like_metrics.py src\spflow\beamforming\source_mask_slc.py evaluations\beamforming\evaluate_lightweight_abf_like_comparison.py evaluations\beamforming\evaluate_lightweight_abf_like_august_shortlist.py tests\beamforming\test_abf_like_metrics.py tests\beamforming\test_source_mask_slc.py
 結果: All checks passed
 
 .venv\Scripts\pyright.exe -p artifacts\beamforming\lightweight_abf_like_comparison\pyright_check\pyrightconfig.json
@@ -404,7 +404,7 @@ FRAZ の周波数ごとの peak marker は実在 source ではなく、その周
 PNG を個別に貼り付けずにレビューできるよう、`review_pack` を生成した。生成スクリプトは次である。
 
 ```text
-.venv\Scripts\python.exe -m examples.beamforming.build_lightweight_abf_like_review_pack
+.venv\Scripts\python.exe -m evaluations.beamforming.build_lightweight_abf_like_review_pack
 ```
 
 出力先は次である。

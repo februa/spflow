@@ -11,7 +11,7 @@ import numpy as np
 # CI や Codex 環境では Tcl/Tk が利用できないことがあるため、GUI backend を使わない。
 matplotlib.use("Agg", force=True)
 
-from examples.beamforming.evaluate_external_scene_renderer_fixed_delay_diff_mvdr import (
+from evaluations.beamforming.evaluate_external_scene_renderer_fixed_delay_diff_mvdr import (
     ExternalLevelNormalizationCheck,
     _prepare_clean_tone_level_for_display,
     db20_noise_density_to_sample_rms_amplitude,
