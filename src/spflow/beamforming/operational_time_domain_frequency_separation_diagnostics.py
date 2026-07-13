@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
 
 from .._validation import require, require_positive_float, require_positive_int
+from ..beamforming_evaluation.signal_levels import calculate_tone_projection_rms_level_db20
 from .fractional_delay_slc_diagnostics import _run_fractional_delay_diagnostics
 from .operational_sparse_array import load_operational_sparse_array
 from .time_delay_diagnostics import TimeDelayDiagnosticConfig, TimeDelayDiagnosticSource
@@ -66,42 +66,6 @@ class OperationalSameAzimuthFrequencySeparationConfig:
         require_positive_float("duration_s", float(self.duration_s))
         require_positive_int("n_beam_az_real", int(self.n_beam_az_real))
         require_positive_int("btr_block_size", int(self.btr_block_size))
-
-
-def _tone_level_db20_rms(signal: NDArray[Any], frequency_hz: float, fs_hz: float) -> float:
-    """時間波形から指定周波数の RMS level を dB20 で推定する。
-
-    Args:
-        signal: 評価する時間波形。shape は `[n_sample]`。
-        frequency_hz: 射影する周波数。単位は Hz。
-        fs_hz: サンプリング周波数。単位は Hz。
-
-    Returns:
-        指定周波数成分の RMS 振幅 level。基準は入力振幅 1.0、表示は dB re input RMS。
-
-    Raises:
-        ValueError: `signal` が 1 次元でない、または周波数・サンプリング周波数が不正な場合。
-
-    境界条件:
-        ここでは STFT 窓ではなく、評価区間全体を 1 本の複素正弦へ射影する。
-        分析帯域幅は概ね `1 / duration_s` Hz であり、リアルタイム経路の処理方式ではなく評価器である。
-    """
-    values = np.asarray(signal, dtype=np.complex128)
-    require(values.ndim == 1, "signal must have shape (n_sample,).")
-    require(values.size > 0, "signal must contain at least one sample.")
-    require_positive_float("frequency_hz", float(frequency_hz))
-    require_positive_float("fs_hz", float(fs_hz))
-
-    # reference shape: [n_sample]。axis=0 は時間サンプルである。
-    # exp(-j2πft) との内積により、実信号に含まれる +f 成分の複素振幅を推定する。
-    time_axis_s = np.arange(values.shape[0], dtype=np.float64) / float(fs_hz)
-    reference = np.exp(-1j * 2.0 * np.pi * float(frequency_hz) * time_axis_s)
-    coefficient = np.vdot(reference, values) / float(values.shape[0])
-
-    # 実数 tone は正負周波数に半分ずつ振幅を持つため、複素係数を peak 振幅へ戻してから RMS 化する。
-    peak_amplitude = 2.0 * np.abs(coefficient)
-    rms_amplitude = float(peak_amplitude / np.sqrt(2.0))
-    return float(20.0 * np.log10(max(rms_amplitude, np.finfo(np.float64).tiny)))
 
 
 def _build_same_azimuth_sources(config: OperationalSameAzimuthFrequencySeparationConfig) -> tuple[TimeDelayDiagnosticSource, ...]:
@@ -215,7 +179,11 @@ def run_operational_same_azimuth_frequency_separation_diagnostics(
     component_leakage_db: list[float] = []
     for source_index, source_spec in enumerate(source_specs):
         source_frequency_hz = float(source_spec.frequency_hz)
-        mixed_level_db20 = _tone_level_db20_rms(target_beam_output, frequency_hz=source_frequency_hz, fs_hz=fs_hz)
+        mixed_level_db20 = calculate_tone_projection_rms_level_db20(
+            target_beam_output,
+            frequency_hz=source_frequency_hz,
+            fs_hz=fs_hz,
+        )
         target_frequency_power_delta_db = float(mixed_level_db20 - float(source_spec.level_db20))
         target_frequency_power_delta_db_values.append(target_frequency_power_delta_db)
 
@@ -225,9 +193,17 @@ def run_operational_same_azimuth_frequency_separation_diagnostics(
             source_specs=(source_spec,),
         )
         component_target_output = component_beam_output[target_beam_index, :]
-        own_level_db20 = _tone_level_db20_rms(component_target_output, frequency_hz=source_frequency_hz, fs_hz=fs_hz)
+        own_level_db20 = calculate_tone_projection_rms_level_db20(
+            component_target_output,
+            frequency_hz=source_frequency_hz,
+            fs_hz=fs_hz,
+        )
         off_frequency_levels = [
-            _tone_level_db20_rms(component_target_output, frequency_hz=float(other.frequency_hz), fs_hz=fs_hz)
+            calculate_tone_projection_rms_level_db20(
+                component_target_output,
+                frequency_hz=float(other.frequency_hz),
+                fs_hz=fs_hz,
+            )
             for other in source_specs
             if float(other.frequency_hz) != source_frequency_hz
         ]

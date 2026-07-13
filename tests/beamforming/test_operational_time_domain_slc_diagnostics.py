@@ -13,8 +13,8 @@ from spflow.beamforming import (
     run_operational_time_domain_slc_leakage_diagnostics,
 )
 from spflow.beamforming.operational_sparse_array import OperationalSparseArrayDefinition
-from spflow.beamforming.operational_time_domain_slc_diagnostics import _real_tone_rms_level_db20
 from spflow.beamforming.time_delay import design_fractional_delay_filter_bank
+from spflow.beamforming_evaluation import calculate_real_tone_response_rms_level_db20
 
 
 def _require_mapping(value: object, name: str) -> Mapping[str, object]:
@@ -65,12 +65,12 @@ def test_real_tone_rms_level_uses_positive_and_negative_frequency_responses() ->
     正周波数だけで BL レベルを作ると時間波形 RMS と一致しないため、
     片側だけ応答する条件で -3.01 dB になることを固定する。
     """
-    symmetric_level = _real_tone_rms_level_db20(
+    symmetric_level = calculate_real_tone_response_rms_level_db20(
         np.array([1.0 + 0.0j], dtype=np.complex128),
         np.array([1.0 + 0.0j], dtype=np.complex128),
         1.0,
     )
-    positive_only_level = _real_tone_rms_level_db20(
+    positive_only_level = calculate_real_tone_response_rms_level_db20(
         np.array([1.0 + 0.0j], dtype=np.complex128),
         np.array([0.0 + 0.0j], dtype=np.complex128),
         1.0,

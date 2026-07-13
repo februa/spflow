@@ -9,6 +9,18 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
+from ..beamforming_evaluation.fractional_response import (
+    calculate_fractional_beam_response_matrix,
+    normalize_evaluation_channel_weights,
+)
+from ..beamforming_evaluation.scan_grid import build_beam_scan_grid
+from ..beamforming_evaluation.signal_levels import (
+    calculate_block_rms_levels_db20,
+    calculate_one_sided_rms_spectrum_db20,
+    calculate_tone_projection_rms_level_db20,
+)
+from ..simulation.numerics import SimulationPrecision
+from ..simulation.tone_scene import synthesize_tone_scene
 from .diagnostic_plotting import (
     build_beam_diagnostic_plot_usage_notes,
     plot_bl_comparison,
@@ -24,15 +36,10 @@ from .time_delay_diagnostics import (
     TimeDelayDiagnosticConfig,
     TimeDelayDiagnosticSource,
     _build_array_positions,
-    _build_beam_grid,
-    _compress_time_rms_levels,
     _format_source_caption_fragment,
-    _generate_target_scene,
     _resolve_source_specs,
-    _rfft_levels_db20,
     _sanitize_label_for_filename,
     _source_label,
-    _tone_level_db20_rms,
     _validate_config,
 )
 from .time_delay_slc_diagnostics import (
@@ -43,7 +50,6 @@ from .time_delay_slc_diagnostics import (
     _resolve_target_source_indices,
     _synthesize_tone_from_snapshots,
 )
-
 
 FloatArray = NDArray[np.floating[Any]]
 
@@ -133,70 +139,6 @@ def _build_interference_source_comparisons(
     return comparisons
 
 
-def _normalize_channel_weights(channel_weights: FloatArray | None, n_ch: int) -> FloatArray:
-    """小数遅延固定整相で使う channel shading 係数を検証して返す。
-
-    Args:
-        channel_weights: active channel に対応する実数重み。shape は `[n_ch]`。None の場合は矩形重み。
-        n_ch: active channel 数。単位は本。
-
-    Returns:
-        検証済みの実数重み。shape は `[n_ch]`。
-
-    Raises:
-        ValueError: 重み shape が active channel 数と一致しない、有限でない、負値を含む、または係数和が正でない場合。
-
-    境界条件:
-        SLC の blocking matrix は固定整相の beam 出力と同じ正規化を仮定する。
-        そのため、非有限値、負値、係数和 0 のまま評価を続けると target 保護条件が数式と対応しないため停止する。
-    """
-    if int(n_ch) <= 0:
-        raise ValueError("n_ch must be positive.")
-    if channel_weights is None:
-        return np.ones(int(n_ch), dtype=np.float64)
-
-    weights = np.asarray(channel_weights, dtype=np.float64)
-    if weights.ndim != 1 or weights.shape[0] != int(n_ch):
-        raise ValueError("channel_weights must have shape (n_ch,).")
-    if not bool(np.all(np.isfinite(weights))):
-        raise ValueError("channel_weights must contain only finite values.")
-    if bool(np.any(weights < 0.0)):
-        raise ValueError("channel_weights must be non-negative.")
-    if float(np.sum(weights)) <= 0.0:
-        raise ValueError("channel_weights must contain positive total weight.")
-    return weights
-
-
-def _build_fractional_beam_response_matrix(
-    beamformer: FractionalDelayAndSumBeamformer,
-    frequency_hz: float,
-    channel_weights: FloatArray | None = None,
-) -> np.ndarray:
-    """小数遅延固定整相の理論ビーム応答行列を返す。
-
-    Args:
-        beamformer: 小数遅延固定整相器。`steering_response()` と `delay_table` を持つ。
-        frequency_hz: 評価周波数。単位は Hz。
-        channel_weights: active channel の shading 係数。shape は `[n_ch]`。None の場合は矩形重み。
-
-    Returns:
-        observation beam と look beam の複素応答行列。shape は `[n_beam, n_beam]`。
-    """
-    arrival_delay_sec = np.asarray(beamformer.delay_table.arrival_delay_sec, dtype=np.float64)
-    weights = _normalize_channel_weights(channel_weights, n_ch=int(arrival_delay_sec.shape[0]))
-    weight_sum = float(np.sum(weights))
-
-    # steering_response[ch, beam_obs] は、整数遅延位相と保存済み小数遅延 FIR の
-    # 複素周波数応答を含む observation beam 側の整相器応答である。
-    # arrival_phase[ch, beam_look] は look 方向から来る単一トーンの各 ch 到来位相である。
-    # channel shading 使用時は、beam 出力と同じ Σ w_ch * y_ch / Σw で beam-to-beam 応答を定義し、
-    # SLC の blocking matrix が実際の固定整相出力と同じ主ローブ応答を保護するようにする。
-    steering_response = np.asarray(beamformer.steering_response(float(frequency_hz)), dtype=np.complex128)
-    arrival_phase = np.exp(-1j * 2.0 * np.pi * float(frequency_hz) * arrival_delay_sec)
-    weighted_arrival_phase = weights[:, np.newaxis] * arrival_phase
-    return (steering_response.T @ weighted_arrival_phase) / weight_sum
-
-
 def _evaluate_fractional_source_metrics_and_save_bl(
     beam_output: np.ndarray,
     axis_az_deg: np.ndarray,
@@ -211,7 +153,7 @@ def _evaluate_fractional_source_metrics_and_save_bl(
     for source_index, source_spec in enumerate(source_specs):
         beam_levels_db20 = np.array(
             [
-                _tone_level_db20_rms(
+                calculate_tone_projection_rms_level_db20(
                     beam_output[beam_index],
                     frequency_hz=float(source_spec.frequency_hz),
                     fs_hz=float(config.fs_hz),
@@ -285,18 +227,36 @@ def _run_fractional_delay_diagnostics(
 
     source_specs = _resolve_source_specs(config)
     array_positions_m, array_geometry_name, array_is_sparse = _build_array_positions(config)
-    beam_grid = _build_beam_grid(config)
-    multichannel_signal, _ = _generate_target_scene(array_positions_m, source_specs, config)
+    beam_grid = build_beam_scan_grid(
+        azimuth_min_deg=float(config.az_min_deg),
+        azimuth_max_deg=float(config.az_max_deg),
+        display_elevation_deg=float(config.display_elevation_deg),
+        n_real_azimuth_beams=int(config.n_beam_az_real),
+        n_virtual_azimuth_beams=int(config.n_beam_az_virtual),
+    )
+    scene = synthesize_tone_scene(
+        array_positions_m=array_positions_m,
+        sources=source_specs,
+        fs_hz=float(config.fs_hz),
+        duration_s=float(config.duration_s),
+        sound_speed_m_s=float(config.sound_speed_m_s),
+        noise_level_db20=float(config.noise_level_db20),
+        random_seed=int(config.random_seed),
+        precision=SimulationPrecision.SINGLE,
+    )
 
     beamformer = FractionalDelayAndSumBeamformer.from_geometry_and_filter_bank_path(
         array_pos_m=array_positions_m,
-        dir_cos=np.asarray(beam_grid["directions"], dtype=np.float64),
+        dir_cos=beam_grid.directions,
         fs_hz=float(config.fs_hz),
         sound_speed_m_s=float(config.sound_speed_m_s),
         fractional_filter_bank_path=fractional_delay_filter_bank_path,
     )
-    weights = _normalize_channel_weights(channel_weights, n_ch=int(array_positions_m.shape[0]))
-    beamformer_result = beamformer.process(multichannel_signal, return_steered_channels=True)
+    weights = normalize_evaluation_channel_weights(
+        channel_weights,
+        n_ch=int(array_positions_m.shape[0]),
+    )
+    beamformer_result = beamformer.process(scene.signal, return_steered_channels=True)
     if not isinstance(beamformer_result, tuple):
         # return_steered_channels=True では tuple が契約である。
         # 型推論上の Union を実行時にも検証し、Pylance が主出力と ch 別出力を混同しないようにする。
@@ -309,8 +269,11 @@ def _run_fractional_delay_diagnostics(
     # channel shading は Σ w_ch y_ch / Σw として適用し、固定整相の target peak 基準を矩形平均と揃える。
     beam_output = np.sum(steered_channels * weights[np.newaxis, :, np.newaxis], axis=1) / float(np.sum(weights))
 
-    axis_az_deg = np.asarray(beam_grid["axis_az_deg"], dtype=np.float64)
-    freqs_hz, fraz_levels_db20 = _rfft_levels_db20(beam_output, fs_hz=float(config.fs_hz))
+    axis_az_deg = beam_grid.azimuth_deg
+    freqs_hz, fraz_levels_db20 = calculate_one_sided_rms_spectrum_db20(
+        beam_output,
+        fs_hz=float(config.fs_hz),
+    )
     fraz_global_peak_beam_index, fraz_global_peak_frequency_index = np.unravel_index(
         np.argmax(fraz_levels_db20),
         fraz_levels_db20.shape,
@@ -321,7 +284,7 @@ def _run_fractional_delay_diagnostics(
         fraz_levels_db20[int(fraz_global_peak_beam_index), int(fraz_global_peak_frequency_index)]
     )
 
-    btr_levels_db20, btr_times_s = _compress_time_rms_levels(
+    btr_levels_db20, btr_times_s = calculate_block_rms_levels_db20(
         beam_output,
         fs_hz=float(config.fs_hz),
         block_size=int(config.btr_block_size),
@@ -505,7 +468,10 @@ def run_fractional_delay_slc_diagnostics(
         fractional_delay_filter_bank_path=fractional_delay_filter_bank_path,
         channel_weights=channel_weights,
     )
-    summary_weights = _normalize_channel_weights(channel_weights, n_ch=int(beamformer.delay_table.n_ch))
+    summary_weights = normalize_evaluation_channel_weights(
+        channel_weights,
+        n_ch=int(beamformer.delay_table.n_ch),
+    )
 
     protected_target_indices = _resolve_target_source_indices(source_specs, target_source_indices)
     protected_target_index_set = {int(source_index) for source_index in protected_target_indices}
@@ -527,7 +493,7 @@ def run_fractional_delay_slc_diagnostics(
             fs_hz=float(config.fs_hz),
             block_size=int(slc_analysis_block_size),
         )
-        response_matrix = _build_fractional_beam_response_matrix(
+        response_matrix = calculate_fractional_beam_response_matrix(
             beamformer=beamformer,
             frequency_hz=float(target_frequency_hz),
             channel_weights=channel_weights,
@@ -560,15 +526,18 @@ def run_fractional_delay_slc_diagnostics(
         tone_design_summary["trimmed_length"] = int(trimmed_length)
         per_frequency_design_summaries.append(tone_design_summary)
 
-    fixed_btr_levels_db20, _ = _compress_time_rms_levels(
+    fixed_btr_levels_db20, _ = calculate_block_rms_levels_db20(
         fixed_beam_output,
         fs_hz=float(config.fs_hz),
         block_size=int(config.btr_block_size),
     )
     fixed_btr_relative_levels_db = fixed_btr_levels_db20 - np.max(fixed_btr_levels_db20, axis=1, keepdims=True)
 
-    slc_freqs_hz, slc_fraz_levels_db20 = _rfft_levels_db20(slc_beam_output, fs_hz=float(config.fs_hz))
-    slc_btr_levels_db20, slc_btr_times_s = _compress_time_rms_levels(
+    slc_freqs_hz, slc_fraz_levels_db20 = calculate_one_sided_rms_spectrum_db20(
+        slc_beam_output,
+        fs_hz=float(config.fs_hz),
+    )
+    slc_btr_levels_db20, slc_btr_times_s = calculate_block_rms_levels_db20(
         slc_beam_output,
         fs_hz=float(config.fs_hz),
         block_size=int(config.btr_block_size),

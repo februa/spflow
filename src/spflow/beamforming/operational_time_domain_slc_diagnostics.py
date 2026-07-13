@@ -12,28 +12,19 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .._validation import require, require_positive_float, require_positive_int
+from ..beamforming_evaluation.fractional_response import (
+    calculate_fractional_beam_response_matrix,
+)
+from ..beamforming_evaluation.level_metrics import (
+    calculate_real_tone_response_rms_level_db20,
+    calculate_rms_level_db20,
+)
 from .diagnostic_plotting import require_matplotlib
-from .fractional_delay_slc_diagnostics import _build_fractional_beam_response_matrix, _run_fractional_delay_diagnostics
+from .fractional_delay_slc_diagnostics import _run_fractional_delay_diagnostics
 from .operational_sparse_array import load_operational_sparse_array
 from .slc import BeamDomainSLC, SlcConfig, SlcProcessResult, build_time_tapped_reference_matrix
 from .time_delay import FractionalDelayAndSumBeamformer
 from .time_delay_diagnostics import TimeDelayDiagnosticConfig, TimeDelayDiagnosticSource
-
-
-def _rms_level_db20(signal: NDArray[Any]) -> float:
-    """実数または複素信号の RMS レベルを dB20 で返す。
-
-    Args:
-        signal: 評価信号。shape は `[n_sample]` または任意 shape。
-
-    Returns:
-        RMS 振幅の dB20 値。基準値は 1.0。
-    """
-    values = np.asarray(signal)
-    # dB 化ではゼロ入力を -inf にしない。診断 JSON で扱いやすくするため、
-    # float64 の最小正値を下限にして、完全キャンセル時も有限値として記録する。
-    rms = float(np.sqrt(np.mean(np.abs(values) ** 2)))
-    return float(20.0 * np.log10(max(rms, np.finfo(np.float64).tiny)))
 
 
 def _finite_float_statistics(values: list[float]) -> dict[str, float | int | None]:
@@ -412,39 +403,6 @@ class _ProtectedTargetSlcBlLevels:
     interferer_after_db20: NDArray[np.float64]
 
 
-def _real_tone_rms_level_db20(
-    positive_frequency_response: NDArray[Any],
-    negative_frequency_response: NDArray[Any],
-    source_rms: float,
-) -> NDArray[np.float64]:
-    """実信号 tone の正負周波数応答から RMS レベルを計算する。
-
-    Args:
-        positive_frequency_response: `+f` 側の複素応答。shape は任意だが、
-            `negative_frequency_response` と同じ shape である。
-        negative_frequency_response: `-f` 側の複素応答。shape は `positive_frequency_response` と同じ。
-        source_rms: 入力 tone の RMS 振幅。単位はシミュレーション入力基準である。
-
-    Returns:
-        実信号 tone の出力 RMS レベル。shape は入力応答と同じで、単位は dB re input RMS。
-
-    境界条件:
-        固定整相の実 FIR では通常 `H(-f)=conj(H(+f))` なので `|H(+f)|` だけでも同じ値になる。
-        しかし SLC / MVDR / LCMV / GSC の重みは複素になり得るため、正周波数だけを見ると
-        実際の時間波形 RMS と BL 図のレベルがずれる。ここでは
-        `RMS = source_rms * sqrt((|H(+f)|^2 + |H(-f)|^2) / 2)` として、実信号の正負周波数を合成する。
-    """
-    positive_response = np.asarray(positive_frequency_response, dtype=np.complex128)
-    negative_response = np.asarray(negative_frequency_response, dtype=np.complex128)
-    require(positive_response.shape == negative_response.shape, "positive and negative responses must have the same shape.")
-    require_positive_float("source_rms", float(source_rms))
-
-    # 実 tone `sqrt(2) * source_rms * cos(ωn)` は、正負周波数に peak/2 ずつ分かれる。
-    # 時間平均では +f と -f の交差項が消えるため、power は 2 側帯の二乗平均になる。
-    response_rms = float(source_rms) * np.sqrt((np.abs(positive_response) ** 2 + np.abs(negative_response) ** 2) / 2.0)
-    return np.asarray(20.0 * np.log10(np.maximum(response_rms, np.finfo(np.float64).tiny)), dtype=np.float64)
-
-
 def _calculate_protected_target_slc_response_curve(
     *,
     response_matrix: NDArray[Any],
@@ -527,8 +485,16 @@ def _calculate_protected_target_slc_response_curve(
     negative_after_response = fixed_negative_response - effective_eta * negative_cancel_response
     source_rms = float(10.0 ** (float(source_level_db20) / 20.0))
 
-    before_db20 = _real_tone_rms_level_db20(fixed_positive_response, fixed_negative_response, source_rms)
-    after_db20 = _real_tone_rms_level_db20(positive_after_response, negative_after_response, source_rms)
+    before_db20 = calculate_real_tone_response_rms_level_db20(
+        fixed_positive_response,
+        fixed_negative_response,
+        source_rms,
+    )
+    after_db20 = calculate_real_tone_response_rms_level_db20(
+        positive_after_response,
+        negative_after_response,
+        source_rms,
+    )
     return np.asarray(before_db20, dtype=np.float64), np.asarray(after_db20, dtype=np.float64)
 
 
@@ -1184,12 +1150,12 @@ def run_operational_time_domain_slc_leakage_diagnostics(
         block_size=int(slc_analysis_block_size),
         config=slc_config,
     )
-    response_matrix = _build_fractional_beam_response_matrix(
+    response_matrix = calculate_fractional_beam_response_matrix(
         beamformer=mixed_beamformer,
         frequency_hz=float(config.processing_frequency_hz),
     )
     interferer_frequency_hz = float(config.processing_frequency_hz if config.interferer_frequency_hz is None else config.interferer_frequency_hz)
-    interferer_response_matrix = _build_fractional_beam_response_matrix(
+    interferer_response_matrix = calculate_fractional_beam_response_matrix(
         beamformer=mixed_beamformer,
         frequency_hz=interferer_frequency_hz,
     )
@@ -1260,15 +1226,15 @@ def run_operational_time_domain_slc_leakage_diagnostics(
     effective_target_component = _apply_streaming_slc_to_component(target_only_beam_output, target_beam_index, block_results)
     effective_interferer_component = _apply_streaming_slc_to_component(interferer_only_beam_output, target_beam_index, block_results)
     level_summary = {
-        "mixed_before_db20": _rms_level_db20(fixed_mixed_target),
-        "mixed_after_raw_slc_db20": _rms_level_db20(raw_mixed_target),
-        "mixed_after_effective_db20": _rms_level_db20(effective_mixed_target),
-        "target_before_db20": _rms_level_db20(fixed_target_component),
-        "target_after_raw_slc_db20": _rms_level_db20(raw_target_component),
-        "target_after_effective_db20": _rms_level_db20(effective_target_component),
-        "interferer_before_db20": _rms_level_db20(fixed_interferer_component),
-        "interferer_after_raw_slc_db20": _rms_level_db20(raw_interferer_component),
-        "interferer_after_effective_db20": _rms_level_db20(effective_interferer_component),
+        "mixed_before_db20": calculate_rms_level_db20(fixed_mixed_target),
+        "mixed_after_raw_slc_db20": calculate_rms_level_db20(raw_mixed_target),
+        "mixed_after_effective_db20": calculate_rms_level_db20(effective_mixed_target),
+        "target_before_db20": calculate_rms_level_db20(fixed_target_component),
+        "target_after_raw_slc_db20": calculate_rms_level_db20(raw_target_component),
+        "target_after_effective_db20": calculate_rms_level_db20(effective_target_component),
+        "interferer_before_db20": calculate_rms_level_db20(fixed_interferer_component),
+        "interferer_after_raw_slc_db20": calculate_rms_level_db20(raw_interferer_component),
+        "interferer_after_effective_db20": calculate_rms_level_db20(effective_interferer_component),
     }
     level_summary["raw_mixed_power_delta_db"] = float(level_summary["mixed_after_raw_slc_db20"] - level_summary["mixed_before_db20"])
     level_summary["effective_mixed_power_delta_db"] = float(level_summary["mixed_after_effective_db20"] - level_summary["mixed_before_db20"])

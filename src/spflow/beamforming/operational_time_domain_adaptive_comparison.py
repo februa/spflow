@@ -12,21 +12,31 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .._validation import require, require_positive_float, require_positive_int
+from ..beamforming_evaluation.fractional_response import (
+    calculate_fractional_beam_response_matrix,
+)
+from ..beamforming_evaluation.level_metrics import (
+    calculate_real_tone_response_rms_level_db20,
+    calculate_rms_level_db20,
+)
+from ..beamforming_evaluation.scan_grid import build_beam_scan_grid
+from ..simulation.numerics import SimulationPrecision
+from ..simulation.tone_scene import (
+    direction_from_azimuth_elevation,
+    synthesize_tone_scene,
+)
 from .diagnostic_plotting import require_matplotlib
-from .fractional_delay_slc_diagnostics import _build_fractional_beam_response_matrix
 from .operational_sparse_array import load_operational_sparse_array
 from .operational_time_domain_slc_diagnostics import (
     OperationalTimeDomainSlcDiagnosticConfig,
     _build_source_specs,
     _plot_slc_bl_overlay,
     _protected_target_bl_sidelobe_metrics,
-    _real_tone_rms_level_db20,
-    _rms_level_db20,
     run_operational_time_domain_slc_leakage_diagnostics,
 )
 from .slc import SlcConfig
 from .time_delay import FractionalDelayAndSumBeamformer
-from .time_delay_diagnostics import TimeDelayDiagnosticConfig, _build_beam_grid, _direction_from_az_el, _generate_target_scene
+from .time_delay_diagnostics import TimeDelayDiagnosticConfig
 from .time_domain_adaptive import (
     apply_time_domain_fir_beamformer,
     build_real_tone_constraint_matrix,
@@ -126,6 +136,31 @@ def _make_time_delay_config(
     )
 
 
+def _synthesize_configured_scene(
+    *,
+    active_positions_m: NDArray[np.float64],
+    config: TimeDelayDiagnosticConfig,
+) -> NDArray[np.floating[Any]]:
+    """比較scenarioの診断設定を汎用tone scene生成部品へ写像する。"""
+
+    source_specs = config.source_specs
+    if source_specs is None or len(source_specs) == 0:
+        # target-only/interferer-onlyを含む比較では、各configへ明示sourceを設定する。
+        # 空のままnoiseだけを方式入力へ渡すと成分分解の意味が変わるため早期に停止する。
+        raise ValueError("time-domain adaptive comparison requires explicit source_specs.")
+    scene = synthesize_tone_scene(
+        array_positions_m=active_positions_m,
+        sources=source_specs,
+        fs_hz=float(config.fs_hz),
+        duration_s=float(config.duration_s),
+        sound_speed_m_s=float(config.sound_speed_m_s),
+        noise_level_db20=float(config.noise_level_db20),
+        random_seed=int(config.random_seed),
+        precision=SimulationPrecision.SINGLE,
+    )
+    return scene.signal
+
+
 def _build_fractional_beamformer(
     *,
     active_positions_m: NDArray[np.float64],
@@ -133,15 +168,21 @@ def _build_fractional_beamformer(
     fractional_delay_filter_bank_path: Path,
 ) -> tuple[FractionalDelayAndSumBeamformer, NDArray[np.float64]]:
     """運用 active channel と beam grid から小数遅延固定整相器を作る。"""
-    beam_grid = _build_beam_grid(time_delay_config)
+    beam_grid = build_beam_scan_grid(
+        azimuth_min_deg=float(time_delay_config.az_min_deg),
+        azimuth_max_deg=float(time_delay_config.az_max_deg),
+        display_elevation_deg=float(time_delay_config.display_elevation_deg),
+        n_real_azimuth_beams=int(time_delay_config.n_beam_az_real),
+        n_virtual_azimuth_beams=int(time_delay_config.n_beam_az_virtual),
+    )
     beamformer = FractionalDelayAndSumBeamformer.from_geometry_and_filter_bank_path(
         array_pos_m=np.asarray(active_positions_m, dtype=np.float64),
-        dir_cos=np.asarray(beam_grid["directions"], dtype=np.float64),
+        dir_cos=beam_grid.directions,
         fs_hz=float(time_delay_config.fs_hz),
         sound_speed_m_s=float(time_delay_config.sound_speed_m_s),
         fractional_filter_bank_path=fractional_delay_filter_bank_path,
     )
-    return beamformer, np.asarray(beam_grid["axis_az_deg"], dtype=np.float64)
+    return beamformer, beam_grid.azimuth_deg
 
 
 def _steering_vector_for_azimuth(
@@ -165,7 +206,7 @@ def _steering_vector_for_azimuth(
     """
     positions = np.asarray(active_positions_m, dtype=np.float64)
     require(positions.ndim == 2 and positions.shape[1] == 3, "active_positions_m must have shape (n_ch, 3).")
-    direction = _direction_from_az_el(float(azimuth_deg), 0.0)
+    direction = direction_from_azimuth_elevation(float(azimuth_deg), 0.0)
     # 信号生成と同じ `arrival_delay_sec = -(r^T u) / c` を使う。
     # 複素 tone の channel 係数は exp(-j 2π f arrival_delay) であり、固定整相応答行列の arrival_phase と揃う。
     arrival_delay_sec = -(positions @ direction) / float(sound_speed_m_s)
@@ -232,7 +273,7 @@ def _adaptive_response_level_at_azimuth(
     # 時間領域適応重みは複素になり得るため、実 tone の BL レベルは正負周波数の RMS 合成で評価する。
     positive_response = np.conj(beam_weights[:, 0]) @ positive_constraint
     negative_response = np.conj(beam_weights[:, 0]) @ negative_constraint
-    level = _real_tone_rms_level_db20(
+    level = calculate_real_tone_response_rms_level_db20(
         np.array([positive_response], dtype=np.complex128),
         np.array([negative_response], dtype=np.complex128),
         source_rms,
@@ -289,7 +330,11 @@ def _adaptive_response_curve(
         # 複素重みでは `H(+f)` と `H(-f)` が非対称になり得るため、両側帯を後で RMS 合成する。
         positive_response_values[look_index] = np.conj(beam_weights[:, 0]) @ positive_constraint
         negative_response_values[look_index] = np.conj(beam_weights[:, 0]) @ negative_constraint
-    return _real_tone_rms_level_db20(positive_response_values, negative_response_values, source_rms)
+    return calculate_real_tone_response_rms_level_db20(
+        positive_response_values,
+        negative_response_values,
+        source_rms,
+    )
 
 
 def _fixed_target_beam_curve(
@@ -394,14 +439,20 @@ def _method_summary(
         "method": method_name,
         "level_reference": "dB re input RMS",
         "levels": {
-            "mixed_before_db20": _rms_level_db20(fixed_mixed_target),
-            "mixed_after_db20": _rms_level_db20(mixed_output),
-            "target_before_db20": _rms_level_db20(fixed_target_component),
-            "target_after_db20": _rms_level_db20(target_output),
-            "interferer_before_db20": _rms_level_db20(fixed_interferer_component),
-            "interferer_after_db20": _rms_level_db20(interferer_output),
-            "target_power_delta_db": float(_rms_level_db20(target_output) - _rms_level_db20(fixed_target_component)),
-            "interferer_reduction_db": float(_rms_level_db20(fixed_interferer_component) - _rms_level_db20(interferer_output)),
+            "mixed_before_db20": calculate_rms_level_db20(fixed_mixed_target),
+            "mixed_after_db20": calculate_rms_level_db20(mixed_output),
+            "target_before_db20": calculate_rms_level_db20(fixed_target_component),
+            "target_after_db20": calculate_rms_level_db20(target_output),
+            "interferer_before_db20": calculate_rms_level_db20(fixed_interferer_component),
+            "interferer_after_db20": calculate_rms_level_db20(interferer_output),
+            "target_power_delta_db": float(
+                calculate_rms_level_db20(target_output)
+                - calculate_rms_level_db20(fixed_target_component)
+            ),
+            "interferer_reduction_db": float(
+                calculate_rms_level_db20(fixed_interferer_component)
+                - calculate_rms_level_db20(interferer_output)
+            ),
         },
         "constraint_response": _constraint_error_summary(
             weights=weights,
@@ -492,9 +543,18 @@ def run_operational_time_domain_adaptive_comparison(
         include_interferer=True,
         output_dir=output_dir / "fixed_interferer_only",
     )
-    mixed_channel_signal, _ = _generate_target_scene(active_positions_m, mixed_config.source_specs or (), mixed_config)
-    target_channel_signal, _ = _generate_target_scene(active_positions_m, target_config.source_specs or (), target_config)
-    interferer_channel_signal, _ = _generate_target_scene(active_positions_m, interferer_config.source_specs or (), interferer_config)
+    mixed_channel_signal = _synthesize_configured_scene(
+        active_positions_m=active_positions_m,
+        config=mixed_config,
+    )
+    target_channel_signal = _synthesize_configured_scene(
+        active_positions_m=active_positions_m,
+        config=target_config,
+    )
+    interferer_channel_signal = _synthesize_configured_scene(
+        active_positions_m=active_positions_m,
+        config=interferer_config,
+    )
     beamformer, axis_az_deg = _build_fractional_beamformer(
         active_positions_m=active_positions_m,
         time_delay_config=mixed_config,
@@ -511,8 +571,14 @@ def run_operational_time_domain_adaptive_comparison(
     fixed_target_component = np.asarray(target_beam_output[target_beam_index, :])
     fixed_interferer_component = np.asarray(interferer_beam_output[target_beam_index, :])
 
-    target_response_matrix = _build_fractional_beam_response_matrix(beamformer, float(config.processing_frequency_hz))
-    interferer_response_matrix = _build_fractional_beam_response_matrix(beamformer, float(config.interferer_frequency_hz))
+    target_response_matrix = calculate_fractional_beam_response_matrix(
+        beamformer,
+        float(config.processing_frequency_hz),
+    )
+    interferer_response_matrix = calculate_fractional_beam_response_matrix(
+        beamformer,
+        float(config.interferer_frequency_hz),
+    )
     fixed_target_curve_db20 = _fixed_target_beam_curve(
         response_matrix=target_response_matrix,
         target_beam_index=target_beam_index,

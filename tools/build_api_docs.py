@@ -22,6 +22,7 @@ DEFAULT_HTML_PATH = BUILD_ROOT / "api-docs"
 
 CATEGORY_LABELS = {
     "beamforming": "ビームフォーミング",
+    "beamforming_evaluation": "ビームフォーミング評価支援",
     "filterbank": "フィルタバンク",
     "frequency": "周波数領域処理",
     "simulation": "シミュレーション支援",

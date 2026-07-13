@@ -10,16 +10,22 @@ from typing import Any
 
 import numpy as np
 
-from .._validation import require, require_non_negative_float, require_positive_float, require_positive_int
+from .._validation import (
+    require,
+    require_non_negative_float,
+    require_positive_float,
+    require_positive_int,
+)
+from ..beamforming_evaluation.scan_grid import build_beam_scan_grid
+from ..beamforming_evaluation.signal_levels import calculate_tone_projection_rms_level_db20
+from ..simulation.numerics import SimulationPrecision
+from ..simulation.tone_scene import synthesize_tone_scene
 from .diagnostic_plotting import plot_bl_response, require_matplotlib
 from .time_delay import IntegerDelayAndSumBeamformer
 from .time_delay_diagnostics import (
     TimeDelayDiagnosticConfig,
     TimeDelayDiagnosticSource,
     _build_array_positions,
-    _build_beam_grid,
-    _generate_target_scene,
-    _tone_level_db20_rms,
 )
 
 
@@ -284,20 +290,17 @@ def run_integer_delay_guard_design(config: TimeDelayGuardDesignConfig) -> dict[s
             display_elevation_deg=float(config.display_elevation_deg),
         )
     )
-    beam_grid = _build_beam_grid(
-        TimeDelayDiagnosticConfig(
-            output_dir=output_dir,
-            az_min_deg=float(config.az_min_deg),
-            az_max_deg=float(config.az_max_deg),
-            n_beam_az_real=int(config.n_beam_az_real),
-            n_beam_az_virtual=int(config.n_beam_az_virtual),
-            display_elevation_deg=float(config.display_elevation_deg),
-        )
+    beam_grid = build_beam_scan_grid(
+        azimuth_min_deg=float(config.az_min_deg),
+        azimuth_max_deg=float(config.az_max_deg),
+        display_elevation_deg=float(config.display_elevation_deg),
+        n_real_azimuth_beams=int(config.n_beam_az_real),
+        n_virtual_azimuth_beams=int(config.n_beam_az_virtual),
     )
-    axis_az_deg = np.asarray(beam_grid["axis_az_deg"], dtype=np.float64)
+    axis_az_deg = beam_grid.azimuth_deg
     beamformer = IntegerDelayAndSumBeamformer.from_geometry(
         array_pos_m=array_positions_m,
-        dir_cos=np.asarray(beam_grid["directions"], dtype=np.float64),
+        dir_cos=beam_grid.directions,
         fs_hz=float(config.fs_hz),
         sound_speed_m_s=float(config.sound_speed_m_s),
     )
@@ -327,15 +330,24 @@ def run_integer_delay_guard_design(config: TimeDelayGuardDesignConfig) -> dict[s
         if measurement_source_specs is None:
             # この関数では直前に必ず単一音源を設定する。None は構成契約違反として早期に検出する。
             raise RuntimeError("guard measurement requires one source specification.")
-        multichannel_signal, _ = _generate_target_scene(array_positions_m, measurement_source_specs, measurement_config)
-        beam_output = beamformer.process(multichannel_signal)
+        scene = synthesize_tone_scene(
+            array_positions_m=array_positions_m,
+            sources=measurement_source_specs,
+            fs_hz=float(measurement_config.fs_hz),
+            duration_s=float(measurement_config.duration_s),
+            sound_speed_m_s=float(measurement_config.sound_speed_m_s),
+            noise_level_db20=float(measurement_config.noise_level_db20),
+            random_seed=int(measurement_config.random_seed),
+            precision=SimulationPrecision.SINGLE,
+        )
+        beam_output = beamformer.process(scene.signal)
         if isinstance(beam_output, tuple):
             # guard 設計は主ビーム出力だけを評価し、デバッグ用 steered channel は使用しない。
             beam_output = beam_output[0]
 
         beam_levels_db20 = np.array(
             [
-                _tone_level_db20_rms(
+                calculate_tone_projection_rms_level_db20(
                     beam_output[beam_index],
                     frequency_hz=float(frequency_hz),
                     fs_hz=float(config.fs_hz),

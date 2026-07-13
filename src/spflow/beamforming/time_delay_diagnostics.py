@@ -9,7 +9,20 @@ from typing import Any
 
 import numpy as np
 
-from .._validation import require, require_non_negative_float, require_positive_float, require_positive_int
+from .._validation import (
+    require,
+    require_non_negative_float,
+    require_positive_float,
+    require_positive_int,
+)
+from ..beamforming_evaluation.scan_grid import build_beam_scan_grid
+from ..beamforming_evaluation.signal_levels import (
+    calculate_block_rms_levels_db20,
+    calculate_one_sided_rms_spectrum_db20,
+    calculate_tone_projection_rms_level_db20,
+)
+from ..simulation.numerics import SimulationPrecision
+from ..simulation.tone_scene import ToneSceneSource, synthesize_tone_scene
 from .diagnostic_plotting import (
     build_beam_diagnostic_plot_usage_notes,
     plot_bl_response,
@@ -18,12 +31,10 @@ from .diagnostic_plotting import (
     require_matplotlib,
     write_beam_diagnostic_plot_usage_notes,
 )
-from .directions import make_directions
 from .time_delay import IntegerDelayAndSumBeamformer
 
 
-@dataclass(frozen=True)
-class TimeDelayDiagnosticSource:
+class TimeDelayDiagnosticSource(ToneSceneSource):
     """整数遅延固定整相の検証に使う単一トーン音源条件を表す。
 
     このクラスは、到来方位、周波数、レベル、初期位相を持つ 1 本の平面波音源を表す。
@@ -36,33 +47,11 @@ class TimeDelayDiagnosticSource:
 
     音源間の適応抑圧、SLC 係数更新、時変包絡制御は責務に含めない。
     信号処理上は、固定整相前段を検証するための理想平面波 source 記述子に位置づく。
+
+    入力・出力・単位・境界条件は`ToneSceneSource`と同じである。
+    この互換名は既存の診断設定から通常のPython importを保つためだけに残し、
+    scene生成やbeamforming処理は責務に含めない。
     """
-
-    azimuth_deg: float
-    frequency_hz: float
-    level_db20: float = 0.0
-    elevation_deg: float = 0.0
-    phase_deg: float = 0.0
-    amplitude_modulation_hz: float = 0.0
-    amplitude_modulation_depth: float = 0.0
-    amplitude_modulation_phase_deg: float = 0.0
-    label: str | None = None
-
-    def __post_init__(self) -> None:
-        """角度・周波数・ラベルの基本条件を検証する。"""
-        require(np.isfinite(float(self.azimuth_deg)), "azimuth_deg must be finite.")
-        require(np.isfinite(float(self.elevation_deg)), "elevation_deg must be finite.")
-        require_positive_float("frequency_hz", float(self.frequency_hz))
-        require(np.isfinite(float(self.level_db20)), "level_db20 must be finite.")
-        require(np.isfinite(float(self.phase_deg)), "phase_deg must be finite.")
-        require_non_negative_float("amplitude_modulation_hz", float(self.amplitude_modulation_hz))
-        require(
-            0.0 <= float(self.amplitude_modulation_depth) <= 0.99,
-            "amplitude_modulation_depth must lie in [0.0, 0.99].",
-        )
-        require(np.isfinite(float(self.amplitude_modulation_phase_deg)), "amplitude_modulation_phase_deg must be finite.")
-        if self.label is not None:
-            require(len(str(self.label)) > 0, "label must not be empty when provided.")
 
 
 @dataclass(frozen=True)
@@ -131,26 +120,6 @@ def _validate_config(config: TimeDelayDiagnosticConfig) -> None:
         require(positions.ndim == 2 and positions.shape[1] == 3, "array_positions_m must have shape (n_ch, 3).")
         require(positions.shape[0] > 0, "array_positions_m must not be empty.")
         require(bool(np.all(np.isfinite(positions))), "array_positions_m must contain only finite values.")
-
-
-def _amplitude_from_db20(level_db20: float) -> float:
-    """dB20 を正弦波のピーク振幅へ変換する。"""
-    return float(np.sqrt(2.0) * 10.0 ** (float(level_db20) / 20.0))
-
-
-def _direction_from_az_el(azimuth_deg: float, elevation_deg: float) -> np.ndarray:
-    """方位角・俯仰角から方向余弦ベクトルを作る。"""
-    azimuth_rad = np.deg2rad(float(azimuth_deg))
-    elevation_rad = np.deg2rad(float(elevation_deg))
-    cos_elevation = np.cos(elevation_rad)
-    return np.array(
-        [
-            np.cos(azimuth_rad) * cos_elevation,
-            np.sin(azimuth_rad) * cos_elevation,
-            np.sin(elevation_rad),
-        ],
-        dtype=np.float64,
-    )
 
 
 def _normalize_explicit_array_positions(array_positions_m: np.ndarray) -> np.ndarray:
@@ -260,148 +229,6 @@ def _resolve_source_specs(config: TimeDelayDiagnosticConfig) -> tuple[TimeDelayD
     )
 
 
-def _build_beam_grid(config: TimeDelayDiagnosticConfig) -> dict[str, np.ndarray | int | float]:
-    """BL/FRAZ/BTR 表示用の方位グリッドを構成する。"""
-    directions, axis_az_deg, axis_el_deg = make_directions(
-        az_min_deg=float(config.az_min_deg),
-        az_max_deg=float(config.az_max_deg),
-        el_min_deg=float(config.display_elevation_deg),
-        el_max_deg=float(config.display_elevation_deg),
-        n_beam_az_real=int(config.n_beam_az_real),
-        n_beam_az_virtual=int(config.n_beam_az_virtual),
-        n_beam_el=1,
-        array_side="right side",
-        el_preset_deg=[float(config.display_elevation_deg)],
-    )
-    return {
-        "directions": directions.T.astype(np.float64),
-        "axis_az_deg": axis_az_deg.astype(np.float64),
-        "axis_el_deg": axis_el_deg.astype(np.float64),
-        "display_el_index": 0,
-    }
-
-
-def _generate_target_scene(
-    array_positions_m: np.ndarray,
-    source_specs: tuple[TimeDelayDiagnosticSource, ...],
-    config: TimeDelayDiagnosticConfig,
-) -> tuple[np.ndarray, np.ndarray]:
-    """設計書の到達遅延符号規約に合わせた複数音源シーンを生成する。
-
-    Returns:
-        `(multichannel_signal, time_axis_s)` を返す。
-        `multichannel_signal` の shape は `[n_ch, n_sample]`、
-        `time_axis_s` の shape は `[n_sample]` である。
-    """
-    n_sample = int(round(float(config.duration_s) * float(config.fs_hz)))
-    time_axis_s = np.arange(n_sample, dtype=np.float64) / float(config.fs_hz)
-    multichannel_signal = np.zeros((array_positions_m.shape[0], n_sample), dtype=np.float64)
-
-    for source_spec in source_specs:
-        source_direction = _direction_from_az_el(
-            azimuth_deg=float(source_spec.azimuth_deg),
-            elevation_deg=float(source_spec.elevation_deg),
-        )
-        peak_amplitude = _amplitude_from_db20(float(source_spec.level_db20))
-        phase_rad = np.deg2rad(float(source_spec.phase_deg))
-        modulation_phase_rad = np.deg2rad(float(source_spec.amplitude_modulation_phase_deg))
-
-        # arrival_delay_sec[ch] = -(r_ch^T u) / c。
-        # 各 source を同じ符号規約で独立生成し、線形重ね合わせによって複数方位・複数周波数シーンを作る。
-        arrival_delay_sec = -(array_positions_m @ source_direction) / float(config.sound_speed_m_s)
-
-        # amplitude_envelope[n] = 1 + depth * cos(2π f_mod t + φ_mod)。
-        # source ごとに異なる低周波包絡を持たせると、同一周波数の複数 source でも
-        # block 単位では相関構造が変化し、後段 SLC のブロック共分散学習を確認しやすくなる。
-        amplitude_envelope = 1.0 + float(source_spec.amplitude_modulation_depth) * np.cos(
-            2.0 * np.pi * float(source_spec.amplitude_modulation_hz) * time_axis_s + modulation_phase_rad
-        )
-
-        for channel_index in range(array_positions_m.shape[0]):
-            multichannel_signal[channel_index] += peak_amplitude * amplitude_envelope * np.cos(
-                2.0 * np.pi * float(source_spec.frequency_hz) * (time_axis_s - arrival_delay_sec[channel_index])
-                + phase_rad
-            )
-
-    noise_std = float(10.0 ** (float(config.noise_level_db20) / 20.0))
-    rng = np.random.default_rng(int(config.random_seed))
-    multichannel_signal += noise_std * rng.standard_normal(multichannel_signal.shape)
-    return multichannel_signal.astype(np.float32), time_axis_s
-
-
-def _tone_level_db20_rms(signal: np.ndarray, frequency_hz: float, fs_hz: float) -> float:
-    """単一トーン成分の RMS レベルを dB20 で評価する。"""
-    time_axis_s = np.arange(signal.shape[-1], dtype=np.float64) / float(fs_hz)
-    reference = np.exp(-1j * 2.0 * np.pi * float(frequency_hz) * time_axis_s)
-
-    # 単一周波数への複素内積で係数を推定し、peak -> RMS へ戻して dB20 を評価する。
-    coefficient = np.vdot(reference, np.asarray(signal, dtype=np.complex128)) / signal.shape[-1]
-    peak_amplitude = 2.0 * np.abs(coefficient)
-    rms_amplitude = peak_amplitude / np.sqrt(2.0)
-    return float(20.0 * np.log10(max(rms_amplitude, np.finfo(np.float64).tiny)))
-
-
-def _rfft_levels_db20(real_signals: np.ndarray, fs_hz: float) -> tuple[np.ndarray, np.ndarray]:
-    """実波形の one-sided RMS スペクトルレベルを返す。
-
-    Args:
-        real_signals: 実波形。shape は `[n_beam, n_sample]`。
-        fs_hz: サンプリング周波数。単位は Hz。
-
-    Returns:
-        `(freqs_hz, levels_db20)` を返す。
-        `freqs_hz` の shape は `[n_freq]`、`levels_db20` の shape は `[n_beam, n_freq]`。
-    """
-    signals = np.asarray(real_signals, dtype=np.float64)
-    n_sample = signals.shape[-1]
-    spectrum = np.fft.rfft(signals, axis=-1) / np.float64(n_sample)
-
-    # one-sided RMS スペクトルでは DC/ナイキスト以外の正側ビンを sqrt(2) 倍し、
-    # 負側へ分かれていた実数信号のエネルギーを正側へ集約する。
-    if spectrum.shape[-1] > 1:
-        if (n_sample % 2) == 0 and spectrum.shape[-1] > 2:
-            spectrum[..., 1:-1] *= np.sqrt(2.0)
-        else:
-            spectrum[..., 1:] *= np.sqrt(2.0)
-
-    freqs_hz = np.fft.rfftfreq(n_sample, d=1.0 / float(fs_hz)).astype(np.float64)
-    levels_db20 = 20.0 * np.log10(np.maximum(np.abs(spectrum), np.finfo(np.float64).tiny))
-    return freqs_hz, levels_db20.astype(np.float64)
-
-
-def _compress_time_rms_levels(
-    real_signals: np.ndarray,
-    fs_hz: float,
-    block_size: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    """BTR 用にビームごとの短時間 RMS レベルを計算する。
-
-    Args:
-        real_signals: 実波形。shape は `[n_beam, n_sample]`。
-        fs_hz: サンプリング周波数。単位は Hz。
-        block_size: RMS を計算する時間ブロック長。単位は sample。
-
-    Returns:
-        `(levels_db20, times_s)` を返す。
-        `levels_db20` の shape は `[n_time, n_beam]`、
-        `times_s` の shape は `[n_time]` である。
-    """
-    signals = np.asarray(real_signals, dtype=np.float64)
-    n_sample = signals.shape[-1]
-    trimmed_length = (n_sample // int(block_size)) * int(block_size)
-    require(trimmed_length > 0, "signal length must be at least one RMS block.")
-
-    # reshape 前後:
-    #   signals[:, :trimmed_length] shape: [n_beam, n_time * block_size]
-    #   reshaped shape: [n_beam, n_time, block_size]
-    # axis=2 が各時間ブロック内サンプルなので、この軸で RMS を取る。
-    reshaped = signals[:, :trimmed_length].reshape(signals.shape[0], trimmed_length // int(block_size), int(block_size))
-    rms = np.sqrt(np.mean(reshaped**2, axis=2))
-    levels_db20 = 20.0 * np.log10(np.maximum(rms, np.finfo(np.float64).tiny))
-    times_s = (np.arange(levels_db20.shape[1], dtype=np.float64) * int(block_size)) / float(fs_hz)
-    return levels_db20.T.astype(np.float64), times_s
-
-
 def _source_label(source_spec: TimeDelayDiagnosticSource, source_index: int) -> str:
     """source ごとの表示・保存に使う安定ラベルを返す。"""
     if source_spec.label is not None:
@@ -440,7 +267,7 @@ def _evaluate_source_metrics_and_save_bl(
     for source_index, source_spec in enumerate(source_specs):
         beam_levels_db20 = np.array(
             [
-                _tone_level_db20_rms(
+                calculate_tone_projection_rms_level_db20(
                     beam_output[beam_index],
                     frequency_hz=float(source_spec.frequency_hz),
                     fs_hz=float(config.fs_hz),
@@ -522,12 +349,28 @@ def run_integer_delay_diagnostics(config: TimeDelayDiagnosticConfig) -> dict[str
 
     source_specs = _resolve_source_specs(config)
     array_positions_m, array_geometry_name, array_is_sparse = _build_array_positions(config)
-    beam_grid = _build_beam_grid(config)
-    multichannel_signal, _ = _generate_target_scene(array_positions_m, source_specs, config)
+    beam_grid = build_beam_scan_grid(
+        azimuth_min_deg=float(config.az_min_deg),
+        azimuth_max_deg=float(config.az_max_deg),
+        display_elevation_deg=float(config.display_elevation_deg),
+        n_real_azimuth_beams=int(config.n_beam_az_real),
+        n_virtual_azimuth_beams=int(config.n_beam_az_virtual),
+    )
+    scene = synthesize_tone_scene(
+        array_positions_m=array_positions_m,
+        sources=source_specs,
+        fs_hz=float(config.fs_hz),
+        duration_s=float(config.duration_s),
+        sound_speed_m_s=float(config.sound_speed_m_s),
+        noise_level_db20=float(config.noise_level_db20),
+        random_seed=int(config.random_seed),
+        precision=SimulationPrecision.SINGLE,
+    )
+    multichannel_signal = scene.signal
 
     beamformer = IntegerDelayAndSumBeamformer.from_geometry(
         array_pos_m=array_positions_m,
-        dir_cos=np.asarray(beam_grid["directions"], dtype=np.float64),
+        dir_cos=beam_grid.directions,
         fs_hz=float(config.fs_hz),
         sound_speed_m_s=float(config.sound_speed_m_s),
     )
@@ -536,8 +379,11 @@ def run_integer_delay_diagnostics(config: TimeDelayDiagnosticConfig) -> dict[str
     if isinstance(beam_output, tuple):
         beam_output = beam_output[0]
 
-    axis_az_deg = np.asarray(beam_grid["axis_az_deg"], dtype=np.float64)
-    freqs_hz, fraz_levels_db20 = _rfft_levels_db20(beam_output, fs_hz=float(config.fs_hz))
+    axis_az_deg = beam_grid.azimuth_deg
+    freqs_hz, fraz_levels_db20 = calculate_one_sided_rms_spectrum_db20(
+        beam_output,
+        fs_hz=float(config.fs_hz),
+    )
 
     fraz_global_peak_beam_index, fraz_global_peak_frequency_index = np.unravel_index(
         np.argmax(fraz_levels_db20),
@@ -549,7 +395,7 @@ def run_integer_delay_diagnostics(config: TimeDelayDiagnosticConfig) -> dict[str
         fraz_levels_db20[int(fraz_global_peak_beam_index), int(fraz_global_peak_frequency_index)]
     )
 
-    btr_levels_db20, btr_times_s = _compress_time_rms_levels(
+    btr_levels_db20, btr_times_s = calculate_block_rms_levels_db20(
         beam_output,
         fs_hz=float(config.fs_hz),
         block_size=int(config.btr_block_size),

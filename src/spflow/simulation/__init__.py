@@ -20,6 +20,12 @@ from spflow.simulation.streaming import (
     StatefulIntegerDelay,
     VersionedCausalFIR,
 )
+from spflow.simulation.tone_scene import (
+    ToneScene,
+    ToneSceneSource,
+    direction_from_azimuth_elevation,
+    synthesize_tone_scene,
+)
 
 __all__ = [
     "ALIGNMENT_ALGORITHM_IDS",
@@ -30,6 +36,8 @@ __all__ = [
     "SignalBlock",
     "SimulationPrecision",
     "StatefulIntegerDelay",
+    "ToneScene",
+    "ToneSceneSource",
     "VersionedCausalFIR",
     "approximate_frequency_weights_with_fir",
     "calculate_alignment_source_covariance",
@@ -37,5 +45,7 @@ __all__ = [
     "calculate_source_beam_level_db",
     "calculate_ula_arrival_delays_s",
     "design_alignment_weights",
+    "direction_from_azimuth_elevation",
+    "synthesize_tone_scene",
     "to_original_input_coordinates",
 ]

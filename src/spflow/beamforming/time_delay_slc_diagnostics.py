@@ -7,22 +7,35 @@ from pathlib import Path
 
 import numpy as np
 
-from .diagnostic_plotting import plot_bl_comparison, plot_btr_heatmap, plot_fraz_heatmap, require_matplotlib
-from .slc import BeamGuardSelector, BlockLeastSquaresSlcSolver, SlcConfig, SlcReferenceCapacityChecker
+from ..beamforming_evaluation.scan_grid import build_beam_scan_grid
+from ..beamforming_evaluation.signal_levels import (
+    calculate_block_rms_levels_db20,
+    calculate_one_sided_rms_spectrum_db20,
+    calculate_tone_projection_rms_level_db20,
+)
+from ..simulation.numerics import SimulationPrecision
+from ..simulation.tone_scene import synthesize_tone_scene
+from .diagnostic_plotting import (
+    plot_bl_comparison,
+    plot_btr_heatmap,
+    plot_fraz_heatmap,
+    require_matplotlib,
+)
+from .slc import (
+    BeamGuardSelector,
+    BlockLeastSquaresSlcSolver,
+    SlcConfig,
+    SlcReferenceCapacityChecker,
+)
 from .time_delay import IntegerDelayAndSumBeamformer
 from .time_delay_diagnostics import (
     TimeDelayDiagnosticConfig,
     TimeDelayDiagnosticSource,
     _build_array_positions,
-    _build_beam_grid,
-    _compress_time_rms_levels,
     _format_source_caption_fragment,
-    _generate_target_scene,
     _resolve_source_specs,
-    _rfft_levels_db20,
     _sanitize_label_for_filename,
     _source_label,
-    _tone_level_db20_rms,
     run_integer_delay_diagnostics,
 )
 
@@ -265,7 +278,7 @@ def _evaluate_stage_source_metrics(
     for source_index, source_spec in enumerate(source_specs):
         beam_levels_db20 = np.array(
             [
-                _tone_level_db20_rms(
+                calculate_tone_projection_rms_level_db20(
                     beam_output[beam_index],
                     frequency_hz=float(source_spec.frequency_hz),
                     fs_hz=float(fs_hz),
@@ -398,20 +411,35 @@ def run_integer_delay_slc_diagnostics(
     )
 
     array_positions_m, _, _ = _build_array_positions(config)
-    beam_grid = _build_beam_grid(config)
-    multichannel_signal, _ = _generate_target_scene(array_positions_m, source_specs, config)
+    beam_grid = build_beam_scan_grid(
+        azimuth_min_deg=float(config.az_min_deg),
+        azimuth_max_deg=float(config.az_max_deg),
+        display_elevation_deg=float(config.display_elevation_deg),
+        n_real_azimuth_beams=int(config.n_beam_az_real),
+        n_virtual_azimuth_beams=int(config.n_beam_az_virtual),
+    )
+    scene = synthesize_tone_scene(
+        array_positions_m=array_positions_m,
+        sources=source_specs,
+        fs_hz=float(config.fs_hz),
+        duration_s=float(config.duration_s),
+        sound_speed_m_s=float(config.sound_speed_m_s),
+        noise_level_db20=float(config.noise_level_db20),
+        random_seed=int(config.random_seed),
+        precision=SimulationPrecision.SINGLE,
+    )
 
     beamformer = IntegerDelayAndSumBeamformer.from_geometry(
         array_pos_m=array_positions_m,
-        dir_cos=np.asarray(beam_grid["directions"], dtype=np.float64),
+        dir_cos=beam_grid.directions,
         fs_hz=float(config.fs_hz),
         sound_speed_m_s=float(config.sound_speed_m_s),
     )
-    fixed_beam_output = beamformer.process(multichannel_signal)
+    fixed_beam_output = beamformer.process(scene.signal)
     if isinstance(fixed_beam_output, tuple):
         # 診断指標は主ビーム出力を対象とし、デバッグ用 steered channel は別責務とする。
         fixed_beam_output = fixed_beam_output[0]
-    axis_az_deg = np.asarray(beam_grid["axis_az_deg"], dtype=np.float64)
+    axis_az_deg = beam_grid.azimuth_deg
     slc_beam_output = np.array(fixed_beam_output, copy=True)
 
     per_frequency_design_summaries: list[dict[str, object]] = []
@@ -459,15 +487,18 @@ def run_integer_delay_slc_diagnostics(
         tone_design_summary["trimmed_length"] = int(trimmed_length)
         per_frequency_design_summaries.append(tone_design_summary)
 
-    fixed_btr_levels_db20, _ = _compress_time_rms_levels(
+    fixed_btr_levels_db20, _ = calculate_block_rms_levels_db20(
         fixed_beam_output,
         fs_hz=float(config.fs_hz),
         block_size=int(config.btr_block_size),
     )
     fixed_btr_relative_levels_db = fixed_btr_levels_db20 - np.max(fixed_btr_levels_db20, axis=1, keepdims=True)
 
-    slc_freqs_hz, slc_fraz_levels_db20 = _rfft_levels_db20(slc_beam_output, fs_hz=float(config.fs_hz))
-    slc_btr_levels_db20, slc_btr_times_s = _compress_time_rms_levels(
+    slc_freqs_hz, slc_fraz_levels_db20 = calculate_one_sided_rms_spectrum_db20(
+        slc_beam_output,
+        fs_hz=float(config.fs_hz),
+    )
+    slc_btr_levels_db20, slc_btr_times_s = calculate_block_rms_levels_db20(
         slc_beam_output,
         fs_hz=float(config.fs_hz),
         block_size=int(config.btr_block_size),
