@@ -7,7 +7,9 @@ import numpy as np
 from evaluations.beamforming.formal_s2a_t2a_endfire import (
     AZIMUTH_DEG,
     CovarianceStage,
+    EXTENDED_TAP_COUNTS,
     METHOD_IDS,
+    TAP_COUNTS,
     WeightStage,
     estimate_covariance_stage,
     design_weight_stage,
@@ -15,6 +17,12 @@ from evaluations.beamforming.formal_s2a_t2a_endfire import (
     realize_residual_fir,
     theoretical_grating_azimuths,
 )
+
+
+def test_formal_tap_matrix_keeps_extended_taps_outside_main_sweep() -> None:
+    """正式主sweepを3点に固定し、既評価長tapを条件付き候補として分離する。"""
+    assert TAP_COUNTS == (32, 128, 512)
+    assert EXTENDED_TAP_COUNTS == (1024, 2048)
 
 
 @lru_cache(maxsize=1)
@@ -44,9 +52,9 @@ def test_t2a_preserves_endfire_music_while_s2a_fails_before_fir() -> None:
 
 
 def test_t2a_finite_residual_fir_reaches_high_energy_containment() -> None:
-    """T2aの1024 tap残差FIRが有限でtarget beam energyの99%以上を含む。"""
+    """正式主sweepの収束側代表512 tapがtarget beam energyの99%以上を含む。"""
     covariance, weights = _zero_endfire_stages()
-    realization = realize_residual_fir("T2a", 1024, covariance, weights)
+    realization = realize_residual_fir("T2a", 512, covariance, weights)
     source_index = int(np.argmin(np.abs(AZIMUTH_DEG - 0.0)))
 
     assert bool(np.all(np.isfinite(realization.coefficients)))

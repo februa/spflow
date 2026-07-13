@@ -43,7 +43,12 @@ TARGET_AZIMUTH_DEG = (0.0, 180.0)
 # EBAEは最大M-1個のMUSIC peakを対応付けるため、候補数を64 ch以上確保する。
 # 2 deg刻みはendfire peak誤差の判定分解能も10 deg刻みより十分小さい。
 AZIMUTH_DEG = np.arange(0.0, 181.0, 2.0, dtype=np.float64)
-TAP_COUNTS = (32, 128, 256, 512, 1024, 2048)
+# 正式比較は破綻側・中間・実用収束側を代表する3点に限定する。
+# 1024/2048 tapは過去評価で512 tap以降の変化確認に使用済みであり、
+# 512 tapが不合格または未収束となった条件だけを追加調査する参照点とする。
+TAP_COUNTS = (32, 128, 512)
+# 主sweepからは除外し、明示した追加実行条件が成立した場合だけ使う。
+EXTENDED_TAP_COUNTS = (1024, 2048)
 RUNTIME_SAMPLE_COUNT = 4096
 RUNTIME_BLOCK_SIZE = 257
 METHOD_IDS = ("S2a", "T2a")
@@ -789,7 +794,7 @@ def run_evaluation(output_dir: Path = OUTPUT_DIR) -> None:
     _write_rows(output_dir / "runtime_metrics.csv", runtime_rows)
     for scenario_index, method_index, indices, streamed, monolithic in waveform_records:
         prefix = (
-            f"target_{int(TARGET_AZIMUTH_DEG[scenario_index])}_{METHOD_IDS[method_index]}_1024tap"
+            f"target_{int(TARGET_AZIMUTH_DEG[scenario_index])}_{METHOD_IDS[method_index]}_512tap"
         )
         npz_arrays[f"{prefix}_sample_index"] = indices
         npz_arrays[f"{prefix}_streamed"] = streamed
@@ -972,7 +977,7 @@ def run_evaluation(output_dir: Path = OUTPUT_DIR) -> None:
         axis.plot(indices, np.real(monolithic), label="monolithic", linewidth=1.5)
         axis.plot(indices, np.real(streamed), linestyle="--", label="block streaming")
         axis.set_title(
-            f"{METHOD_IDS[method_index]}, target {TARGET_AZIMUTH_DEG[scenario_index]:g} deg, 1024 tap"
+            f"{METHOD_IDS[method_index]}, target {TARGET_AZIMUTH_DEG[scenario_index]:g} deg, 512 tap"
         )
         axis.set_ylabel("Output [input RMS amplitude]")
         axis.grid(alpha=0.25)
@@ -988,7 +993,7 @@ def run_evaluation(output_dir: Path = OUTPUT_DIR) -> None:
         "64 ch、6.25 m間隔、393.75 m開口、40--88 Hz実時間広帯域信号、"
         "64 Hz分析幅で0/180 degを評価した。共分散は4096個の非overlap snapshot、"
         "N/E AICはL=M^2=4096を使用する。\n\n"
-        "S2a/T2aとも実整数delay buffer、32--2048 tap残差FIR、257 sample blockを通す。"
+        "S2a/T2aとも実整数delay buffer、32/128/512 tap残差FIR、257 sample blockを通す。"
         "target-only、noise-only、target+noiseを分離し、noise-only BLを物理noise floorとして描く。\n\n"
         "主表示は約30.28 dB入力帯域SNRのmixed BLとし、同じ完成weightへ0 dB相当noiseを"
         "与えた固定weight stressを別図にする。低SNRでの重み再推定試験とは区別する。\n\n"
