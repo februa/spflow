@@ -8,8 +8,24 @@ import numpy as np
 from numpy.typing import NDArray
 
 from spflow._validation import require, require_positive_float, require_positive_int
+from spflow.level_conversion import (
+    LevelConverter,
+    level_10log10_conjpair_power,
+    level_20log10_rms,
+)
+from spflow.spectral_level import one_sided_rfft_bin_rms_power
 
 FloatArray = NDArray[np.floating[Any]]
+
+
+def _rms_level_converter(reference_rms: float) -> LevelConverter:
+    """RMS入出力を同じreferenceへ接続する評価converterを生成する。"""
+
+    definition = level_20log10_rms(
+        reference_rms=float(reference_rms),
+        reference_label="reference RMS",
+    )
+    return LevelConverter(input_definition=definition, output_definition=definition)
 
 
 def calculate_tone_projection_rms_level_db20(
@@ -52,12 +68,23 @@ def calculate_tone_projection_rms_level_db20(
     time_axis_s = np.arange(values.shape[0], dtype=np.float64) / float(fs_hz)
     reference = np.exp(-1j * 2.0 * np.pi * float(frequency_hz) * time_axis_s)
 
-    # coefficientは実toneの正周波数側peak/2に対応する。
-    # peak=2*|coefficient|、RMS=peak/sqrt(2)として入力tone RMSへ戻す。
+    # coefficientはFFT長で正規化済みの内部正周波数係数zに対応する。
+    # 実信号のconjpair power=|z|²+|conj(z)|²=2|z|²をdefinitionへ委譲する。
     coefficient = np.vdot(reference, values.astype(np.complex128)) / values.shape[0]
-    rms_amplitude = np.sqrt(2.0) * np.abs(coefficient)
-    normalized_rms = float(rms_amplitude) / float(reference_rms)
-    return float(20.0 * np.log10(max(normalized_rms, np.finfo(np.float64).tiny)))
+    input_definition = level_20log10_rms(
+        reference_rms=float(reference_rms),
+        reference_label="reference RMS",
+    )
+    output_definition = level_10log10_conjpair_power(
+        reference_rms=float(reference_rms),
+        reference_label="reference RMS",
+    )
+    converter = LevelConverter(
+        input_definition=input_definition,
+        output_definition=output_definition,
+    )
+    finite_floor_db = float(20.0 * np.log10(np.finfo(np.float64).tiny))
+    return converter.output_to_level(coefficient, floor_db=finite_floor_db)
 
 
 def calculate_one_sided_rms_spectrum_db20(
@@ -96,18 +123,23 @@ def calculate_one_sided_rms_spectrum_db20(
     require_positive_float("reference_rms", float(reference_rms))
 
     n_sample = signals.shape[1]
-    spectrum = np.fft.rfft(signals, axis=1) / np.float64(n_sample)
+    spectrum = np.fft.rfft(signals, axis=1)
 
-    # interior binをsqrt(2)倍し、実信号の負周波数側powerを正周波数側へ集約する。
-    if spectrum.shape[1] > 1:
-        if (n_sample % 2) == 0 and spectrum.shape[1] > 2:
-            spectrum[:, 1:-1] *= np.sqrt(2.0)
-        else:
-            spectrum[:, 1:] *= np.sqrt(2.0)
+    # 非正規化rFFTをone-sided per-bin RMS powerへ変換する。内部binだけconjpair係数2、
+    # DCと偶数長FFTのNyquistは係数1となり、全bin和が時間領域mean-squareと一致する。
+    bin_rms_power = one_sided_rfft_bin_rms_power(
+        spectrum,
+        sample_count=n_sample,
+        frequency_axis=1,
+    )
 
     frequency_hz = np.fft.rfftfreq(n_sample, d=1.0 / float(fs_hz)).astype(np.float64)
-    normalized_rms = np.abs(spectrum) / float(reference_rms)
-    level_db20 = 20.0 * np.log10(np.maximum(normalized_rms, np.finfo(np.float64).tiny))
+    converter = _rms_level_converter(float(reference_rms))
+    finite_floor_db = float(20.0 * np.log10(np.finfo(np.float64).tiny))
+    level_db20 = converter.output_rms_to_level(
+        np.sqrt(bin_rms_power),
+        floor_db=finite_floor_db,
+    )
     return frequency_hz, np.asarray(level_db20, dtype=np.float64)
 
 
@@ -159,8 +191,13 @@ def calculate_block_rms_levels_db20(
         trimmed_length // int(block_size),
         int(block_size),
     )
-    normalized_rms = np.sqrt(np.mean(blocked**2, axis=2)) / float(reference_rms)
-    level_db20 = 20.0 * np.log10(np.maximum(normalized_rms, np.finfo(np.float64).tiny))
+    block_rms = np.sqrt(np.mean(blocked**2, axis=2))
+    converter = _rms_level_converter(float(reference_rms))
+    finite_floor_db = float(20.0 * np.log10(np.finfo(np.float64).tiny))
+    level_db20 = np.asarray(
+        converter.output_rms_to_level(block_rms, floor_db=finite_floor_db),
+        dtype=np.float64,
+    )
     time_s = (np.arange(level_db20.shape[1], dtype=np.float64) * int(block_size)) / float(fs_hz)
     return np.asarray(level_db20.T, dtype=np.float64), time_s
 

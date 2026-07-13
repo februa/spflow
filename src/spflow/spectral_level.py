@@ -8,6 +8,21 @@ import numpy as np
 from numpy.typing import NDArray
 
 from ._validation import require, require_positive_float, require_positive_int
+from .level_conversion import (
+    LevelConverter,
+    level_20log10_onesided_asd,
+    level_20log10_rms,
+)
+
+
+def _normalized_rms_converter(reference_rms: float = 1.0) -> LevelConverter:
+    """既存RMS変換関数をLevelConverterへ接続する互換converterを生成する。"""
+
+    definition = level_20log10_rms(
+        reference_rms=float(reference_rms),
+        reference_label="reference RMS",
+    )
+    return LevelConverter(input_definition=definition, output_definition=definition)
 
 
 def level_db_to_rms_amplitude(level_db_re_rms: float) -> float:
@@ -25,9 +40,7 @@ def level_db_to_rms_amplitude(level_db_re_rms: float) -> float:
     境界条件:
         戻り値は RMS amplitude であり、実 cos 波へ直接渡す peak amplitude ではない。
     """
-    level = float(level_db_re_rms)
-    require(bool(np.isfinite(level)), "level_db_re_rms must be finite.")
-    return float(10.0 ** (level / 20.0))
+    return _normalized_rms_converter().input_to_rms(float(level_db_re_rms))
 
 
 def tone_rms_level_db_to_peak_amplitude(level_db_re_rms: float) -> float:
@@ -46,7 +59,7 @@ def tone_rms_level_db_to_peak_amplitude(level_db_re_rms: float) -> float:
         0 dB は RMS=1、peak=`sqrt(2)` とする。実正弦波の
         `RMS = peak / sqrt(2)` に対応し、複素指数信号には適用しない。
     """
-    return float(np.sqrt(2.0) * level_db_to_rms_amplitude(level_db_re_rms))
+    return _normalized_rms_converter().input_to_real_cosine_peak(float(level_db_re_rms))
 
 
 def noise_asd_level_db_to_band_rms(
@@ -71,11 +84,21 @@ def noise_asd_level_db_to_band_rms(
         bandwidth は FFT bin 数ではなく Hz で与える。1 bin の RMS が必要な場合は、
         `bandwidth_hz=frequency_resolution_hz` とする。
     """
-    level = float(level_db_re_rms_per_sqrt_hz)
     bandwidth = float(bandwidth_hz)
-    require(bool(np.isfinite(level)), "level_db_re_rms_per_sqrt_hz must be finite.")
     require_positive_float("bandwidth_hz", bandwidth)
-    return float(10.0 ** (level / 20.0) * np.sqrt(bandwidth))
+    asd_definition = level_20log10_onesided_asd(
+        reference_asd=1.0,
+        reference_label="reference RMS/sqrt(Hz)",
+    )
+    asd_converter = LevelConverter(
+        input_definition=asd_definition,
+        output_definition=asd_definition,
+    )
+    linear_asd = asd_converter.input_to_linear(float(level_db_re_rms_per_sqrt_hz))
+
+    # ASDは振幅/√Hzなので、一定密度を明示された帯域Bでpower積分すると
+    # A_band=sqrt(ASD²*B)=ASD*sqrt(B)となる。Converterは帯域積分を担わない。
+    return float(linear_asd * np.sqrt(bandwidth))
 
 
 def noise_asd_level_db_to_sample_rms(
@@ -221,17 +244,7 @@ def rms_amplitude_to_level_db(
         floor は数値安定化ではなく表示契約である。指定時のみ線形振幅を floor 相当値へ
         clip し、微小な浮動小数残差を可視ピークと誤認しないようにする。
     """
-    reference = float(reference_rms)
-    require_positive_float("reference_rms", reference)
     amplitude = np.asarray(rms_amplitude, dtype=np.float64)
-    require(bool(np.all(np.isfinite(amplitude))), "rms_amplitude must be finite.")
-    require(bool(np.all(amplitude >= 0.0)), "rms_amplitude must be non-negative.")
-    if floor_db is None:
-        with np.errstate(divide="ignore"):
-            return np.asarray(20.0 * np.log10(amplitude / reference), dtype=np.float64)
-    floor = float(floor_db)
-    require(bool(np.isfinite(floor)), "floor_db must be finite when specified.")
-    floor_amplitude = reference * 10.0 ** (floor / 20.0)
-    return np.asarray(
-        20.0 * np.log10(np.maximum(amplitude, floor_amplitude) / reference), dtype=np.float64
-    )
+    converter = _normalized_rms_converter(float(reference_rms))
+    level = converter.output_rms_to_level(amplitude, floor_db=floor_db)
+    return np.asarray(level, dtype=np.float64)

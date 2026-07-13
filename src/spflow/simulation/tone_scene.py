@@ -14,6 +14,7 @@ from spflow._validation import (
     require_non_negative_float,
     require_positive_float,
 )
+from spflow.level_conversion import LevelConverter, level_20log10_rms
 from spflow.simulation.numerics import SimulationPrecision
 
 FloatArray = NDArray[np.floating[Any]]
@@ -149,6 +150,7 @@ def synthesize_tone_scene(
     noise_level_db20: float,
     random_seed: int,
     precision: SimulationPrecision = SimulationPrecision.SINGLE,
+    level_converter: LevelConverter | None = None,
 ) -> ToneScene:
     """平面波tone群とchannel非相関noiseを加算したアレイsceneを生成する。
 
@@ -163,6 +165,9 @@ def synthesize_tone_scene(
             単位は`dB re input RMS`であり、ASDではない。
         random_seed: channel非相関noiseを再現する乱数seed。
         precision: 出力`signal`と`time_axis_s`の実数dtypeを一括選択する精度。
+        level_converter: sourceとnoiseの入力dBを線形RMSへ変換する契約。`None`の場合は
+            `0 dB re input RMS = 1 RMS`のdefinitionを使う。出力評価にも同じconverterを
+            保持して使うことで、入力地点と評価地点のreferenceを一致させられる。
 
     Returns:
         生成scene。`signal`のshapeは`[n_ch, n_sample]`、`time_axis_s`のshapeは
@@ -192,6 +197,19 @@ def synthesize_tone_scene(
     require_positive_float("sound_speed_m_s", float(sound_speed_m_s))
     require(np.isfinite(float(noise_level_db20)), "noise_level_db20 must be finite.")
 
+    if level_converter is None:
+        # 既存APIの0 dB=1 RMSを維持しつつ、手書きの10**(L/20)を残さない。
+        default_definition = level_20log10_rms(
+            reference_rms=1.0,
+            reference_label="input RMS",
+        )
+        effective_level_converter = LevelConverter(
+            input_definition=default_definition,
+            output_definition=default_definition,
+        )
+    else:
+        effective_level_converter = level_converter
+
     n_sample = int(round(float(duration_s) * float(fs_hz)))
     require(n_sample > 0, "duration_s * fs_hz must produce at least one sample.")
     time_axis_s = np.arange(n_sample, dtype=np.float64) / float(fs_hz)
@@ -202,8 +220,11 @@ def synthesize_tone_scene(
             azimuth_deg=float(source.azimuth_deg),
             elevation_deg=float(source.elevation_deg),
         )
-        # level_db20はtone RMS levelなので、実cosineのpeak振幅にはsqrt(2)を掛ける。
-        peak_amplitude = float(np.sqrt(2.0) * 10.0 ** (float(source.level_db20) / 20.0))
+        # source levelはRMS定義であり、実cosineのpeak=sqrt(2)*RMSへの変換を
+        # 入力地点と出力評価地点で共有するLevelConverterへ委譲する。
+        peak_amplitude = effective_level_converter.input_to_real_cosine_peak(
+            float(source.level_db20)
+        )
         phase_rad = np.deg2rad(float(source.phase_deg))
         modulation_phase_rad = np.deg2rad(float(source.amplitude_modulation_phase_deg))
 
@@ -232,7 +253,7 @@ def synthesize_tone_scene(
         )
 
     # noise_level_db20は時間領域sample RMS基準であり、ASDからの帯域積分値ではない。
-    noise_std = float(10.0 ** (float(noise_level_db20) / 20.0))
+    noise_std = effective_level_converter.input_to_rms(float(noise_level_db20))
     random_generator = np.random.default_rng(int(random_seed))
     signal += noise_std * random_generator.standard_normal(signal.shape)
 

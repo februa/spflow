@@ -7,6 +7,11 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
+from spflow.level_conversion import (
+    LevelConverter,
+    level_10log10_power,
+    level_20log10_rms,
+)
 from spflow.simulation.alignment_weight_design import AlignmentWeightDesign
 
 FloatArray = NDArray[np.floating[Any]]
@@ -54,8 +59,22 @@ def calculate_source_beam_level_db(
     )
     # 正負source binに等powerを置く契約では、bin平均powerが帯域積分応答に対応する。
     power = np.mean(np.abs(response) ** 2, axis=0)
-    floor_power = 10.0 ** (floor_db_re_input_rms / 10.0)
     real_dtype = (
         np.dtype(np.float32) if checked.dtype == np.dtype(np.complex64) else np.dtype(np.float64)
     )
-    return np.asarray(10.0 * np.log10(np.maximum(power, floor_power)), dtype=real_dtype)
+    input_definition = level_20log10_rms(
+        reference_rms=1.0,
+        reference_label="input RMS",
+    )
+    output_definition = level_10log10_power(
+        reference_power=1.0,
+        reference_label="input RMS",
+    )
+    converter = LevelConverter(
+        input_definition=input_definition,
+        output_definition=output_definition,
+    )
+    return np.asarray(
+        converter.output_to_level(power, floor_db=float(floor_db_re_input_rms)),
+        dtype=real_dtype,
+    )

@@ -8,6 +8,17 @@ import numpy as np
 from numpy.typing import NDArray
 
 from spflow._validation import require, require_positive_float
+from spflow.level_conversion import LevelConverter, level_20log10_rms
+
+
+def _rms_level_converter(reference_rms: float) -> LevelConverter:
+    """評価RMSを明示referenceへ写像するconverterを生成する。"""
+
+    definition = level_20log10_rms(
+        reference_rms=float(reference_rms),
+        reference_label="reference RMS",
+    )
+    return LevelConverter(input_definition=definition, output_definition=definition)
 
 
 def calculate_rms_level_db20(
@@ -37,8 +48,9 @@ def calculate_rms_level_db20(
     require_positive_float("reference_rms", float(reference_rms))
 
     rms = float(np.sqrt(np.mean(np.abs(values) ** 2)))
-    normalized_rms = rms / float(reference_rms)
-    return float(20.0 * np.log10(max(normalized_rms, np.finfo(np.float64).tiny)))
+    converter = _rms_level_converter(float(reference_rms))
+    finite_floor_db = float(20.0 * np.log10(np.finfo(np.float64).tiny))
+    return converter.output_rms_to_level(rms, floor_db=finite_floor_db)
 
 
 def calculate_real_tone_response_rms_level_db20(
@@ -87,9 +99,10 @@ def calculate_real_tone_response_rms_level_db20(
     output_rms = float(source_rms) * np.sqrt(
         (np.abs(positive_response) ** 2 + np.abs(negative_response) ** 2) / 2.0
     )
-    normalized_rms = output_rms / float(reference_rms)
+    converter = _rms_level_converter(float(reference_rms))
+    finite_floor_db = float(20.0 * np.log10(np.finfo(np.float64).tiny))
     return np.asarray(
-        20.0 * np.log10(np.maximum(normalized_rms, np.finfo(np.float64).tiny)),
+        converter.output_rms_to_level(output_rms, floor_db=finite_floor_db),
         dtype=np.float64,
     )
 

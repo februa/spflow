@@ -159,6 +159,17 @@ from .filterbank import (
 )
 from .flow import Flow
 from .frequency import OverlapSaveBuffer, ValidRegionExtractor, make_filter_fft
+from .level_conversion import (
+    LevelConverter,
+    LevelDefinition,
+    level_10log10_conjpair_power,
+    level_10log10_onesided_psd,
+    level_10log10_power,
+    level_10log10_twosided_psd,
+    level_20log10_onesided_asd,
+    level_20log10_rms,
+    level_20log10_twosided_asd,
+)
 from .option import Option
 from .scheduler import StepScheduler
 from .spectral_level import (
@@ -187,6 +198,15 @@ __all__ = [
     "OverlapSaveBuffer",
     "ValidRegionExtractor",
     "make_filter_fft",
+    "LevelConverter",
+    "LevelDefinition",
+    "level_20log10_rms",
+    "level_10log10_power",
+    "level_10log10_conjpair_power",
+    "level_20log10_onesided_asd",
+    "level_20log10_twosided_asd",
+    "level_10log10_onesided_psd",
+    "level_10log10_twosided_psd",
     "StepScheduler",
     "DoubleBufferCallback",
     "PlaneWaveTone",
