@@ -18,7 +18,7 @@ from spflow.beamforming import (  # noqa: E402
     design_fixed_delay_fractional_weights_from_delay_table,
     design_standard_fractional_delay_filter_bank,
 )
-from spflow.beamforming.diagnostic_plotting import require_matplotlib  # noqa: E402
+from spflow.beamforming_evaluation.diagnostic_plotting import require_matplotlib  # noqa: E402
 
 OUTPUT_DIR = (
     ROOT

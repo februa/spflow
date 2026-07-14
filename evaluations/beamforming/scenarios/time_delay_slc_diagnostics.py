@@ -1,4 +1,4 @@
-"""時間領域固定整相の後段へ周波数選択 SLC を適用した BL/FRAZ/BTR 診断を行うモジュール。"""
+"""時間領域固定整相後のSLCを評価するscenarioを実行する。"""
 
 from __future__ import annotations
 
@@ -7,27 +7,28 @@ from pathlib import Path
 
 import numpy as np
 
-from ..beamforming_evaluation.diagnostic_plotting import (
+from spflow.beamforming.time_delay import IntegerDelayAndSumBeamformer
+from spflow.beamforming_evaluation.diagnostic_plotting import (
     plot_bl_comparison,
     plot_btr_heatmap,
     plot_fraz_heatmap,
     require_matplotlib,
 )
-from ..beamforming_evaluation.scan_grid import build_beam_scan_grid
-from ..beamforming_evaluation.signal_levels import (
+from spflow.beamforming_evaluation.scan_grid import build_beam_scan_grid
+from spflow.beamforming_evaluation.signal_levels import (
     calculate_block_rms_levels_db20,
     calculate_one_sided_rms_spectrum_db20,
     calculate_tone_projection_rms_level_db20,
 )
-from ..sidelobe_cancellation import (
+from spflow.sidelobe_cancellation import (
     BeamGuardSelector,
     BlockLeastSquaresSlcSolver,
     SlcConfig,
     SlcReferenceCapacityChecker,
 )
-from ..simulation.numerics import SimulationPrecision
-from ..simulation.tone_scene import synthesize_tone_scene
-from .time_delay import IntegerDelayAndSumBeamformer
+from spflow.simulation.numerics import SimulationPrecision
+from spflow.simulation.tone_scene import synthesize_tone_scene
+
 from .time_delay_diagnostics import (
     TimeDelayDiagnosticConfig,
     TimeDelayDiagnosticSource,
@@ -308,7 +309,7 @@ def _evaluate_stage_source_metrics(
             bl_output_path = output_dir / f"{stage_prefix}_bl_{source_index:02d}_{_sanitize_label_for_filename(label)}.png"
 
         if save_bl:
-            from ..beamforming_evaluation.diagnostic_plotting import plot_bl_response
+            from spflow.beamforming_evaluation.diagnostic_plotting import plot_bl_response
 
             plot_bl_response(
                 axis_az_deg=axis_az_deg,

@@ -80,3 +80,18 @@ def test_root_public_names_are_eager_or_registered_for_lazy_resolution() -> None
 def test_beamforming_public_names_are_registered_to_one_responsibility_module() -> None:
     """beamforming公開名に遅延解決先の責務moduleが一意に登録されることを確認する。"""
     assert set(beamforming.__all__) <= set(beamforming._EXPORT_MODULES)
+
+
+def test_evaluation_names_are_not_reexported_from_core_flat_apis() -> None:
+    """評価支援APIがspflow直下やbeamforming処理APIへ再混入しないことを確認する。"""
+    evaluation_names = {
+        "SourceSectorMask",
+        "build_beam_level_display_arrays",
+        "get_evaluation_criteria_for_pattern",
+        "plot_bl_response",
+    }
+
+    # 評価部品は明示的にspflow.beamforming_evaluationから選ばせる。
+    # core flat APIへ混ぜると、通常の重み設計・適用と評価policyの責務境界が見えなくなる。
+    assert evaluation_names.isdisjoint(spflow.__all__)
+    assert evaluation_names.isdisjoint(beamforming.__all__)

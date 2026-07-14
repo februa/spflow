@@ -7,14 +7,18 @@ from pathlib import Path
 
 import numpy as np
 
-from spflow.beamforming import (
-    SlcConfig,
+from evaluations.beamforming.scenarios.fractional_delay_slc_diagnostics import (
+    run_fractional_delay_slc_diagnostics,
+)
+from evaluations.beamforming.scenarios.time_delay_diagnostics import (
     TimeDelayDiagnosticConfig,
     TimeDelayDiagnosticSource,
+)
+from spflow.array_design import (
     load_operational_shading,
     load_operational_sparse_array,
 )
-from spflow.beamforming.fractional_delay_slc_diagnostics import run_fractional_delay_slc_diagnostics
+from spflow.sidelobe_cancellation import SlcConfig
 
 
 def _require_summary_float(summary: dict[str, object], key: str) -> float:

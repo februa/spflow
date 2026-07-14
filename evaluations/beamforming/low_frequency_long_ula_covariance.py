@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -29,6 +29,8 @@ from scene_renderer import (  # noqa: E402
     StaticPose,
     ToneSpectrum,
 )
+
+from evaluations.beamforming.method3_sparse_64ch_correlation import CoordinateArray  # noqa: E402
 from spflow.beamforming import (  # noqa: E402
     DirectionMatchedCovarianceAccumulator,
     build_two_second_covariance_snapshot_schedule,
@@ -37,9 +39,7 @@ from spflow.beamforming import (  # noqa: E402
     relative_arrival_delay,
     steering_from_relative_delay,
 )
-from spflow.beamforming.diagnostic_plotting import require_matplotlib  # noqa: E402
-from evaluations.beamforming.method3_sparse_64ch_correlation import CoordinateArray  # noqa: E402
-
+from spflow.beamforming_evaluation.diagnostic_plotting import require_matplotlib  # noqa: E402
 
 OUTPUT_DIR = ROOT / "artifacts" / "beamforming" / "low_frequency_long_ula_covariance"
 FS_HZ = 1024.0

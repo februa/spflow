@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from spflow.beamforming.evaluation_arrays import (
+from spflow.beamforming_evaluation.evaluation_arrays import (
     build_beam_level_display_arrays,
     calculate_bl_shape_features,
     calculate_btr_relative_level_db,

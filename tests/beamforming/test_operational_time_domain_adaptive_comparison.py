@@ -7,13 +7,13 @@ from typing import Any
 
 import numpy as np
 
-from spflow.beamforming import (
+from evaluations.beamforming.scenarios.operational_time_domain_adaptive_comparison import (
     OperationalTimeDomainAdaptiveComparisonConfig,
-    SlcConfig,
     run_operational_time_domain_adaptive_comparison,
 )
 from spflow.beamforming.operational_sparse_array import OperationalSparseArrayDefinition
 from spflow.beamforming.time_delay import design_fractional_delay_filter_bank
+from spflow.sidelobe_cancellation import SlcConfig
 
 
 def _require_mapping(value: object, name: str) -> dict[str, Any]:

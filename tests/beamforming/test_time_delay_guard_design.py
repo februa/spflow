@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from spflow.beamforming.time_delay_guard_design import TimeDelayGuardDesignConfig, run_integer_delay_guard_design
+from evaluations.beamforming.scenarios.time_delay_guard_design import (
+    TimeDelayGuardDesignConfig,
+    run_integer_delay_guard_design,
+)
 
 
 def test_integer_delay_guard_design_save_guard_table_and_pngs() -> None:
@@ -56,4 +59,3 @@ def test_integer_delay_guard_design_save_guard_table_and_pngs() -> None:
         assert int(record["required_margin_guard_half_width_beams"]) >= int(record["guard_half_width_beams"])
         assert isinstance(bool(record["meets_required_peak_margin"]), bool)
         assert abs(float(record["peak_azimuth_deg"]) - 20.0) <= 4.0
-

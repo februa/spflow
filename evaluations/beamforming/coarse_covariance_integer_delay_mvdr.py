@@ -14,7 +14,7 @@ from numpy.typing import NDArray
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-from spflow.beamforming.diagnostic_plotting import require_matplotlib  # noqa: E402
+from spflow.beamforming_evaluation.diagnostic_plotting import require_matplotlib  # noqa: E402
 
 OUTPUT_DIR = ROOT / "artifacts" / "beamforming" / "coarse_covariance_integer_delay_mvdr"
 FS_HZ = 32768.0

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from spflow.beamforming import (
+from spflow.beamforming_evaluation import (
     get_evaluation_criteria_for_pattern,
     list_beamforming_evaluation_criteria,
     list_beamforming_evaluation_patterns,

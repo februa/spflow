@@ -4,24 +4,14 @@
 # ruff: noqa: F401
 
 # 重み・filter設計と信号適用をbeamformingの中心公開APIとする。
-# array設計、評価、SLCの再公開は既存利用者向け互換facadeであり、新規コードは
-# spflow.array_design、spflow.beamforming_evaluation、spflow.sidelobe_cancellationを使う。
+# 評価部品は別責務であるため、このflat APIから再公開しない。
+# SLCの互換公開は残るが、新規コードはspflow.sidelobe_cancellationを使う。
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
 # 型検査時は公開名の具体型を各責務moduleから取得する。実行時は下の遅延解決を使い、
 # CBFだけを使う処理へ評価・描画moduleを読み込まない。
 if TYPE_CHECKING:
-    from .abf_like_metrics import (
-        AbfLikeMetricDecision,
-        AbfLikeNonSourceMetrics,
-        SourceSectorMask,
-        build_source_sector_mask,
-        build_source_sector_mask_from_azimuths,
-        calculate_abf_like_non_source_metrics,
-        detect_source_beam_indices_from_level_peaks,
-        judge_abf_like_non_source_metrics,
-    )
     from .application import (
         apply_beamformer,
         apply_beamformer_bands,
@@ -30,16 +20,6 @@ if TYPE_CHECKING:
         build_time_tapped_snapshot_matrix,
     )
     from .array_design import BandwiseArrayDesign
-    from .bl_component_metrics import (
-        BlComponentEvaluation,
-        BlLocalPeak,
-        MixedBlConsistency,
-        NoiseOnlyBlMetrics,
-        TargetOnlyBlMetrics,
-        evaluate_mixed_bl_consistency,
-        evaluate_noise_only_bl,
-        evaluate_target_only_bl,
-    )
     from .cbf import (
         CBFBeamformer,
         CBFOverlapSaveBeamformer,
@@ -71,16 +51,6 @@ if TYPE_CHECKING:
         CovarianceSubspaceMetrics,
         calculate_covariance_subspace_metrics,
     )
-    from .diagnostic_plotting import (
-        BeamDiagnosticPlotUsageNotes,
-        build_beam_diagnostic_plot_usage_notes,
-        centers_to_edges,
-        plot_bl_comparison,
-        plot_bl_response,
-        plot_btr_heatmap,
-        plot_fraz_heatmap,
-        write_beam_diagnostic_plot_usage_notes,
-    )
     from .direction_covariance_selector import (
         CovarianceFallbackReason,
         CovarianceFallbackSource,
@@ -97,21 +67,6 @@ if TYPE_CHECKING:
         design_ebae_weights,
         design_ebae_weights_band,
         estimate_signal_count_ne_aic,
-    )
-    from .evaluation_arrays import (
-        BeamLevelDisplayArrays,
-        BlShapeFeatures,
-        build_beam_level_display_arrays,
-        calculate_bl_shape_features,
-        calculate_btr_relative_level_db,
-    )
-    from .evaluation_criteria import (
-        BeamformingEvaluationCriterion,
-        BeamformingEvaluationPattern,
-        get_evaluation_criteria_for_pattern,
-        list_beamforming_evaluation_criteria,
-        list_beamforming_evaluation_patterns,
-        write_beamforming_evaluation_criteria_markdown,
     )
     from .fixed_delay_diff_mvdr import (
         STANDARD_FRACTIONAL_DELAY_PATTERN_COUNT,
@@ -138,11 +93,6 @@ if TYPE_CHECKING:
         design_standard_fractional_delay_filter_bank,
         extract_delay_centered_snapshots,
     )
-    from .fractional_delay_performance import (
-        FractionalDelayPerformanceConfig,
-        run_fractional_delay_performance_report,
-    )
-    from .fractional_delay_slc_diagnostics import run_fractional_delay_slc_diagnostics
     from .geometry import (
         relative_arrival_delay,
         steering_from_relative_delay,
@@ -164,10 +114,6 @@ if TYPE_CHECKING:
         design_mvdr_weights,
         design_mvdr_weights_with_channel_window,
     )
-    from .operational_fractional_delay_performance import (
-        OperationalArrayFractionalDelayPerformanceConfig,
-        run_operational_array_fractional_delay_performance_report,
-    )
     from .operational_shading import (
         OperationalFixedBeamShadingDesignConfig,
         OperationalShadingDefinition,
@@ -182,18 +128,6 @@ if TYPE_CHECKING:
         design_operational_sparse_array,
         load_operational_sparse_array,
         save_operational_sparse_array,
-    )
-    from .operational_time_domain_adaptive_comparison import (
-        OperationalTimeDomainAdaptiveComparisonConfig,
-        run_operational_time_domain_adaptive_comparison,
-    )
-    from .operational_time_domain_frequency_separation_diagnostics import (
-        OperationalSameAzimuthFrequencySeparationConfig,
-        run_operational_same_azimuth_frequency_separation_diagnostics,
-    )
-    from .operational_time_domain_slc_diagnostics import (
-        OperationalTimeDomainSlcDiagnosticConfig,
-        run_operational_time_domain_slc_leakage_diagnostics,
     )
     from .selected_frequency_direction_covariance import (
         SelectedFrequencyDirectionCovarianceAccumulator,
@@ -246,14 +180,6 @@ if TYPE_CHECKING:
         design_fractional_delay_filter_bank,
         design_windowed_sinc_fractional_delay_filter,
     )
-    from .time_delay_diagnostics import (
-        TimeDelayDiagnosticConfig,
-        TimeDelayDiagnosticSource,
-        build_sparse_single_side_array_positions,
-        run_integer_delay_diagnostics,
-    )
-    from .time_delay_guard_design import TimeDelayGuardDesignConfig, run_integer_delay_guard_design
-    from .time_delay_slc_diagnostics import run_integer_delay_slc_diagnostics
     from .time_domain_adaptive import (
         TimeDomainAdaptiveWeightDiagnostics,
         build_gsc_blocking_matrix,
@@ -271,27 +197,11 @@ if TYPE_CHECKING:
     )
 
 _EXPORT_MODULES: dict[str, str] = {
-    "AbfLikeMetricDecision": "abf_like_metrics",
-    "AbfLikeNonSourceMetrics": "abf_like_metrics",
-    "SourceSectorMask": "abf_like_metrics",
-    "build_source_sector_mask": "abf_like_metrics",
-    "build_source_sector_mask_from_azimuths": "abf_like_metrics",
-    "calculate_abf_like_non_source_metrics": "abf_like_metrics",
-    "detect_source_beam_indices_from_level_peaks": "abf_like_metrics",
-    "judge_abf_like_non_source_metrics": "abf_like_metrics",
     "apply_beamformer": "application",
     "apply_beamformer_bands": "application",
     "apply_beamformer_filter_fft": "application",
     "apply_time_domain_fir_beamformer": "application",
     "build_time_tapped_snapshot_matrix": "application",
-    "BlComponentEvaluation": "bl_component_metrics",
-    "BlLocalPeak": "bl_component_metrics",
-    "MixedBlConsistency": "bl_component_metrics",
-    "NoiseOnlyBlMetrics": "bl_component_metrics",
-    "TargetOnlyBlMetrics": "bl_component_metrics",
-    "evaluate_mixed_bl_consistency": "bl_component_metrics",
-    "evaluate_noise_only_bl": "bl_component_metrics",
-    "evaluate_target_only_bl": "bl_component_metrics",
     "CBFBeamformer": "cbf",
     "CBFOverlapSaveBeamformer": "cbf",
     "apply_channel_window_to_steering": "cbf",
@@ -315,14 +225,6 @@ _EXPORT_MODULES: dict[str, str] = {
     "calculate_maximum_spatial_correlation_table": "covariance_snapshot_schedule",
     "CovarianceSubspaceMetrics": "covariance_subspace_metrics",
     "calculate_covariance_subspace_metrics": "covariance_subspace_metrics",
-    "BeamDiagnosticPlotUsageNotes": "diagnostic_plotting",
-    "build_beam_diagnostic_plot_usage_notes": "diagnostic_plotting",
-    "centers_to_edges": "diagnostic_plotting",
-    "plot_bl_comparison": "diagnostic_plotting",
-    "plot_bl_response": "diagnostic_plotting",
-    "plot_btr_heatmap": "diagnostic_plotting",
-    "plot_fraz_heatmap": "diagnostic_plotting",
-    "write_beam_diagnostic_plot_usage_notes": "diagnostic_plotting",
     "CovarianceFallbackReason": "direction_covariance_selector",
     "CovarianceFallbackSource": "direction_covariance_selector",
     "DirectionCovarianceSelectionConfig": "direction_covariance_selector",
@@ -335,17 +237,6 @@ _EXPORT_MODULES: dict[str, str] = {
     "design_ebae_weights": "ebae",
     "design_ebae_weights_band": "ebae",
     "estimate_signal_count_ne_aic": "ebae",
-    "BeamLevelDisplayArrays": "evaluation_arrays",
-    "BlShapeFeatures": "evaluation_arrays",
-    "build_beam_level_display_arrays": "evaluation_arrays",
-    "calculate_bl_shape_features": "evaluation_arrays",
-    "calculate_btr_relative_level_db": "evaluation_arrays",
-    "BeamformingEvaluationCriterion": "evaluation_criteria",
-    "BeamformingEvaluationPattern": "evaluation_criteria",
-    "get_evaluation_criteria_for_pattern": "evaluation_criteria",
-    "list_beamforming_evaluation_criteria": "evaluation_criteria",
-    "list_beamforming_evaluation_patterns": "evaluation_criteria",
-    "write_beamforming_evaluation_criteria_markdown": "evaluation_criteria",
     "STANDARD_FRACTIONAL_DELAY_PATTERN_COUNT": "fixed_delay_diff_mvdr",
     "STANDARD_FRACTIONAL_DELAY_TAP_COUNT": "fixed_delay_diff_mvdr",
     "AlignedPathCombiner": "fixed_delay_diff_mvdr",
@@ -369,8 +260,6 @@ _EXPORT_MODULES: dict[str, str] = {
     "design_fixed_delay_fractional_weights_from_delay_table": "fixed_delay_diff_mvdr",
     "design_standard_fractional_delay_filter_bank": "fixed_delay_diff_mvdr",
     "extract_delay_centered_snapshots": "fixed_delay_diff_mvdr",
-    "FractionalDelayPerformanceConfig": "fractional_delay_performance",
-    "run_fractional_delay_performance_report": "fractional_delay_performance",
     "relative_arrival_delay": "geometry",
     "steering_from_relative_delay": "geometry",
     "unit_direction_from_positions": "geometry",
@@ -386,10 +275,6 @@ _EXPORT_MODULES: dict[str, str] = {
     "design_mvdr_coefficients_with_channel_window": "mvdr_weight_designer",
     "design_mvdr_weights": "mvdr_weight_designer",
     "design_mvdr_weights_with_channel_window": "mvdr_weight_designer",
-    "OperationalArrayFractionalDelayPerformanceConfig": "operational_fractional_delay_performance",
-    "run_operational_array_fractional_delay_performance_report": (
-        "operational_fractional_delay_performance"
-    ),
     "OperationalFixedBeamShadingDesignConfig": "operational_shading",
     "OperationalShadingDefinition": "operational_shading",
     "OperationalShadingDesignConfig": "operational_shading",
@@ -401,20 +286,6 @@ _EXPORT_MODULES: dict[str, str] = {
     "design_operational_sparse_array": "operational_sparse_array",
     "load_operational_sparse_array": "operational_sparse_array",
     "save_operational_sparse_array": "operational_sparse_array",
-    "OperationalTimeDomainAdaptiveComparisonConfig": "operational_time_domain_adaptive_comparison",
-    "run_operational_time_domain_adaptive_comparison": (
-        "operational_time_domain_adaptive_comparison"
-    ),
-    "OperationalSameAzimuthFrequencySeparationConfig": (
-        "operational_time_domain_frequency_separation_diagnostics"
-    ),
-    "run_operational_same_azimuth_frequency_separation_diagnostics": (
-        "operational_time_domain_frequency_separation_diagnostics"
-    ),
-    "OperationalTimeDomainSlcDiagnosticConfig": "operational_time_domain_slc_diagnostics",
-    "run_operational_time_domain_slc_leakage_diagnostics": (
-        "operational_time_domain_slc_diagnostics"
-    ),
     "SelectedFrequencyDirectionCovarianceAccumulator": "selected_frequency_direction_covariance",
     "SelectedFrequencyDirectionCovarianceResult": "selected_frequency_direction_covariance",
     "BeamDomainSLC": "slc",
@@ -451,18 +322,10 @@ _EXPORT_MODULES: dict[str, str] = {
     "IntegerDelayAndSumBeamformer": "time_delay",
     "design_fractional_delay_filter_bank": "time_delay",
     "design_windowed_sinc_fractional_delay_filter": "time_delay",
-    "TimeDelayDiagnosticConfig": "time_delay_diagnostics",
-    "TimeDelayDiagnosticSource": "time_delay_diagnostics",
-    "build_sparse_single_side_array_positions": "time_delay_diagnostics",
-    "run_integer_delay_diagnostics": "time_delay_diagnostics",
     "BandwiseArrayDesign": "array_design",
     "make_directions": "directions",
-    "run_fractional_delay_slc_diagnostics": "fractional_delay_slc_diagnostics",
     "PlaneWaveTone": "synthetic_signal",
     "synthesize_plane_wave_tone": "synthetic_signal",
-    "TimeDelayGuardDesignConfig": "time_delay_guard_design",
-    "run_integer_delay_guard_design": "time_delay_guard_design",
-    "run_integer_delay_slc_diagnostics": "time_delay_slc_diagnostics",
     "TimeDomainAdaptiveWeightDiagnostics": "time_domain_adaptive",
     "build_gsc_blocking_matrix": "time_domain_adaptive",
     "build_real_tone_constraint_matrix": "time_domain_adaptive",
@@ -511,16 +374,7 @@ def __dir__() -> list[str]:
 
 # ここに列挙した識別子だけを公開 API と見なし、探索補助用の内部関数は外部契約に含めない。
 __all__ = [
-    "BeamLevelDisplayArrays",
-    "BlShapeFeatures",
-    "BlComponentEvaluation",
-    "BlLocalPeak",
-    "MixedBlConsistency",
-    "NoiseOnlyBlMetrics",
-    "TargetOnlyBlMetrics",
     "PlaneWaveTone",
-    "AbfLikeMetricDecision",
-    "AbfLikeNonSourceMetrics",
     "BandwiseArrayDesign",
     "apply_channel_window_to_steering",
     "design_cbf_coefficients",
@@ -560,19 +414,10 @@ __all__ = [
     "calculate_covariance_subspace_metrics",
     "calculate_spatial_correlation_statistics",
     "calculate_sparse_array_spatial_correlation_statistics",
-    "BeamDiagnosticPlotUsageNotes",
-    "build_beam_diagnostic_plot_usage_notes",
-    "write_beam_diagnostic_plot_usage_notes",
-    "centers_to_edges",
-    "plot_bl_response",
-    "plot_bl_comparison",
-    "plot_fraz_heatmap",
-    "plot_btr_heatmap",
     "SlcConfig",
     "SlcReferenceCapacityDecision",
     "SlcOutputSafetyDecision",
     "SlcProcessResult",
-    "SourceSectorMask",
     "SourceMaskNonSourceLeakageSubtractor",
     "SourceMaskSlcConfig",
     "SourceMaskSlcHealth",
@@ -585,27 +430,11 @@ __all__ = [
     "BlockLeastSquaresSlcSolver",
     "BeamDomainSLC",
     "build_reference_blocking_matrix",
-    "build_source_sector_mask",
-    "build_source_sector_mask_from_azimuths",
-    "build_beam_level_display_arrays",
-    "calculate_bl_shape_features",
-    "calculate_btr_relative_level_db",
-    "evaluate_mixed_bl_consistency",
-    "evaluate_noise_only_bl",
-    "evaluate_target_only_bl",
-    "OperationalArrayFractionalDelayPerformanceConfig",
-    "run_operational_array_fractional_delay_performance_report",
     "OperationalSparseArrayDesignConfig",
     "OperationalSparseArrayDefinition",
     "design_operational_sparse_array",
     "save_operational_sparse_array",
     "load_operational_sparse_array",
-    "OperationalTimeDomainSlcDiagnosticConfig",
-    "run_operational_time_domain_slc_leakage_diagnostics",
-    "OperationalTimeDomainAdaptiveComparisonConfig",
-    "run_operational_time_domain_adaptive_comparison",
-    "OperationalSameAzimuthFrequencySeparationConfig",
-    "run_operational_same_azimuth_frequency_separation_diagnostics",
     "OperationalFixedBeamShadingDesignConfig",
     "OperationalShadingDefinition",
     "OperationalShadingDesignConfig",
@@ -616,19 +445,7 @@ __all__ = [
     "SparseSingleSideArrayDesignResult",
     "build_sparse_single_side_array_design",
     "run_sparse_single_side_array_design",
-    "TimeDelayDiagnosticConfig",
-    "TimeDelayDiagnosticSource",
-    "build_sparse_single_side_array_positions",
-    "run_integer_delay_diagnostics",
-    "run_integer_delay_slc_diagnostics",
     "make_directions",
-    "BeamformingEvaluationCriterion",
-    "BeamformingEvaluationPattern",
-    "get_evaluation_criteria_for_pattern",
-    "list_beamforming_evaluation_criteria",
-    "list_beamforming_evaluation_patterns",
-    "calculate_abf_like_non_source_metrics",
-    "write_beamforming_evaluation_criteria_markdown",
     "TimeDomainAdaptiveWeightDiagnostics",
     "build_time_tapped_snapshot_matrix",
     "estimate_time_domain_covariance",
@@ -644,18 +461,12 @@ __all__ = [
     "apply_time_domain_fir_beamformer",
     "evaluate_constraint_response",
     "diagnose_time_domain_adaptive_weights",
-    "TimeDelayGuardDesignConfig",
-    "run_integer_delay_guard_design",
     "DelayTable",
     "FractionalDelayAndSumBeamformer",
     "FractionalDelayFilterBank",
     "IntegerDelayAndSumBeamformer",
     "design_fractional_delay_filter_bank",
     "design_windowed_sinc_fractional_delay_filter",
-    "detect_source_beam_indices_from_level_peaks",
-    "FractionalDelayPerformanceConfig",
-    "run_fractional_delay_performance_report",
-    "run_fractional_delay_slc_diagnostics",
     "relative_arrival_delay",
     "steering_from_relative_delay",
     "unit_direction_from_positions",
@@ -692,7 +503,6 @@ __all__ = [
     "MVDRWeightDesigner",
     "MVDRWeightCallback",
     "MVDRWeightSnapshot",
-    "judge_abf_like_non_source_metrics",
     "beam_response_rms_db",
     "apply_beamformer",
     "apply_beamformer_bands",

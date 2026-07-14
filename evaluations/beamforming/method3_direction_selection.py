@@ -28,6 +28,11 @@ from scene_renderer import (  # noqa: E402
     StaticPose,
     ToneSpectrum,
 )
+
+from evaluations.beamforming.method3_sparse_64ch_correlation import (  # noqa: E402
+    ARRAY_POSITIONS_M,
+    CoordinateArray,
+)
 from spflow.beamforming import (  # noqa: E402
     DirectionCovarianceSelectionConfig,
     DirectionMatchedCovarianceAccumulator,
@@ -36,12 +41,10 @@ from spflow.beamforming import (  # noqa: E402
     relative_arrival_delay,
     steering_from_relative_delay,
 )
-from spflow.beamforming.diagnostic_plotting import centers_to_edges, require_matplotlib  # noqa: E402
-from evaluations.beamforming.method3_sparse_64ch_correlation import (  # noqa: E402
-    ARRAY_POSITIONS_M,
-    CoordinateArray,
+from spflow.beamforming_evaluation.diagnostic_plotting import (  # noqa: E402
+    centers_to_edges,
+    require_matplotlib,
 )
-
 
 FS_HZ = 8192.0
 SOUND_SPEED_M_S = 1500.0

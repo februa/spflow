@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from spflow.beamforming import (
+from evaluations.beamforming.scenarios.operational_time_domain_frequency_separation_diagnostics import (
     OperationalSameAzimuthFrequencySeparationConfig,
     run_operational_same_azimuth_frequency_separation_diagnostics,
 )

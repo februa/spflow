@@ -1,4 +1,4 @@
-"""運用スパースアレイ定義を使った小数遅延固定整相の性能評価モジュール。"""
+"""運用スパースアレイの小数遅延固定整相性能を評価するscenarioを実行する。"""
 
 from __future__ import annotations
 
@@ -11,19 +11,20 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from .._validation import require, require_positive_float, require_positive_int
-from ..array_design import OperationalShadingDefinition, OperationalSparseArrayDefinition
-from ..beamforming_evaluation.diagnostic_plotting import plot_bl_comparison, require_matplotlib
-from .directions import make_directions
+from spflow._validation import require, require_positive_float, require_positive_int
+from spflow.array_design import OperationalShadingDefinition, OperationalSparseArrayDefinition
+from spflow.beamforming.directions import make_directions
+from spflow.beamforming.time_delay import (
+    FractionalDelayAndSumBeamformer,
+    FractionalDelayFilterBank,
+    IntegerDelayAndSumBeamformer,
+)
+from spflow.beamforming_evaluation.diagnostic_plotting import plot_bl_comparison, require_matplotlib
+
 from .fractional_delay_performance import (
     _beam_response_db20,
     _measure_local_peak_margin_db,
     _plot_margin_summary,
-)
-from .time_delay import (
-    FractionalDelayAndSumBeamformer,
-    FractionalDelayFilterBank,
-    IntegerDelayAndSumBeamformer,
 )
 
 FloatArray = NDArray[np.floating[Any]]

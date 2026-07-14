@@ -12,10 +12,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-from spflow.beamforming.fractional_delay_slc_diagnostics import (  # noqa: E402
+from evaluations.beamforming.scenarios.fractional_delay_slc_diagnostics import (  # noqa: E402
     run_fractional_delay_slc_diagnostics,
 )
-from spflow.beamforming.time_delay_diagnostics import (  # noqa: E402
+from evaluations.beamforming.scenarios.time_delay_diagnostics import (  # noqa: E402
     TimeDelayDiagnosticConfig,
     TimeDelayDiagnosticSource,
 )

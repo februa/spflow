@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-from spflow.beamforming.operational_fractional_delay_performance import (
+from evaluations.beamforming.scenarios.operational_fractional_delay_performance import (
     OperationalArrayFractionalDelayPerformanceConfig,
     run_operational_array_fractional_delay_performance_report,
 )

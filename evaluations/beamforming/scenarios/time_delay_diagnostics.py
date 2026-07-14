@@ -1,4 +1,4 @@
-"""時間領域固定整相の BL/FRAZ/BTR 診断を行うモジュール。"""
+"""時間領域固定整相のBL/FRAZ/BTR評価scenarioを実行する。"""
 
 from __future__ import annotations
 
@@ -9,13 +9,14 @@ from typing import Any
 
 import numpy as np
 
-from .._validation import (
+from spflow._validation import (
     require,
     require_non_negative_float,
     require_positive_float,
     require_positive_int,
 )
-from ..beamforming_evaluation.diagnostic_plotting import (
+from spflow.beamforming.time_delay import IntegerDelayAndSumBeamformer
+from spflow.beamforming_evaluation.diagnostic_plotting import (
     build_beam_diagnostic_plot_usage_notes,
     plot_bl_response,
     plot_btr_heatmap,
@@ -23,15 +24,14 @@ from ..beamforming_evaluation.diagnostic_plotting import (
     require_matplotlib,
     write_beam_diagnostic_plot_usage_notes,
 )
-from ..beamforming_evaluation.scan_grid import build_beam_scan_grid
-from ..beamforming_evaluation.signal_levels import (
+from spflow.beamforming_evaluation.scan_grid import build_beam_scan_grid
+from spflow.beamforming_evaluation.signal_levels import (
     calculate_block_rms_levels_db20,
     calculate_one_sided_rms_spectrum_db20,
     calculate_tone_projection_rms_level_db20,
 )
-from ..simulation.numerics import SimulationPrecision
-from ..simulation.tone_scene import ToneSceneSource, synthesize_tone_scene
-from .time_delay import IntegerDelayAndSumBeamformer
+from spflow.simulation.numerics import SimulationPrecision
+from spflow.simulation.tone_scene import ToneSceneSource, synthesize_tone_scene
 
 
 class TimeDelayDiagnosticSource(ToneSceneSource):

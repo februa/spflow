@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -15,14 +15,6 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "vendor" / "scene_renderer"))
 
-from spflow.beamforming import (  # noqa: E402
-    DirectionMatchedCovarianceAccumulator,
-    build_two_second_covariance_snapshot_schedule,
-    calculate_sparse_array_spatial_correlation_statistics,
-    relative_arrival_delay,
-    steering_from_relative_delay,
-)
-from spflow.beamforming.diagnostic_plotting import require_matplotlib  # noqa: E402
 from evaluations.beamforming.low_frequency_long_ula_covariance import (  # noqa: E402
     APERTURE_M,
     FS_HZ,
@@ -36,7 +28,14 @@ from evaluations.beamforming.low_frequency_long_ula_covariance import (  # noqa:
     _positions,
     _render,
 )
-
+from spflow.beamforming import (  # noqa: E402
+    DirectionMatchedCovarianceAccumulator,
+    build_two_second_covariance_snapshot_schedule,
+    calculate_sparse_array_spatial_correlation_statistics,
+    relative_arrival_delay,
+    steering_from_relative_delay,
+)
+from spflow.beamforming_evaluation.diagnostic_plotting import require_matplotlib  # noqa: E402
 
 SOURCE_AZIMUTH_DEG = 60.0
 OUTPUT_DIR = ROOT / "artifacts" / "beamforming" / "long_ula_correlation_method_comparison_source_60deg"

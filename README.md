@@ -66,6 +66,9 @@ Beamforming関連の責務境界は次のとおりである。
 - `spflow.beamforming_evaluation`: scan grid、level、理論応答などの小さな評価支援部品
 - `evaluations/beamforming`: 個別scenario、parameter sweep、方式比較、成果物生成
 
+評価支援部品は`spflow`直下や`spflow.beamforming`から再公開しない。
+必要な評価契約を明示するため、`spflow.beamforming_evaluation`から直接importする。
+
 詳細は[`doc/SpFlow/beamforming責務分割設計.md`](doc/SpFlow/beamforming責務分割設計.md)を参照する。
 
 ## Beamforming評価環境

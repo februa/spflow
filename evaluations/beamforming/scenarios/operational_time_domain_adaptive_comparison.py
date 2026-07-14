@@ -1,4 +1,4 @@
-"""時間領域 SLC と MVDR / LCMV / GSC のビーム応答改善量を比較するモジュール。"""
+"""時間領域SLCとMVDR、LCMV、GSCを比較するscenarioを実行する。"""
 
 from __future__ import annotations
 
@@ -11,34 +11,10 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from .._validation import require, require_positive_float, require_positive_int
-from ..array_design import load_operational_sparse_array
-from ..beamforming_evaluation.diagnostic_plotting import require_matplotlib
-from ..beamforming_evaluation.fractional_response import (
-    calculate_fractional_beam_response_matrix,
-)
-from ..beamforming_evaluation.level_metrics import (
-    calculate_real_tone_response_rms_level_db20,
-    calculate_rms_level_db20,
-)
-from ..beamforming_evaluation.scan_grid import build_beam_scan_grid
-from ..level_conversion import LevelConverter, level_20log10_rms
-from ..sidelobe_cancellation import SlcConfig
-from ..simulation.numerics import SimulationPrecision
-from ..simulation.tone_scene import (
-    direction_from_azimuth_elevation,
-    synthesize_tone_scene,
-)
-from .operational_time_domain_slc_diagnostics import (
-    OperationalTimeDomainSlcDiagnosticConfig,
-    _build_source_specs,
-    _plot_slc_bl_overlay,
-    _protected_target_bl_sidelobe_metrics,
-    run_operational_time_domain_slc_leakage_diagnostics,
-)
-from .time_delay import FractionalDelayAndSumBeamformer
-from .time_delay_diagnostics import TimeDelayDiagnosticConfig
-from .time_domain_adaptive import (
+from spflow._validation import require, require_positive_float, require_positive_int
+from spflow.array_design import load_operational_sparse_array
+from spflow.beamforming.time_delay import FractionalDelayAndSumBeamformer
+from spflow.beamforming.time_domain_adaptive import (
     apply_time_domain_fir_beamformer,
     build_real_tone_constraint_matrix,
     build_time_domain_tone_constraint_vector,
@@ -49,6 +25,31 @@ from .time_domain_adaptive import (
     estimate_time_domain_covariance,
     evaluate_constraint_response,
 )
+from spflow.beamforming_evaluation.diagnostic_plotting import require_matplotlib
+from spflow.beamforming_evaluation.fractional_response import (
+    calculate_fractional_beam_response_matrix,
+)
+from spflow.beamforming_evaluation.level_metrics import (
+    calculate_real_tone_response_rms_level_db20,
+    calculate_rms_level_db20,
+)
+from spflow.beamforming_evaluation.scan_grid import build_beam_scan_grid
+from spflow.level_conversion import LevelConverter, level_20log10_rms
+from spflow.sidelobe_cancellation import SlcConfig
+from spflow.simulation.numerics import SimulationPrecision
+from spflow.simulation.tone_scene import (
+    direction_from_azimuth_elevation,
+    synthesize_tone_scene,
+)
+
+from .operational_time_domain_slc_diagnostics import (
+    OperationalTimeDomainSlcDiagnosticConfig,
+    _build_source_specs,
+    _plot_slc_bl_overlay,
+    _protected_target_bl_sidelobe_metrics,
+    run_operational_time_domain_slc_leakage_diagnostics,
+)
+from .time_delay_diagnostics import TimeDelayDiagnosticConfig
 
 _INPUT_RMS_LEVEL_CONVERTER = LevelConverter.for_definition(
     level_20log10_rms(reference_rms=1.0, reference_label="input RMS")

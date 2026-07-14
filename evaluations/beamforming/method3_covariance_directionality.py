@@ -16,12 +16,6 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "vendor" / "scene_renderer"))
 
-from spflow.beamforming import (  # noqa: E402
-    DirectionMatchedCovarianceAccumulator,
-    calculate_covariance_subspace_metrics,
-    calculate_sparse_array_spatial_correlation_statistics,
-)
-from spflow.beamforming.diagnostic_plotting import centers_to_edges, require_matplotlib  # noqa: E402
 from evaluations.beamforming.method3_direction_selection import (  # noqa: E402
     FS_HZ,
     NFFT,
@@ -42,7 +36,15 @@ from evaluations.beamforming.method3_sparse_64ch_correlation import (  # noqa: E
     PHYSICAL_BASELINE_EDGES_M,
     WAVELENGTH_NORMALIZED_EDGES,
 )
-
+from spflow.beamforming import (  # noqa: E402
+    DirectionMatchedCovarianceAccumulator,
+    calculate_covariance_subspace_metrics,
+    calculate_sparse_array_spatial_correlation_statistics,
+)
+from spflow.beamforming_evaluation.diagnostic_plotting import (  # noqa: E402
+    centers_to_edges,
+    require_matplotlib,
+)
 
 OUTPUT_DIR = ROOT / "artifacts" / "beamforming" / "method3_covariance_directionality"
 SOURCE_BEARING_DEG = 40.0

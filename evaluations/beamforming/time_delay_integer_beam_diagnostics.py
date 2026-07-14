@@ -13,7 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-from spflow.beamforming.time_delay_diagnostics import (
+from evaluations.beamforming.scenarios.time_delay_diagnostics import (
     TimeDelayDiagnosticConfig,
     run_integer_delay_diagnostics,
 )

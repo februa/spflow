@@ -42,19 +42,19 @@ from evaluations.beamforming.evaluate_lightweight_abf_like_comparison import (
     _weights_for_candidate,
     _write_csv,
 )
-from spflow.beamforming import SourceSectorMask
-from spflow.beamforming.diagnostic_plotting import (
-    plot_bl_response,
-    plot_btr_heatmap,
-    plot_fraz_heatmap,
-    require_matplotlib,
-)
 from spflow.beamforming.directions import make_directions
 from spflow.beamforming.operational_shading import OperationalShadingDefinition
 from spflow.beamforming.operational_sparse_array import OperationalSparseArrayDefinition
 from spflow.beamforming.time_delay import (
     FractionalDelayAndSumBeamformer,
     FractionalDelayFilterBank,
+)
+from spflow.beamforming_evaluation import SourceSectorMask
+from spflow.beamforming_evaluation.diagnostic_plotting import (
+    plot_bl_response,
+    plot_btr_heatmap,
+    plot_fraz_heatmap,
+    require_matplotlib,
 )
 
 FloatArray: TypeAlias = NDArray[np.float64]
@@ -2246,7 +2246,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 
 
 

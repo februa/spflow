@@ -31,9 +31,9 @@ from evaluations.beamforming.evaluate_lightweight_abf_like_august_shortlist impo
     _rms_levels_db20,
     _tone_projection_levels_db20,
 )
-from spflow.beamforming import SourceSectorMask
-from spflow.beamforming import diagnostic_plotting as plotting
-from spflow.beamforming.diagnostic_plotting import centers_to_edges, require_matplotlib
+from spflow.beamforming_evaluation import SourceSectorMask
+from spflow.beamforming_evaluation import diagnostic_plotting as plotting
+from spflow.beamforming_evaluation.diagnostic_plotting import centers_to_edges, require_matplotlib
 
 FloatArray: TypeAlias = NDArray[np.float64]
 BoolArray: TypeAlias = NDArray[np.bool_]
@@ -794,4 +794,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

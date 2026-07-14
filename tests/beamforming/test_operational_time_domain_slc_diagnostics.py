@@ -7,14 +7,14 @@ from pathlib import Path
 
 import numpy as np
 
-from spflow.beamforming import (
+from evaluations.beamforming.scenarios.operational_time_domain_slc_diagnostics import (
     OperationalTimeDomainSlcDiagnosticConfig,
-    SlcConfig,
     run_operational_time_domain_slc_leakage_diagnostics,
 )
 from spflow.beamforming.operational_sparse_array import OperationalSparseArrayDefinition
 from spflow.beamforming.time_delay import design_fractional_delay_filter_bank
 from spflow.beamforming_evaluation import calculate_real_tone_response_rms_level_db20
+from spflow.sidelobe_cancellation import SlcConfig
 
 
 def _require_mapping(value: object, name: str) -> Mapping[str, object]:

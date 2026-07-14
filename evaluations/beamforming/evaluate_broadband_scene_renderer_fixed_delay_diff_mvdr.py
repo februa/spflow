@@ -35,6 +35,7 @@ from scene_renderer import (  # noqa: E402
     SourceComponent,
     StaticPose,
 )
+
 from spflow.beamforming import (  # noqa: E402
     DelayTable,
     DifferenceCorrectionFIRDesigner,
@@ -42,7 +43,9 @@ from spflow.beamforming import (  # noqa: E402
     design_standard_fractional_delay_filter_bank,
     make_directions,
 )
-from spflow.beamforming.diagnostic_plotting import centers_to_edges, require_matplotlib  # noqa: E402
+from spflow.beamforming_evaluation.diagnostic_plotting import (  # noqa: E402
+    require_matplotlib,
+)
 
 try:
     import matplotlib.pyplot as plt

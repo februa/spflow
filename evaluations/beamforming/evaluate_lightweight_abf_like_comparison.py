@@ -25,11 +25,6 @@ from numpy.typing import NDArray
 from spflow.beamforming import (
     SourceMaskNonSourceLeakageSubtractor,
     SourceMaskSlcConfig,
-    SourceSectorMask,
-    build_source_sector_mask_from_azimuths,
-    calculate_abf_like_non_source_metrics,
-    detect_source_beam_indices_from_level_peaks,
-    judge_abf_like_non_source_metrics,
 )
 from spflow.beamforming.directions import make_directions
 from spflow.beamforming.operational_shading import (
@@ -41,6 +36,13 @@ from spflow.beamforming.operational_sparse_array import OperationalSparseArrayDe
 from spflow.beamforming.time_delay import (
     FractionalDelayAndSumBeamformer,
     FractionalDelayFilterBank,
+)
+from spflow.beamforming_evaluation import (
+    SourceSectorMask,
+    build_source_sector_mask_from_azimuths,
+    calculate_abf_like_non_source_metrics,
+    detect_source_beam_indices_from_level_peaks,
+    judge_abf_like_non_source_metrics,
 )
 
 FloatArray: TypeAlias = NDArray[np.float64]

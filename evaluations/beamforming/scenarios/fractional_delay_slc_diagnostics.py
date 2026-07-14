@@ -1,4 +1,4 @@
-"""小数遅延固定整相の後段へ周波数選択 SLC を適用した BL/FRAZ/BTR 診断を行うモジュール。"""
+"""小数遅延固定整相後のSLCを評価するscenarioを実行する。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,8 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from ..beamforming_evaluation.diagnostic_plotting import (
+from spflow.beamforming.time_delay import FractionalDelayAndSumBeamformer
+from spflow.beamforming_evaluation.diagnostic_plotting import (
     build_beam_diagnostic_plot_usage_notes,
     plot_bl_comparison,
     plot_bl_response,
@@ -18,20 +19,20 @@ from ..beamforming_evaluation.diagnostic_plotting import (
     require_matplotlib,
     write_beam_diagnostic_plot_usage_notes,
 )
-from ..beamforming_evaluation.fractional_response import (
+from spflow.beamforming_evaluation.fractional_response import (
     calculate_fractional_beam_response_matrix,
     normalize_evaluation_channel_weights,
 )
-from ..beamforming_evaluation.scan_grid import build_beam_scan_grid
-from ..beamforming_evaluation.signal_levels import (
+from spflow.beamforming_evaluation.scan_grid import build_beam_scan_grid
+from spflow.beamforming_evaluation.signal_levels import (
     calculate_block_rms_levels_db20,
     calculate_one_sided_rms_spectrum_db20,
     calculate_tone_projection_rms_level_db20,
 )
-from ..sidelobe_cancellation import SlcConfig
-from ..simulation.numerics import SimulationPrecision
-from ..simulation.tone_scene import synthesize_tone_scene
-from .time_delay import FractionalDelayAndSumBeamformer
+from spflow.sidelobe_cancellation import SlcConfig
+from spflow.simulation.numerics import SimulationPrecision
+from spflow.simulation.tone_scene import synthesize_tone_scene
+
 from .time_delay_diagnostics import (
     TimeDelayDiagnosticConfig,
     TimeDelayDiagnosticSource,

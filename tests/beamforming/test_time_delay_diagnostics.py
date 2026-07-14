@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from spflow.beamforming.time_delay_diagnostics import (
+from evaluations.beamforming.scenarios.time_delay_diagnostics import (
     TimeDelayDiagnosticConfig,
     TimeDelayDiagnosticSource,
     run_integer_delay_diagnostics,

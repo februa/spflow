@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from spflow.beamforming.fractional_delay_performance import (
+from evaluations.beamforming.scenarios.fractional_delay_performance import (
     FractionalDelayPerformanceConfig,
     run_fractional_delay_performance_report,
 )

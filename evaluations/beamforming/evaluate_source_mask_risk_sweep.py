@@ -43,8 +43,6 @@ from evaluations.beamforming.evaluate_lightweight_abf_like_comparison import (
     _weights_for_candidate,
     _write_csv,
 )
-from spflow.beamforming import SourceSectorMask
-from spflow.beamforming.diagnostic_plotting import require_matplotlib
 from spflow.beamforming.directions import make_directions
 from spflow.beamforming.operational_shading import OperationalShadingDefinition
 from spflow.beamforming.operational_sparse_array import OperationalSparseArrayDefinition
@@ -52,6 +50,8 @@ from spflow.beamforming.time_delay import (
     FractionalDelayAndSumBeamformer,
     FractionalDelayFilterBank,
 )
+from spflow.beamforming_evaluation import SourceSectorMask
+from spflow.beamforming_evaluation.diagnostic_plotting import require_matplotlib
 
 FloatArray: TypeAlias = NDArray[np.float64]
 ComplexArray: TypeAlias = NDArray[np.complex128]

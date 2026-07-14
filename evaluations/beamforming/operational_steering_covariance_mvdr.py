@@ -42,7 +42,7 @@ from spflow.beamforming import (  # noqa: E402
     relative_arrival_delay,
     steering_from_relative_delay,
 )
-from spflow.beamforming.diagnostic_plotting import require_matplotlib  # noqa: E402
+from spflow.beamforming_evaluation.diagnostic_plotting import require_matplotlib  # noqa: E402
 
 ARRAY_PATH = ROOT / "artifacts" / "beamforming" / "operational_fractional_delay_performance_test" / "array.json"
 SHADING_PATH = ROOT / "artifacts" / "beamforming" / "operational_fractional_delay_performance_test" / "shading.json"

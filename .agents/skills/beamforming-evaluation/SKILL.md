@@ -59,8 +59,8 @@ Use this skill to choose and document evaluation criteria for beamforming and SL
 
 When working in the `spflow` repository:
 
-- Prefer `spflow.beamforming.get_evaluation_criteria_for_pattern(pattern_id)` for selecting required/recommended criteria.
-- Use `spflow.beamforming.write_beamforming_evaluation_criteria_markdown(path)` to regenerate the design catalog.
-- Use BL/FRAZ/BTR plotting helpers in `spflow.beamforming.diagnostic_plotting`; pass `level_unit_label` when physical calibration is known.
+- Prefer `spflow.beamforming_evaluation.get_evaluation_criteria_for_pattern(pattern_id)` for selecting required/recommended criteria.
+- Use `spflow.beamforming_evaluation.write_beamforming_evaluation_criteria_markdown(path)` to regenerate the design catalog.
+- Use BL/FRAZ/BTR plotting helpers in `spflow.beamforming_evaluation.diagnostic_plotting`; pass `level_unit_label` when physical calibration is known.
 - When building report packs, include `source_frequency_bl_overlay.png` for every scenario and save the corresponding source-frequency BL arrays in the NPZ plot data.
 - Follow `AGENTS.md`: Japanese comments/docstrings, shape/axis/unit comments, and explicit signal-processing assumptions are mandatory.

@@ -14,7 +14,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-from spflow.beamforming.fractional_delay_performance import (
+from evaluations.beamforming.scenarios.fractional_delay_performance import (
     FractionalDelayPerformanceConfig,
     run_fractional_delay_performance_report,
 )

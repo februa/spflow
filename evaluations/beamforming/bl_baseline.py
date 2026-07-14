@@ -9,15 +9,18 @@ from pathlib import Path
 import numpy as np
 
 from spflow import (
-    BlComponentEvaluation,
-    evaluate_target_only_bl,
     relative_arrival_delay,
     rms_amplitude_to_level_db,
     steering_from_relative_delay,
     synthesize_plane_wave_tone,
 )
-from spflow.beamforming import build_source_sector_mask_from_azimuths, design_cbf_coefficients
-from spflow.beamforming.diagnostic_plotting import plot_bl_response
+from spflow.beamforming import design_cbf_coefficients
+from spflow.beamforming_evaluation import (
+    BlComponentEvaluation,
+    build_source_sector_mask_from_azimuths,
+    evaluate_target_only_bl,
+)
+from spflow.beamforming_evaluation.diagnostic_plotting import plot_bl_response
 
 
 def parse_args() -> argparse.Namespace:

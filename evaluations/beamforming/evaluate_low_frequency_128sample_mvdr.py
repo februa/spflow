@@ -35,7 +35,6 @@ from scene_renderer import (  # noqa: E402
 from scene_renderer_mvdr_stability_sweep import (  # noqa: E402
     build_array_design,
     evaluate_frequency,
-    render_scene,
     steering_from_dir3d,
 )
 
@@ -44,7 +43,7 @@ from spflow.beamforming import (  # noqa: E402
     design_mvdr_coefficients_with_channel_window,
     make_directions,
 )
-from spflow.beamforming.diagnostic_plotting import require_matplotlib  # noqa: E402
+from spflow.beamforming_evaluation.diagnostic_plotting import require_matplotlib  # noqa: E402
 
 try:
     import matplotlib.pyplot as plt

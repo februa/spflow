@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from spflow.beamforming import (
+from evaluations.beamforming.scenarios.operational_time_domain_slc_diagnostics import (
     OperationalTimeDomainSlcDiagnosticConfig,
-    SlcConfig,
     run_operational_time_domain_slc_leakage_diagnostics,
 )
+from spflow.sidelobe_cancellation import SlcConfig
 
 
 def main() -> None:

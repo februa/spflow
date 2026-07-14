@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from spflow.beamforming import (
+from spflow.beamforming_evaluation import (
     build_source_sector_mask,
     calculate_abf_like_non_source_metrics,
     detect_source_beam_indices_from_level_peaks,

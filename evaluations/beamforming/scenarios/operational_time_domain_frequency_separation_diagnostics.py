@@ -1,4 +1,4 @@
-﻿"""運用アレイで同一方位・複数周波数の時間領域固定整相後分離を診断する。"""
+"""運用アレイの同一方位・複数周波数分離を評価するscenarioを実行する。"""
 
 from __future__ import annotations
 
@@ -9,9 +9,10 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
-from .._validation import require, require_positive_float, require_positive_int
-from ..array_design import load_operational_sparse_array
-from ..beamforming_evaluation.signal_levels import calculate_tone_projection_rms_level_db20
+from spflow._validation import require, require_positive_float, require_positive_int
+from spflow.array_design import load_operational_sparse_array
+from spflow.beamforming_evaluation.signal_levels import calculate_tone_projection_rms_level_db20
+
 from .fractional_delay_slc_diagnostics import _run_fractional_delay_diagnostics
 from .time_delay_diagnostics import TimeDelayDiagnosticConfig, TimeDelayDiagnosticSource
 

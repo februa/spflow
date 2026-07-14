@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from spflow.beamforming.diagnostic_plotting import (
+from spflow.beamforming_evaluation.diagnostic_plotting import (
     build_beam_diagnostic_plot_usage_notes,
     centers_to_edges,
     write_beam_diagnostic_plot_usage_notes,

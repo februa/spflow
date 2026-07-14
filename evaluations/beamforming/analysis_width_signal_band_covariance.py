@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
-from pathlib import Path
 import sys
 import time
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -15,13 +15,11 @@ from numpy.typing import NDArray
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-from spflow.beamforming.diagnostic_plotting import require_matplotlib  # noqa: E402
 from evaluations.beamforming.analysis_width_long_array_mvdr import (  # noqa: E402
     DIAGONAL_LOADING,
     FS_HZ,
     N_CHANNEL,
     SCAN_AZIMUTHS_DEG,
-    SOUND_SPEED_M_S,
     _correlation_median,
     _curve_metrics,
     _delays,
@@ -30,7 +28,7 @@ from evaluations.beamforming.analysis_width_long_array_mvdr import (  # noqa: E4
     _positions,
     _steering,
 )
-
+from spflow.beamforming_evaluation.diagnostic_plotting import require_matplotlib  # noqa: E402
 
 OUTPUT_DIR = ROOT / "artifacts" / "beamforming" / "analysis_width_signal_band_covariance"
 DELTA_F_HZ = (16.0, 64.0, 256.0)

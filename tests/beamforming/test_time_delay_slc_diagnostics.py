@@ -8,11 +8,18 @@ from pathlib import Path
 
 import numpy as np
 
-from spflow.beamforming.fractional_delay_slc_diagnostics import run_fractional_delay_slc_diagnostics
+from evaluations.beamforming.scenarios.fractional_delay_slc_diagnostics import (
+    run_fractional_delay_slc_diagnostics,
+)
+from evaluations.beamforming.scenarios.time_delay_diagnostics import (
+    TimeDelayDiagnosticConfig,
+    TimeDelayDiagnosticSource,
+)
+from evaluations.beamforming.scenarios.time_delay_slc_diagnostics import (
+    run_integer_delay_slc_diagnostics,
+)
 from spflow.beamforming.slc import SlcConfig
 from spflow.beamforming.time_delay import design_fractional_delay_filter_bank
-from spflow.beamforming.time_delay_diagnostics import TimeDelayDiagnosticConfig, TimeDelayDiagnosticSource
-from spflow.beamforming.time_delay_slc_diagnostics import run_integer_delay_slc_diagnostics
 
 
 def _require_float_field(summary: Mapping[str, object], key: str) -> float:

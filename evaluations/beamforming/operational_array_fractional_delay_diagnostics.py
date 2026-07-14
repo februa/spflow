@@ -7,8 +7,14 @@ from pathlib import Path
 
 import numpy as np
 
-from spflow.beamforming import TimeDelayDiagnosticConfig, TimeDelayDiagnosticSource, load_operational_sparse_array
-from spflow.beamforming.fractional_delay_slc_diagnostics import _run_fractional_delay_diagnostics
+from evaluations.beamforming.scenarios.fractional_delay_slc_diagnostics import (
+    _run_fractional_delay_diagnostics,
+)
+from evaluations.beamforming.scenarios.time_delay_diagnostics import (
+    TimeDelayDiagnosticConfig,
+    TimeDelayDiagnosticSource,
+)
+from spflow.array_design import load_operational_sparse_array
 
 
 def main() -> None:

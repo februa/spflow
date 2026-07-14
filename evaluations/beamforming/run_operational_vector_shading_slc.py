@@ -24,11 +24,11 @@ from typing import Any, TypeAlias
 import numpy as np
 from numpy.typing import NDArray
 
-from spflow.beamforming.diagnostic_plotting import centers_to_edges, require_matplotlib
 from spflow.beamforming.directions import make_directions
 from spflow.beamforming.operational_shading import OperationalShadingDefinition
 from spflow.beamforming.operational_sparse_array import OperationalSparseArrayDefinition
 from spflow.beamforming.slc import BeamDomainSLC, SlcConfig
+from spflow.beamforming_evaluation.diagnostic_plotting import centers_to_edges, require_matplotlib
 
 FloatArray: TypeAlias = NDArray[np.float64]
 ComplexArray: TypeAlias = NDArray[np.complex128]

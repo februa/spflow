@@ -7,12 +7,18 @@ from pathlib import Path
 
 import numpy as np
 
-from spflow.beamforming.operational_fractional_delay_performance import (
+from evaluations.beamforming.scenarios.operational_fractional_delay_performance import (
     OperationalArrayFractionalDelayPerformanceConfig,
     run_operational_array_fractional_delay_performance_report,
 )
-from spflow.beamforming.operational_shading import OperationalShadingDesignConfig, run_operational_shading_design
-from spflow.beamforming.operational_sparse_array import OperationalSparseArrayDesignConfig, save_operational_sparse_array
+from spflow.beamforming.operational_shading import (
+    OperationalShadingDesignConfig,
+    run_operational_shading_design,
+)
+from spflow.beamforming.operational_sparse_array import (
+    OperationalSparseArrayDesignConfig,
+    save_operational_sparse_array,
+)
 from spflow.beamforming.time_delay import design_fractional_delay_filter_bank
 
 

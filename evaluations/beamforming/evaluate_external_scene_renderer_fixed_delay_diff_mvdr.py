@@ -51,11 +51,11 @@ from spflow.beamforming import (  # noqa: E402
     design_fixed_delay_fractional_weights_from_delay_table,
     make_directions,
 )
-from spflow.beamforming.diagnostic_plotting import (  # noqa: E402
+from spflow.beamforming.time_delay import FractionalDelayFilterBank  # noqa: E402
+from spflow.beamforming_evaluation.diagnostic_plotting import (  # noqa: E402
     centers_to_edges,
     require_matplotlib,
 )
-from spflow.beamforming.time_delay import FractionalDelayFilterBank  # noqa: E402
 
 FloatArray = NDArray[np.float64]
 ComplexArray = NDArray[np.complex128]

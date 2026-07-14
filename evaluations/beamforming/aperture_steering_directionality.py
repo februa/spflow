@@ -8,16 +8,6 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
-from spflow.beamforming import (
-    DirectionMatchedCovarianceAccumulator,
-    build_two_second_covariance_snapshot_schedule,
-    calculate_covariance_subspace_metrics,
-    calculate_sparse_array_spatial_correlation_statistics,
-    relative_arrival_delay,
-    steering_from_relative_delay,
-)
-from spflow.beamforming.diagnostic_plotting import require_matplotlib
-
 from evaluations.beamforming.method3_direction_selection import (
     FS_HZ,
     NFFT,
@@ -30,7 +20,15 @@ from evaluations.beamforming.method3_sparse_64ch_correlation import (
     ARRAY_POSITIONS_M,
     CENTRAL_CHANNEL_MASK,
 )
-
+from spflow.beamforming import (
+    DirectionMatchedCovarianceAccumulator,
+    build_two_second_covariance_snapshot_schedule,
+    calculate_covariance_subspace_metrics,
+    calculate_sparse_array_spatial_correlation_statistics,
+    relative_arrival_delay,
+    steering_from_relative_delay,
+)
+from spflow.beamforming_evaluation.diagnostic_plotting import require_matplotlib
 
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_DIR = ROOT / "artifacts" / "beamforming" / "aperture_steering_directionality"

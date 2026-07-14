@@ -1,4 +1,4 @@
-"""整数遅延固定整相の BL から周波数依存 guard を設計するモジュール。"""
+"""整数遅延固定整相のBLから周波数依存guardを設計するscenarioを実行する。"""
 
 from __future__ import annotations
 
@@ -10,18 +10,19 @@ from typing import Any
 
 import numpy as np
 
-from .._validation import (
+from spflow._validation import (
     require,
     require_non_negative_float,
     require_positive_float,
     require_positive_int,
 )
-from ..beamforming_evaluation.diagnostic_plotting import plot_bl_response, require_matplotlib
-from ..beamforming_evaluation.scan_grid import build_beam_scan_grid
-from ..beamforming_evaluation.signal_levels import calculate_tone_projection_rms_level_db20
-from ..simulation.numerics import SimulationPrecision
-from ..simulation.tone_scene import synthesize_tone_scene
-from .time_delay import IntegerDelayAndSumBeamformer
+from spflow.beamforming.time_delay import IntegerDelayAndSumBeamformer
+from spflow.beamforming_evaluation.diagnostic_plotting import plot_bl_response, require_matplotlib
+from spflow.beamforming_evaluation.scan_grid import build_beam_scan_grid
+from spflow.beamforming_evaluation.signal_levels import calculate_tone_projection_rms_level_db20
+from spflow.simulation.numerics import SimulationPrecision
+from spflow.simulation.tone_scene import synthesize_tone_scene
+
 from .time_delay_diagnostics import (
     TimeDelayDiagnosticConfig,
     TimeDelayDiagnosticSource,

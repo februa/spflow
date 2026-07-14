@@ -8,8 +8,8 @@ from numpy.typing import NDArray
 from spflow.beamforming import (
     SourceMaskNonSourceLeakageSubtractor,
     SourceMaskSlcConfig,
-    build_source_sector_mask,
 )
+from spflow.beamforming_evaluation import build_source_sector_mask
 
 
 def _make_source_leakage_beam_output(n_sample: int = 2048) -> NDArray[np.float64]:

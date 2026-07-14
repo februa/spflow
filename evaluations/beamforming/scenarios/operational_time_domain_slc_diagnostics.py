@@ -1,4 +1,4 @@
-"""運用スパースアレイで時間領域 beam-domain SLC の漏れ込み診断を行うモジュール。"""
+"""運用スパースアレイの時間領域SLCを評価するscenarioを実行する。"""
 
 from __future__ import annotations
 
@@ -11,25 +11,26 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from .._validation import require, require_positive_float, require_positive_int
-from ..array_design import load_operational_sparse_array
-from ..beamforming_evaluation.diagnostic_plotting import require_matplotlib
-from ..beamforming_evaluation.fractional_response import (
+from spflow._validation import require, require_positive_float, require_positive_int
+from spflow.array_design import load_operational_sparse_array
+from spflow.beamforming.time_delay import FractionalDelayAndSumBeamformer
+from spflow.beamforming_evaluation.diagnostic_plotting import require_matplotlib
+from spflow.beamforming_evaluation.fractional_response import (
     calculate_fractional_beam_response_matrix,
 )
-from ..beamforming_evaluation.level_metrics import (
+from spflow.beamforming_evaluation.level_metrics import (
     calculate_real_tone_response_rms_level_db20,
     calculate_rms_level_db20,
 )
-from ..level_conversion import LevelConverter, level_20log10_rms
-from ..sidelobe_cancellation import (
+from spflow.level_conversion import LevelConverter, level_20log10_rms
+from spflow.sidelobe_cancellation import (
     BeamDomainSLC,
     SlcConfig,
     SlcProcessResult,
     build_time_tapped_reference_matrix,
 )
+
 from .fractional_delay_slc_diagnostics import _run_fractional_delay_diagnostics
-from .time_delay import FractionalDelayAndSumBeamformer
 from .time_delay_diagnostics import TimeDelayDiagnosticConfig, TimeDelayDiagnosticSource
 
 _INPUT_RMS_LEVEL_CONVERTER = LevelConverter.for_definition(

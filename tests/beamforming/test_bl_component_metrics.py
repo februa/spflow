@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from spflow.beamforming.bl_component_metrics import (
+from spflow.beamforming_evaluation.bl_component_metrics import (
     evaluate_mixed_bl_consistency,
     evaluate_noise_only_bl,
     evaluate_target_only_bl,
