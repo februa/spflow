@@ -1,4 +1,4 @@
-"""MATLAB係数境界とFlow接続T2a逐次runtimeを検証する。"""
+"""MATLAB係数境界とT2a逐次runtimeを検証する。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from evaluations.beamforming.scene_renderer_t2a_streaming import (
     T2aScenarioConfig,
     design_frequency_weights,
     load_matlab_array_coefficients,
-    run_streaming_flow,
+    run_streaming_beam_branches,
 )
 from evaluations.beamforming.scene_renderer_t2a_waveform_reporting import (
     calculate_target_waveform_integrity,
@@ -173,8 +173,8 @@ def test_load_matlab_coefficients_preserves_frequency_switched_active_channels(
     np.testing.assert_array_equal(above_boundary, np.array([False, True, False, True]))
 
 
-def test_flow_streaming_branch_matches_single_block_processing() -> None:
-    """Flowで分割した整数遅延+残差FIR出力が一括blockと一致する。
+def test_streaming_beam_branch_matches_single_block_processing() -> None:
+    """block分割した整数遅延+残差FIR出力が一括blockと一致する。
 
     block長7は遅延3 sampleとFIR 3 tapの境界に揃わない値を選び、履歴をblock間で
     保持しなければ一致しない条件にする。
@@ -190,12 +190,12 @@ def test_flow_streaming_branch_matches_single_block_processing() -> None:
         dtype=np.complex128,
     )
 
-    split = run_streaming_flow(
+    split = run_streaming_beam_branches(
         signal,
         [StreamingBeamBranch("t2a_mvdr", delays, coefficients)],
         block_size=7,
     )["t2a_mvdr"]
-    one = run_streaming_flow(
+    one = run_streaming_beam_branches(
         signal,
         [StreamingBeamBranch("t2a_mvdr", delays, coefficients)],
         block_size=signal.shape[1],
@@ -203,3 +203,20 @@ def test_flow_streaming_branch_matches_single_block_processing() -> None:
 
     np.testing.assert_allclose(split[0], one[0], atol=0.0)
     np.testing.assert_array_equal(split[1], one[1])
+
+
+def test_streaming_beam_branches_reject_duplicate_method_ids() -> None:
+    """収集先が衝突する同一方式IDを処理開始前に拒否する。
+
+    同じ辞書keyへ二方式の出力を保存すると、後段の評価で一方を完成結果として誤認する。
+    1 beam、1 channel、1 tapの最小条件を使い、信号処理前の方式境界契約だけを確認する。
+    """
+    delays = np.zeros((1, 1), dtype=np.int64)
+    coefficients = np.ones((1, 1, 1), dtype=np.complex128)
+    branches = [
+        StreamingBeamBranch("t2a_mvdr", delays, coefficients),
+        StreamingBeamBranch("t2a_mvdr", delays, coefficients),
+    ]
+
+    with pytest.raises(ValueError, match="method_id values must be unique"):
+        run_streaming_beam_branches(np.ones((1, 4), dtype=np.float64), branches, block_size=2)

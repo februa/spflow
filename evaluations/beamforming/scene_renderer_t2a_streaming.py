@@ -51,7 +51,6 @@ from evaluations.beamforming.scene_renderer_t2a_waveform_reporting import (  # n
     write_output_waveform_diagnostics,
     write_target_waveform_integrity,
 )
-from spflow import Flow  # noqa: E402
 from spflow.beamforming.ebae import EbaeConfig, design_ebae_weights_band  # noqa: E402
 from spflow.beamforming_evaluation.diagnostic_plotting import centers_to_edges  # noqa: E402
 from spflow.simulation import SignalBlock, StatefulIntegerDelay, VersionedCausalFIR  # noqa: E402
@@ -787,62 +786,12 @@ def realize_residual_fir(weights: ComplexArray, tap_count: int) -> tuple[Complex
     return coefficients, energy_ratio
 
 
-def process_runtime_block_with_flow(
-    runtime_block: RuntimeBlock,
-    branches: list[StreamingBeamBranch],
-) -> list[BeamBlock]:
-    """一つの信号blockを完成係数保持済みの方式branch群へ適用する。
-
-    Args:
-        runtime_block: 分岐前のchannel入力。data shape `[n_ch,n_block_sample]`、
-            振幅単位はinput RMS基準。
-        branches: fixed、T2a-MVDR、T2a-EBAE等の方式branch。各branchは完成FIR係数、
-            整数delay履歴、FIR履歴を保持する。
-
-    Returns:
-        方式別の完成出力block。各data shape `[n_beam,n_block_sample]`。
-
-    Raises:
-        ValueError: 方式branchが空の場合。
-
-    信号処理上の位置づけ:
-        T2aでは係数設計がstreaming開始前に完了しているため、frameごとの信号経路と
-        係数更新経路のzipは行わない。完成係数を持つbranchを方式経路として分岐させ、
-        同じ入力blockを各branchへ適用する箇所だけをFlowで表現する。
-    """
-    if len(branches) == 0:
-        raise ValueError("branches must contain at least one streaming branch.")
-
-    # 変数1: 分岐前の信号経路。1個の入力blockだけを保持する。
-    input_block_flow = Flow.from_value(runtime_block)
-
-    # 変数2: 方式経路。各branchは方式固有の完成係数と逐次処理履歴を保持する。
-    method_branch_flow = Flow.many(branches)
-
-    def apply_input_block_to_method_branches(
-        block: RuntimeBlock,
-        method_flow: Flow[StreamingBeamBranch],
-    ) -> Flow[BeamBlock]:
-        """同じ入力blockを全方式branchへ適用し、方式別出力へ分岐する。"""
-        return method_flow.map(lambda branch: branch.process(block))
-
-    # 変数3: 信号経路と方式経路の適用後。method数と同数のBeamBlockを保持する。
-    application_flow = input_block_flow.map(
-        apply_input_block_to_method_branches,
-        method_branch_flow,
-    )
-
-    # 変数4: Flowから通常Pythonへ戻し、時刻位置に従う収集処理へ渡す。
-    output_blocks = application_flow.to_list()
-    return output_blocks
-
-
-def run_streaming_flow(
+def run_streaming_beam_branches(
     signal: FloatArray,
     branches: list[StreamingBeamBranch],
     block_size: int,
 ) -> dict[str, tuple[ComplexArray, BoolArray]]:
-    """通常Pythonでblock反復し、各blockはFlowで方式分岐して完成出力を収集する。
+    """入力をblock分割し、同じblockを方式別beam branchへ適用する。
 
     Args:
         signal: channel入力。shape `[n_ch,n_sample]`、input RMS基準。
@@ -853,13 +802,25 @@ def run_streaming_flow(
         方式ごとの`(output, valid_mask)`。双方shape `[n_beam,n_sample]`。
 
     Raises:
-        ValueError: branchが空、block長が不正、または入力shapeが不正な場合。
+        ValueError: branchが空、方式IDが重複する、beam数が一致しない、block長が不正、
+            または入力shapeが不正な場合。
+
+    信号処理上の位置づけ:
+        係数設計済みのfixed、T2a-MVDR、T2a-EBAEを並列な方式経路として適用する。
+        本処理では各branchが常に一つの完成`BeamBlock`を返し、処理レート差もないため、
+        `Flow`による0/1/many伝播は使わない。block分割、方式分岐、時刻位置への収集を
+        通常のPython制御構文で明示する。
     """
     if len(branches) == 0:
         raise ValueError("branches must contain at least one streaming branch.")
     if signal.ndim != 2 or block_size <= 0:
         raise ValueError("signal must have shape [n_ch, n_sample] and block_size must be positive.")
+    method_ids = [branch.method_id for branch in branches]
+    if len(set(method_ids)) != len(method_ids):
+        raise ValueError("streaming branch method_id values must be unique.")
     n_beam = branches[0].n_beam
+    if any(branch.n_beam != n_beam for branch in branches[1:]):
+        raise ValueError("all streaming branches must have the same n_beam.")
     output = {
         branch.method_id: np.empty((n_beam, signal.shape[1]), dtype=np.complex128)
         for branch in branches
@@ -868,17 +829,24 @@ def run_streaming_flow(
         branch.method_id: np.empty((n_beam, signal.shape[1]), dtype=np.bool_) for branch in branches
     }
 
-    def collect(block: BeamBlock) -> None:
-        """完成blockを元時刻位置へ格納し、次段へ値を流さない。"""
-        stop = block.start_sample + block.data.shape[1]
-        output[block.method_id][:, block.start_sample : stop] = block.data
-        valid[block.method_id][:, block.start_sample : stop] = block.valid_mask
-
     for start in range(0, signal.shape[1], block_size):
         stop = min(start + block_size, signal.shape[1])
         runtime_block = RuntimeBlock(start, signal[:, start:stop])
-        for completed_block in process_runtime_block_with_flow(runtime_block, branches):
-            collect(completed_block)
+
+        # 同じ入力blockを方式別の独立した信号経路へ分岐する。各branchのdelay/FIR履歴は
+        # branch自身が保持し、方式間では共有しないため、通常のfor文が依存関係を最も直接に表す。
+        for branch in branches:
+            completed_block = branch.process(runtime_block)
+
+            # branch出力を元系列上の同じ時刻位置へ戻す。初回履歴不足sampleの完成状態は
+            # valid_maskをそのまま保存し、後段のBL/FRAZ/FL評価から除外できるようにする。
+            completed_stop = completed_block.start_sample + completed_block.data.shape[1]
+            output[completed_block.method_id][
+                :, completed_block.start_sample : completed_stop
+            ] = completed_block.data
+            valid[completed_block.method_id][
+                :, completed_block.start_sample : completed_stop
+            ] = completed_block.valid_mask
     return {method: (output[method], valid[method]) for method in output}
 
 
@@ -1166,7 +1134,7 @@ def _evaluate_and_write_review_pack(
             weight_design.causal_delays_samples,
             scenario.residual_fir_tap_count,
         )
-        streamed = run_streaming_flow(signal, branches, scenario.runtime_block_size)
+        streamed = run_streaming_beam_branches(signal, branches, scenario.runtime_block_size)
         if component_id in ("target", "mixed"):
             streamed_waveforms[component_id] = streamed
         for method_id, (method_output, method_valid) in streamed.items():
@@ -1195,7 +1163,7 @@ def _evaluate_and_write_review_pack(
         weight_design.causal_delays_samples,
         scenario.residual_fir_tap_count,
     )
-    one_block_mixed = run_streaming_flow(
+    one_block_mixed = run_streaming_beam_branches(
         rendered.mixed,
         one_block_branches,
         block_size=rendered.mixed.shape[1],

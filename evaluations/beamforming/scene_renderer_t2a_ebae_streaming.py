@@ -1,7 +1,7 @@
 """scene_renderer信号へT2a-EBAEだけを適用する逐次評価を実行する。
 
 MATLAB独自raw係数の読込、周波数別active channel、T共分散、EBAE重み、
-Flowによるblock逐次処理、BL/FRAZ/FL成果物を一つのCLIから生成する。
+通常Pythonによるblock逐次処理、BL/FRAZ/FL成果物を一つのCLIから生成する。
 `fixed_baseline`と`t2a_mvdr`の独立branchは生成しない。
 """
 

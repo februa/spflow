@@ -2,7 +2,7 @@
 
 本モジュールは完成済みの入力・出力波形を受け取り、位相整列、分割／一括処理差、
 per-bin RMS spectrum、診断PNGを生成する。scene生成、T2a重み設計、FIR化、
-Flow逐次処理、MATLAB係数読込は責務に含めない。
+block逐次処理、MATLAB係数読込は責務に含めない。
 """
 
 from __future__ import annotations
