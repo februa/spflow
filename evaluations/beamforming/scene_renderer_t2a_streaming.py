@@ -52,6 +52,10 @@ from evaluations.beamforming.scene_renderer_t2a_waveform_reporting import (  # n
     select_diagnostic_zoom_bounds,
 )
 from spflow import StepScheduler  # noqa: E402
+from spflow.beamforming.direction_aligned_covariance import (  # noqa: E402
+    estimate_direction_aligned_frequency_covariance,
+    extract_direction_aligned_rfft_snapshots,
+)
 from spflow.beamforming.ebae import EbaeConfig, design_ebae_weights_band  # noqa: E402
 from spflow.simulation import SignalBlock, StatefulIntegerDelay, VersionedCausalFIR  # noqa: E402
 
@@ -659,37 +663,6 @@ def render_scenario(
     )
 
 
-def _candidate_snapshots(
-    signal: FloatArray,
-    causal_delays_samples: IntArray,
-    config: T2aScenarioConfig,
-) -> ComplexArray:
-    """候補方位へ整数整相したtraining STFT snapshotを返す。
-
-    出力shapeは`[n_frame,n_frequency,n_ch]`。axis=0は時間snapshot、axis=1は
-    rFFT周波数、axis=2はchannelである。窓は振幅校正を変えない矩形窓とする。
-    """
-    training_samples = min(int(round(config.training_duration_s * config.fs_hz)), signal.shape[1])
-    maximum_delay = int(np.max(causal_delays_samples))
-    starts = np.arange(
-        maximum_delay,
-        training_samples - config.analysis_fft_size + 1,
-        config.analysis_hop_size,
-        dtype=np.int64,
-    )
-    if starts.size < 2:
-        raise ValueError("training interval is too short after T2a integer-delay alignment.")
-    frames = np.empty((starts.size, signal.shape[0], config.analysis_fft_size), dtype=np.float64)
-    for frame_index, start in enumerate(starts):
-        for channel_index, delay in enumerate(causal_delays_samples):
-            begin = int(start) - int(delay)
-            frames[frame_index, channel_index] = signal[
-                channel_index, begin : begin + config.analysis_fft_size
-            ]
-    # FFT axis=2は各channelの時間軸。moveaxis後は[n_frame,n_frequency,n_ch]となる。
-    return np.asarray(np.moveaxis(np.fft.rfft(frames, axis=2), 2, 1), dtype=np.complex128)
-
-
 def _loaded_mvdr_weight(
     covariance: ComplexArray, constraint: ComplexArray, ratio: float
 ) -> ComplexArray:
@@ -770,14 +743,26 @@ def design_frequency_weights(
     # 同じsnapshotを周波数loop内で再生成すると、方式上不要な計算量がn_frequency倍になる。
     # snapshots_by_beam[beam] shape: [frame,frequency,ch]。
     needs_covariance = bool({"t2a_mvdr", "t2a_ebae"} & selected_method_set)
-    snapshots_by_beam = (
-        [
-            _candidate_snapshots(training_signal, causal_delays[beam_index], config)
-            for beam_index in range(n_beam)
-        ]
-        if needs_covariance
-        else []
+    training_sample_count = min(
+        int(round(config.training_duration_s * config.fs_hz)), training_signal.shape[1]
     )
+    snapshots_by_beam = []
+    if needs_covariance:
+        for beam_index in range(n_beam):
+            snapshots = extract_direction_aligned_rfft_snapshots(
+                training_signal,
+                causal_delays[beam_index],
+                analysis_sample_count=training_sample_count,
+                fft_size=config.analysis_fft_size,
+                hop_size=config.analysis_hop_size,
+            )
+            # 重み設計では時間平均共分散を使うため、単一snapshotしかないtraining区間を
+            # 完成した方位別共分散として扱わない。抽出部品自体はrank-1用途を妨げない。
+            if snapshots.shape[0] < 2:
+                raise ValueError(
+                    "training interval is too short after T2a integer-delay alignment."
+                )
+            snapshots_by_beam.append(snapshots)
 
     # 外側をfrequency、内側をbeamとし、同じ周波数では全beamへ同一のactive channelと
     # shading表を使う。共分散と制約ベクトルは各frequency・beamの組合せごとに設計する。
@@ -819,8 +804,9 @@ def design_frequency_weights(
                     unshaded_by_method["t2a_ebae"] = np.asarray(fixed_active, dtype=np.complex128)
                     ebae_music_peak_deg[frequency_index, beam_index] = beam_azimuth_deg[beam_index]
             elif needs_covariance:
-                # snapshots shape: [frame,ch]。候補beamへ整数整相済みの同一周波数binを取り出す。
-                snapshots = snapshots_by_beam[beam_index][:, frequency_index, :]
+                # snapshots shape: [frame,frequency,ch]。候補beamへ整数整相済みの
+                # 全周波数snapshotを、共分散推定部品へ明示的に渡す。
+                snapshots = snapshots_by_beam[beam_index]
                 ebae_snapshot_count = int(active_indices.size * active_indices.size)
                 if "t2a_ebae" in selected_method_set and snapshots.shape[0] < ebae_snapshot_count:
                     raise ValueError(
@@ -833,15 +819,17 @@ def design_frequency_weights(
                     ebae_snapshot_count if "t2a_ebae" in selected_method_set else snapshots.shape[0]
                 )
 
-                # active_snapshot shape: [selected_frame,n_active_ch]。EBAEを比較に含む場合は
-                # 宣言snapshot数L=M^2と共分散の実平均数を一致させ、方式間の条件差を作らない。
-                active_snapshot = snapshots[:selected_snapshot_count, active_indices]
-
-                # covariance shape: [n_active_ch,n_active_ch]。
-                # R=E[x x^H]としてframe axisを平均し、整数整相後のchannel間共分散を得る。
-                covariance = np.einsum(
-                    "fc,fd->cd", active_snapshot, active_snapshot.conj(), optimize=True
-                ) / float(active_snapshot.shape[0])
+                # covariance shape: [n_active_ch,n_active_ch]。方位別時間切り出しと
+                # R=(1/L)Σxx^Hの責務は公開部品へ分離し、ここでは方式条件だけを選ぶ。
+                covariance = np.asarray(
+                    estimate_direction_aligned_frequency_covariance(
+                        snapshots,
+                        frequency_index=frequency_index,
+                        active_channel_indices=active_indices,
+                        snapshot_count=selected_snapshot_count,
+                    ),
+                    dtype=np.complex128,
+                )
                 if "t2a_mvdr" in selected_method_set:
                     unshaded_by_method["t2a_mvdr"] = _loaded_mvdr_weight(
                         covariance, residual_constraint, config.diagonal_loading_ratio

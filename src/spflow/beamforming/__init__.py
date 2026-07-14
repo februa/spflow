@@ -51,6 +51,10 @@ if TYPE_CHECKING:
         CovarianceSubspaceMetrics,
         calculate_covariance_subspace_metrics,
     )
+    from .direction_aligned_covariance import (
+        estimate_direction_aligned_frequency_covariance,
+        extract_direction_aligned_rfft_snapshots,
+    )
     from .direction_covariance_selector import (
         CovarianceFallbackReason,
         CovarianceFallbackSource,
@@ -230,6 +234,8 @@ _EXPORT_MODULES: dict[str, str] = {
     "DirectionCovarianceSelectionConfig": "direction_covariance_selector",
     "DirectionCovarianceSelectionResult": "direction_covariance_selector",
     "DirectionMatchedCovarianceSelector": "direction_covariance_selector",
+    "estimate_direction_aligned_frequency_covariance": "direction_aligned_covariance",
+    "extract_direction_aligned_rfft_snapshots": "direction_aligned_covariance",
     "EbaeBandResult": "ebae",
     "EbaeConfig": "ebae",
     "EbaeResult": "ebae",
@@ -397,6 +403,8 @@ __all__ = [
     "DirectionCovarianceSelectionConfig",
     "DirectionCovarianceSelectionResult",
     "DirectionMatchedCovarianceSelector",
+    "estimate_direction_aligned_frequency_covariance",
+    "extract_direction_aligned_rfft_snapshots",
     "CovarianceSubspaceMetrics",
     "DirectionMatchedCovarianceAccumulator",
     "DirectionMatchedCovarianceUpdate",
