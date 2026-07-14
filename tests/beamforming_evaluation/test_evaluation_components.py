@@ -18,6 +18,11 @@ from spflow.beamforming_evaluation import (
     calculate_rms_level_db20,
     calculate_tone_projection_rms_level_db20,
 )
+from spflow.level_conversion import (
+    LevelConverter,
+    level_10log10_conjpair_power,
+    level_20log10_rms,
+)
 
 
 def test_rms_level_metrics_preserve_explicit_reference_and_two_sideband_power() -> None:
@@ -41,6 +46,50 @@ def test_rms_level_metrics_preserve_explicit_reference_and_two_sideband_power() 
     np.testing.assert_allclose(symmetric_level, np.array([0.0]), atol=1.0e-12)
     # 一方の側帯だけに応答する場合、powerは対称応答の1/2なので-3.0103 dBになる。
     np.testing.assert_allclose(positive_only_level, np.array([-3.010299956639812]), atol=1.0e-12)
+
+
+def test_evaluation_functions_accept_shared_level_converter() -> None:
+    """入力生成用definitionを評価関数へ渡しreference再指定を省略できることを確認する。"""
+
+    rms_definition = level_20log10_rms(
+        reference_rms=2.0,
+        reference_label="input RMS",
+    )
+    rms_converter = LevelConverter.for_definition(rms_definition)
+    conjpair_converter = LevelConverter(
+        input_definition=rms_definition,
+        output_definition=level_10log10_conjpair_power(
+            reference_rms=2.0,
+            reference_label="input RMS",
+        ),
+    )
+    fs_hz = 1024.0
+    time_s = np.arange(1024, dtype=np.float64) / fs_hz
+    signal = rms_converter.input_to_real_cosine_peak(-6.0) * np.cos(2.0 * np.pi * 128.0 * time_s)
+
+    rms_level = calculate_rms_level_db20(signal, level_converter=rms_converter)
+    tone_level = calculate_tone_projection_rms_level_db20(
+        signal,
+        128.0,
+        fs_hz,
+        level_converter=conjpair_converter,
+    )
+    _, spectrum_level = calculate_one_sided_rms_spectrum_db20(
+        signal[np.newaxis, :],
+        fs_hz,
+        level_converter=rms_converter,
+    )
+
+    assert rms_level == pytest.approx(-6.0, abs=1.0e-12)
+    assert tone_level == pytest.approx(-6.0, abs=1.0e-12)
+    assert spectrum_level[0, 128] == pytest.approx(-6.0, abs=1.0e-12)
+
+    with pytest.raises(ValueError, match="must not be specified together"):
+        calculate_rms_level_db20(
+            signal,
+            reference_rms=2.0,
+            level_converter=rms_converter,
+        )
 
 
 def test_beam_scan_grid_fixes_shape_and_equal_cos_direction_contract() -> None:

@@ -9,6 +9,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .._validation import require, require_positive_float
+from ..level_conversion import LevelConverter, level_10log10_power
 
 
 @dataclass(frozen=True)
@@ -378,9 +379,18 @@ def evaluate_noise_only_bl(
         np.einsum("cb,cd,db->b", np.conjugate(beam_weights), covariance, beam_weights)
     )
     require(bool(np.all(predicted_power > 0.0)), "predicted noise power must be positive.")
-    predicted_level = 10.0 * np.log10(predicted_power / reference**2)
+    power_definition = level_10log10_power(
+        reference_power=reference**2,
+        reference_label=str(level_reference_label).removeprefix("dB re "),
+        physical_quantity="beam output mean-square",
+    )
+    power_converter = LevelConverter.for_definition(power_definition)
+    predicted_level = power_converter.output_to_level(predicted_power)
     error = observed - predicted_level
-    array_gain = 10.0 * np.log10(input_power / predicted_power)
+    # array gainは同じpower definitionで得た入力levelと出力levelの差なので、
+    # reference値に依存せず10log10(P_input/P_output)と一致する。
+    input_level = power_converter.output_to_level(input_power)
+    array_gain = input_level - predicted_level
     return NoiseOnlyBlMetrics(
         observed_level_db=observed.copy(),
         predicted_level_db=np.asarray(predicted_level, dtype=np.float64),
@@ -424,8 +434,17 @@ def evaluate_mixed_bl_consistency(
     require(bool(np.all(np.isfinite(mixed))), "mixed BL must be finite.")
     require(bool(str(level_reference_label).strip()), "level_reference_label must not be empty.")
 
-    expected_power = 10.0 ** (target / 10.0) + 10.0 ** (noise / 10.0)
-    expected_level = 10.0 * np.log10(expected_power)
+    power_definition = level_10log10_power(
+        reference_power=1.0,
+        reference_label=str(level_reference_label).removeprefix("dB re "),
+        physical_quantity="beam output mean-square ratio",
+    )
+    power_converter = LevelConverter.for_definition(power_definition)
+    # targetとnoiseは無相関という評価前提なので、共有referenceへ戻したmean-squareを加算する。
+    expected_power = power_converter.input_to_linear(target) + power_converter.input_to_linear(
+        noise
+    )
+    expected_level = power_converter.output_to_level(expected_power)
     error = mixed - expected_level
     return MixedBlConsistency(
         expected_mixed_level_db=np.asarray(expected_level, dtype=np.float64),

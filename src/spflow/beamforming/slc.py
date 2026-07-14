@@ -8,7 +8,17 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from .._validation import require, require_non_negative_float, require_positive_float, require_positive_int
+from .._validation import (
+    require,
+    require_non_negative_float,
+    require_positive_float,
+    require_positive_int,
+)
+from ..level_conversion import LevelConverter, level_20log10_rms
+
+_NORMALIZED_RMS_LEVEL_CONVERTER = LevelConverter.for_definition(
+    level_20log10_rms(reference_rms=1.0, reference_label="normalized RMS")
+)
 
 
 @dataclass(frozen=True)
@@ -134,7 +144,13 @@ def _row_rms_db20(signals: NDArray[Any]) -> NDArray[np.float64]:
     # SLC 係数は複素になり得るため、RMS は abs^2 で評価する。
     # dB 化ではゼロ入力を -inf にせず、判定用に有限値として扱う。
     rms = np.sqrt(np.mean(np.abs(signal_array) ** 2, axis=1))
-    return np.asarray(20.0 * np.log10(np.maximum(rms, np.finfo(np.float64).tiny)), dtype=np.float64)
+    return np.asarray(
+        _NORMALIZED_RMS_LEVEL_CONVERTER.output_rms_to_level(
+            rms,
+            floor_db=_NORMALIZED_RMS_LEVEL_CONVERTER.float64_tiny_level_db,
+        ),
+        dtype=np.float64,
+    )
 
 
 def evaluate_slc_output_safety(

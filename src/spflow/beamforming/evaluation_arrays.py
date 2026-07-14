@@ -9,6 +9,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .._validation import require, require_index_in_range, require_positive_float
+from ..level_conversion import LevelConverter, level_10log10_power
 from ..spectral_level import rms_amplitude_to_level_db
 
 
@@ -259,10 +260,16 @@ def calculate_bl_shape_features(
     outside_levels = levels[non_source_mask]
     source_peak_level = float(np.max(levels[mask]))
     outside_peak_level = float(np.max(outside_levels))
-    # dB level を power ratio へ戻して方位 sample 間で和を取り、再び RMS level 表示へ戻す。
-    # 非一様方位軸の積分重みは別の特徴量として検討すべきため、ここでは beam sample 和と明記する。
-    outside_power_sum = float(np.sum(10.0 ** (outside_levels / 10.0)))
-    integrated_level = float(10.0 * np.log10(outside_power_sum))
+    # BL levelの共通referenceをpower=1として正規化し、方位sample間でpower和を取る。
+    # 非一様方位軸の積分重みは別の特徴量として検討すべきため、ここではbeam sample和と明記する。
+    power_definition = level_10log10_power(
+        reference_power=1.0,
+        reference_label=str(level_reference_label).removeprefix("dB re "),
+        physical_quantity="beam level power ratio",
+    )
+    power_converter = LevelConverter.for_definition(power_definition)
+    outside_power_sum = float(np.sum(power_converter.input_to_linear(outside_levels)))
+    integrated_level = power_converter.output_to_level(outside_power_sum)
 
     valley_depth: float | None = None
     if source_beam_indices is not None:

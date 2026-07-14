@@ -12,11 +12,15 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .._validation import require, require_positive_float, require_positive_int
+from ..level_conversion import LevelConverter, level_20log10_rms
 from .array_design import BandwiseArrayDesign
-
 
 FloatArray = NDArray[np.floating[Any]]
 IntArray = NDArray[np.integer[Any]]
+
+_UNITY_RESPONSE_LEVEL_CONVERTER = LevelConverter.for_definition(
+    level_20log10_rms(reference_rms=1.0, reference_label="mainlobe peak")
+)
 
 
 def _direction_cosines_from_azimuth_deg(azimuth_deg: FloatArray) -> FloatArray:
@@ -88,7 +92,13 @@ def _beam_levels_db20(
         / float(sound_speed_m_s)
     )
     response = np.abs(np.mean(np.exp(1j * phase), axis=0))
-    return 20.0 * np.log10(np.maximum(response, np.finfo(np.float64).tiny))
+    return np.asarray(
+        _UNITY_RESPONSE_LEVEL_CONVERTER.output_rms_to_level(
+            response,
+            floor_db=_UNITY_RESPONSE_LEVEL_CONVERTER.float64_tiny_level_db,
+        ),
+        dtype=np.float64,
+    )
 
 
 def _mainlobe_peak_margin_db(

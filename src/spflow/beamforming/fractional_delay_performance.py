@@ -12,6 +12,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .._validation import require, require_positive_float, require_positive_int
+from ..level_conversion import LevelConverter, level_20log10_rms
 from .diagnostic_plotting import plot_bl_comparison, require_matplotlib
 from .directions import make_directions
 from .time_delay import (
@@ -20,8 +21,11 @@ from .time_delay import (
     IntegerDelayAndSumBeamformer,
 )
 
-
 FloatArray = NDArray[np.floating[Any]]
+
+_UNITY_RESPONSE_LEVEL_CONVERTER = LevelConverter.for_definition(
+    level_20log10_rms(reference_rms=1.0, reference_label="mainlobe peak")
+)
 
 
 @dataclass(frozen=True)
@@ -134,7 +138,13 @@ def _beam_response_db20(
     target_arrival_delay_sec = -(sensor_positions_m @ target_direction) / float(sound_speed_m_s)
     source_arrival_phase = np.exp(-1j * 2.0 * np.pi * float(frequency_hz) * target_arrival_delay_sec)
     beam_response = np.sum(weights[:, np.newaxis] * steering_response * source_arrival_phase[:, np.newaxis], axis=0) / weight_sum
-    return 20.0 * np.log10(np.maximum(np.abs(beam_response), np.finfo(np.float64).tiny))
+    return np.asarray(
+        _UNITY_RESPONSE_LEVEL_CONVERTER.output_rms_to_level(
+            np.abs(beam_response),
+            floor_db=_UNITY_RESPONSE_LEVEL_CONVERTER.float64_tiny_level_db,
+        ),
+        dtype=np.float64,
+    )
 
 
 def _measure_local_peak_margin_db(

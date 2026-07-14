@@ -19,12 +19,23 @@ from ..beamforming_evaluation.level_metrics import (
     calculate_real_tone_response_rms_level_db20,
     calculate_rms_level_db20,
 )
+from ..level_conversion import LevelConverter, level_20log10_rms
 from .diagnostic_plotting import require_matplotlib
 from .fractional_delay_slc_diagnostics import _run_fractional_delay_diagnostics
 from .operational_sparse_array import load_operational_sparse_array
 from .slc import BeamDomainSLC, SlcConfig, SlcProcessResult, build_time_tapped_reference_matrix
 from .time_delay import FractionalDelayAndSumBeamformer
 from .time_delay_diagnostics import TimeDelayDiagnosticConfig, TimeDelayDiagnosticSource
+
+_INPUT_RMS_LEVEL_CONVERTER = LevelConverter.for_definition(
+    level_20log10_rms(reference_rms=1.0, reference_label="input RMS")
+)
+
+
+def _calculate_input_rms_level(signal: NDArray[Any]) -> float:
+    """共有input RMS契約で波形levelを計算する。"""
+
+    return calculate_rms_level_db20(signal, level_converter=_INPUT_RMS_LEVEL_CONVERTER)
 
 
 def _finite_float_statistics(values: list[float]) -> dict[str, float | int | None]:
@@ -483,17 +494,19 @@ def _calculate_protected_target_slc_response_curve(
     effective_eta = float(slc_result.eta)
     positive_after_response = fixed_positive_response - effective_eta * positive_cancel_response
     negative_after_response = fixed_negative_response - effective_eta * negative_cancel_response
-    source_rms = float(10.0 ** (float(source_level_db20) / 20.0))
+    source_rms = _INPUT_RMS_LEVEL_CONVERTER.input_to_rms(float(source_level_db20))
 
     before_db20 = calculate_real_tone_response_rms_level_db20(
         fixed_positive_response,
         fixed_negative_response,
         source_rms,
+        level_converter=_INPUT_RMS_LEVEL_CONVERTER,
     )
     after_db20 = calculate_real_tone_response_rms_level_db20(
         positive_after_response,
         negative_after_response,
         source_rms,
+        level_converter=_INPUT_RMS_LEVEL_CONVERTER,
     )
     return np.asarray(before_db20, dtype=np.float64), np.asarray(after_db20, dtype=np.float64)
 
@@ -1226,15 +1239,15 @@ def run_operational_time_domain_slc_leakage_diagnostics(
     effective_target_component = _apply_streaming_slc_to_component(target_only_beam_output, target_beam_index, block_results)
     effective_interferer_component = _apply_streaming_slc_to_component(interferer_only_beam_output, target_beam_index, block_results)
     level_summary = {
-        "mixed_before_db20": calculate_rms_level_db20(fixed_mixed_target),
-        "mixed_after_raw_slc_db20": calculate_rms_level_db20(raw_mixed_target),
-        "mixed_after_effective_db20": calculate_rms_level_db20(effective_mixed_target),
-        "target_before_db20": calculate_rms_level_db20(fixed_target_component),
-        "target_after_raw_slc_db20": calculate_rms_level_db20(raw_target_component),
-        "target_after_effective_db20": calculate_rms_level_db20(effective_target_component),
-        "interferer_before_db20": calculate_rms_level_db20(fixed_interferer_component),
-        "interferer_after_raw_slc_db20": calculate_rms_level_db20(raw_interferer_component),
-        "interferer_after_effective_db20": calculate_rms_level_db20(effective_interferer_component),
+        "mixed_before_db20": _calculate_input_rms_level(fixed_mixed_target),
+        "mixed_after_raw_slc_db20": _calculate_input_rms_level(raw_mixed_target),
+        "mixed_after_effective_db20": _calculate_input_rms_level(effective_mixed_target),
+        "target_before_db20": _calculate_input_rms_level(fixed_target_component),
+        "target_after_raw_slc_db20": _calculate_input_rms_level(raw_target_component),
+        "target_after_effective_db20": _calculate_input_rms_level(effective_target_component),
+        "interferer_before_db20": _calculate_input_rms_level(fixed_interferer_component),
+        "interferer_after_raw_slc_db20": _calculate_input_rms_level(raw_interferer_component),
+        "interferer_after_effective_db20": _calculate_input_rms_level(effective_interferer_component),
     }
     level_summary["raw_mixed_power_delta_db"] = float(level_summary["mixed_after_raw_slc_db20"] - level_summary["mixed_before_db20"])
     level_summary["effective_mixed_power_delta_db"] = float(level_summary["mixed_after_effective_db20"] - level_summary["mixed_before_db20"])

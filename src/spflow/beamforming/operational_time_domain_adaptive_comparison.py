@@ -20,6 +20,7 @@ from ..beamforming_evaluation.level_metrics import (
     calculate_rms_level_db20,
 )
 from ..beamforming_evaluation.scan_grid import build_beam_scan_grid
+from ..level_conversion import LevelConverter, level_20log10_rms
 from ..simulation.numerics import SimulationPrecision
 from ..simulation.tone_scene import (
     direction_from_azimuth_elevation,
@@ -48,6 +49,19 @@ from .time_domain_adaptive import (
     estimate_time_domain_covariance,
     evaluate_constraint_response,
 )
+
+_INPUT_RMS_LEVEL_CONVERTER = LevelConverter.for_definition(
+    level_20log10_rms(reference_rms=1.0, reference_label="input RMS")
+)
+_UNITY_RESPONSE_LEVEL_CONVERTER = LevelConverter.for_definition(
+    level_20log10_rms(reference_rms=1.0, reference_label="unit response")
+)
+
+
+def _calculate_input_rms_level(signal: NDArray[Any]) -> float:
+    """共有input RMS契約で波形levelを計算する。"""
+
+    return calculate_rms_level_db20(signal, level_converter=_INPUT_RMS_LEVEL_CONVERTER)
 
 
 @dataclass(frozen=True)
@@ -157,6 +171,7 @@ def _synthesize_configured_scene(
         noise_level_db20=float(config.noise_level_db20),
         random_seed=int(config.random_seed),
         precision=SimulationPrecision.SINGLE,
+        level_converter=_INPUT_RMS_LEVEL_CONVERTER,
     )
     return scene.signal
 
@@ -236,10 +251,13 @@ def _fixed_response_level_at_azimuth(
         sound_speed_m_s=float(sound_speed_m_s),
     )
     require(0 <= int(target_beam_index) < steering_response.shape[1], "target_beam_index is out of range.")
-    source_rms = float(10.0 ** (float(source_level_db20) / 20.0))
+    source_rms = _INPUT_RMS_LEVEL_CONVERTER.input_to_rms(float(source_level_db20))
     # 固定整相の target beam 応答は、整相器側応答と source 到来 steering の channel 平均である。
     response = np.vdot(steering_response[:, int(target_beam_index)], source_steering) / float(source_steering.shape[0])
-    return float(20.0 * np.log10(max(float(np.abs(response)) * source_rms, np.finfo(np.float64).tiny)))
+    return _INPUT_RMS_LEVEL_CONVERTER.output_rms_to_level(
+        float(np.abs(response)) * source_rms,
+        floor_db=_INPUT_RMS_LEVEL_CONVERTER.float64_tiny_level_db,
+    )
 
 
 def _adaptive_response_level_at_azimuth(
@@ -269,7 +287,7 @@ def _adaptive_response_level_at_azimuth(
         tap_len=int(tap_len),
     )
     negative_constraint = positive_constraint.conj()
-    source_rms = float(10.0 ** (float(source_level_db20) / 20.0))
+    source_rms = _INPUT_RMS_LEVEL_CONVERTER.input_to_rms(float(source_level_db20))
     # 時間領域適応重みは複素になり得るため、実 tone の BL レベルは正負周波数の RMS 合成で評価する。
     positive_response = np.conj(beam_weights[:, 0]) @ positive_constraint
     negative_response = np.conj(beam_weights[:, 0]) @ negative_constraint
@@ -277,6 +295,7 @@ def _adaptive_response_level_at_azimuth(
         np.array([positive_response], dtype=np.complex128),
         np.array([negative_response], dtype=np.complex128),
         source_rms,
+        level_converter=_INPUT_RMS_LEVEL_CONVERTER,
     )
     return float(level[0])
 
@@ -309,7 +328,7 @@ def _adaptive_response_curve(
     beam_weights = np.asarray(weights, dtype=np.complex128)
     require(beam_weights.ndim == 2 and beam_weights.shape[1] == 1, "weights must have shape (n_dof, 1).")
     azimuths = np.asarray(axis_az_deg, dtype=np.float64)
-    source_rms = float(10.0 ** (float(source_level_db20) / 20.0))
+    source_rms = _INPUT_RMS_LEVEL_CONVERTER.input_to_rms(float(source_level_db20))
     positive_response_values = np.zeros(azimuths.shape[0], dtype=np.complex128)
     negative_response_values = np.zeros(azimuths.shape[0], dtype=np.complex128)
     for look_index, azimuth_deg in enumerate(azimuths.tolist()):
@@ -334,6 +353,7 @@ def _adaptive_response_curve(
         positive_response_values,
         negative_response_values,
         source_rms,
+        level_converter=_INPUT_RMS_LEVEL_CONVERTER,
     )
 
 
@@ -347,9 +367,12 @@ def _fixed_target_beam_curve(
     responses = np.asarray(response_matrix, dtype=np.complex128)
     require(responses.ndim == 2, "response_matrix must have shape (n_beam, n_look).")
     require(0 <= int(target_beam_index) < responses.shape[0], "target_beam_index is out of range.")
-    source_rms = float(10.0 ** (float(source_level_db20) / 20.0))
+    source_rms = _INPUT_RMS_LEVEL_CONVERTER.input_to_rms(float(source_level_db20))
     return np.asarray(
-        20.0 * np.log10(np.maximum(np.abs(responses[int(target_beam_index), :]) * source_rms, np.finfo(np.float64).tiny)),
+        _INPUT_RMS_LEVEL_CONVERTER.output_rms_to_level(
+            np.abs(responses[int(target_beam_index), :]) * source_rms,
+            floor_db=_INPUT_RMS_LEVEL_CONVERTER.float64_tiny_level_db,
+        ),
         dtype=np.float64,
     )
 
@@ -371,8 +394,14 @@ def _constraint_error_summary(
     max_target_error = float(np.max(target_error)) if target_error.size > 0 else 0.0
     max_null_response = float(np.max(null_response)) if null_response.size > 0 else 0.0
     return {
-        "max_target_constraint_error_db20": float(20.0 * np.log10(max(max_target_error, np.finfo(np.float64).tiny))),
-        "max_null_constraint_response_db20": float(20.0 * np.log10(max(max_null_response, np.finfo(np.float64).tiny))),
+        "max_target_constraint_error_db20": _UNITY_RESPONSE_LEVEL_CONVERTER.output_rms_to_level(
+            max_target_error,
+            floor_db=_UNITY_RESPONSE_LEVEL_CONVERTER.float64_tiny_level_db,
+        ),
+        "max_null_constraint_response_db20": _UNITY_RESPONSE_LEVEL_CONVERTER.output_rms_to_level(
+            max_null_response,
+            floor_db=_UNITY_RESPONSE_LEVEL_CONVERTER.float64_tiny_level_db,
+        ),
     }
 
 
@@ -439,19 +468,19 @@ def _method_summary(
         "method": method_name,
         "level_reference": "dB re input RMS",
         "levels": {
-            "mixed_before_db20": calculate_rms_level_db20(fixed_mixed_target),
-            "mixed_after_db20": calculate_rms_level_db20(mixed_output),
-            "target_before_db20": calculate_rms_level_db20(fixed_target_component),
-            "target_after_db20": calculate_rms_level_db20(target_output),
-            "interferer_before_db20": calculate_rms_level_db20(fixed_interferer_component),
-            "interferer_after_db20": calculate_rms_level_db20(interferer_output),
+            "mixed_before_db20": _calculate_input_rms_level(fixed_mixed_target),
+            "mixed_after_db20": _calculate_input_rms_level(mixed_output),
+            "target_before_db20": _calculate_input_rms_level(fixed_target_component),
+            "target_after_db20": _calculate_input_rms_level(target_output),
+            "interferer_before_db20": _calculate_input_rms_level(fixed_interferer_component),
+            "interferer_after_db20": _calculate_input_rms_level(interferer_output),
             "target_power_delta_db": float(
-                calculate_rms_level_db20(target_output)
-                - calculate_rms_level_db20(fixed_target_component)
+                _calculate_input_rms_level(target_output)
+                - _calculate_input_rms_level(fixed_target_component)
             ),
             "interferer_reduction_db": float(
-                calculate_rms_level_db20(fixed_interferer_component)
-                - calculate_rms_level_db20(interferer_output)
+                _calculate_input_rms_level(fixed_interferer_component)
+                - _calculate_input_rms_level(interferer_output)
             ),
         },
         "constraint_response": _constraint_error_summary(

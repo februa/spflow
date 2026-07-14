@@ -5,14 +5,34 @@ from __future__ import annotations
 import numpy as np
 
 from ..frequency import OverlapSaveBuffer, ValidRegionExtractor, make_filter_fft
+from ..level_conversion import LevelConverter, level_20log10_rms
+
+_UNITY_RESPONSE_LEVEL_CONVERTER = LevelConverter.for_definition(
+    level_20log10_rms(reference_rms=1.0, reference_label="unit response")
+)
 
 
 def beam_response_rms_db(response: np.ndarray | complex) -> float:
-    """複素ビーム応答を dB20 指標へ変換する。"""
+    """複素ビーム応答の絶対値をunit response基準のRMS levelへ変換する。
+
+    Args:
+        response: scalar-likeな複素ビーム応答。無次元。
+
+    Returns:
+        `20log10(abs(response))`。単位はdB re unit response。
+
+    Raises:
+        ValueError: responseがscalar-likeでない、または非有限の場合。
+
+    境界条件:
+        ゼロ応答は`-inf`を返す。この関数は波形RMS測定やFFT正規化を行わない。
+    """
     response_scalar = np.asarray(response, dtype=np.complex64)
     if response_scalar.size != 1:
         raise ValueError("response must be scalar-like.")
-    return float(20.0 * np.log10(np.abs(response_scalar.reshape(-1)[0])))
+    return _UNITY_RESPONSE_LEVEL_CONVERTER.output_rms_to_level(
+        float(np.abs(response_scalar.reshape(-1)[0]))
+    )
 
 
 def apply_beamformer(X: np.ndarray, weights: np.ndarray) -> np.ndarray:

@@ -12,13 +12,23 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .._validation import require, require_positive_float, require_positive_int
+from ..level_conversion import LevelConverter, level_10log10_power, level_20log10_rms
 from .diagnostic_plotting import require_matplotlib
 from .directions import make_directions
 from .operational_sparse_array import OperationalSparseArrayDefinition
 
-
 FloatArray = NDArray[np.floating[Any]]
 IntArray = NDArray[np.integer[Any]]
+
+_UNITY_RESPONSE_LEVEL_CONVERTER = LevelConverter.for_definition(
+    level_20log10_rms(reference_rms=1.0, reference_label="mainlobe peak")
+)
+_MAINLOBE_POWER_LEVEL_CONVERTER = LevelConverter.for_definition(
+    level_10log10_power(reference_power=1.0, reference_label="mainlobe peak")
+)
+_POWER_RATIO_LEVEL_CONVERTER = LevelConverter.for_definition(
+    level_10log10_power(reference_power=1.0, reference_label="ratio reference")
+)
 
 
 def _direction_cosines_from_azimuth_deg(azimuth_deg: FloatArray) -> FloatArray:
@@ -106,7 +116,13 @@ def _weighted_beam_levels_db20(
         / float(sound_speed_m_s)
     )
     response = np.sum(weights[:, np.newaxis] * np.exp(1j * phase), axis=0) / float(np.sum(weights))
-    return 20.0 * np.log10(np.maximum(np.abs(response), np.finfo(np.float64).tiny))
+    return np.asarray(
+        _UNITY_RESPONSE_LEVEL_CONVERTER.output_rms_to_level(
+            np.abs(response),
+            floor_db=_UNITY_RESPONSE_LEVEL_CONVERTER.float64_tiny_level_db,
+        ),
+        dtype=np.float64,
+    )
 
 
 def _weighted_waiting_beam_response_db20(
@@ -155,7 +171,13 @@ def _weighted_waiting_beam_response_db20(
         / float(sound_speed_m_s)
     )
     response = np.sum(weights[:, np.newaxis] * np.exp(1j * phase), axis=0) / float(np.sum(weights))
-    return 20.0 * np.log10(np.maximum(np.abs(response), np.finfo(np.float64).tiny))
+    return np.asarray(
+        _UNITY_RESPONSE_LEVEL_CONVERTER.output_rms_to_level(
+            np.abs(response),
+            floor_db=_UNITY_RESPONSE_LEVEL_CONVERTER.float64_tiny_level_db,
+        ),
+        dtype=np.float64,
+    )
 
 
 def _mainlobe_peak_margin_db(
@@ -314,9 +336,12 @@ def _sidelobe_distribution_metrics(
 
     relative_outside_levels_db = outside_levels_db20 - peak_level_db20
     # levels_db20 は RMS 振幅比の dB20 だが、相対 power 比に変換して平均すると数値 dB は同じ基準で読める。
-    outside_power_ratio = np.power(10.0, relative_outside_levels_db / 10.0)
-    integrated_sidelobe_level_db = 10.0 * np.log10(
-        max(float(np.mean(outside_power_ratio)), np.finfo(np.float64).tiny)
+    outside_power_ratio = _MAINLOBE_POWER_LEVEL_CONVERTER.input_to_linear(
+        relative_outside_levels_db
+    )
+    integrated_sidelobe_level_db = _MAINLOBE_POWER_LEVEL_CONVERTER.output_to_level(
+        float(np.mean(outside_power_ratio)),
+        floor_db=_MAINLOBE_POWER_LEVEL_CONVERTER.float64_tiny_level_db,
     )
 
     return {
@@ -946,8 +971,12 @@ def run_operational_shading_design(config: OperationalShadingDesignConfig) -> di
         physical_aperture_m = float(np.max(active_x_m) - np.min(active_x_m)) if active_x_m.size > 1 else 0.0
         equivalent_aperture_m = _equivalent_aperture_m(active_positions_m, weights)
         effective_channel_count = _effective_channel_count(weights)
-        expected_spatial_snr_gain_db = 10.0 * np.log10(effective_channel_count)
-        snr_loss_vs_rectangular_db = 10.0 * np.log10(float(active_indices.size) / effective_channel_count)
+        expected_spatial_snr_gain_db = _POWER_RATIO_LEVEL_CONVERTER.output_to_level(
+            effective_channel_count
+        )
+        snr_loss_vs_rectangular_db = _POWER_RATIO_LEVEL_CONVERTER.output_to_level(
+            float(active_indices.size) / effective_channel_count
+        )
 
         records.append(
             {
@@ -1249,8 +1278,12 @@ def run_operational_fixed_beam_shading_design(config: OperationalFixedBeamShadin
         physical_aperture_m = float(np.max(active_x_m) - np.min(active_x_m)) if active_x_m.size > 1 else 0.0
         equivalent_aperture_m = _equivalent_aperture_m(active_positions_m, weights)
         effective_channel_count = _effective_channel_count(weights)
-        expected_spatial_snr_gain_db = 10.0 * np.log10(effective_channel_count)
-        snr_loss_vs_rectangular_db = 10.0 * np.log10(float(active_indices.size) / effective_channel_count)
+        expected_spatial_snr_gain_db = _POWER_RATIO_LEVEL_CONVERTER.output_to_level(
+            effective_channel_count
+        )
+        snr_loss_vs_rectangular_db = _POWER_RATIO_LEVEL_CONVERTER.output_to_level(
+            float(active_indices.size) / effective_channel_count
+        )
         overlap_margin_deg = float(overlap_metrics["minimum_overlap_margin_deg"])
         target_error_deg = abs(overlap_margin_deg - float(config.target_overlap_margin_deg))
 

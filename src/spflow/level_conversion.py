@@ -435,6 +435,26 @@ class LevelConverter:
     input_definition: LevelDefinition
     output_definition: LevelDefinition
 
+    @classmethod
+    def for_definition(cls, definition: LevelDefinition) -> LevelConverter:
+        """同じdefinitionを入力と出力に使うConverterを生成する。
+
+        Args:
+            definition: 入力dBと出力dBで共有するimmutable level definition。
+
+        Returns:
+            `input_definition is output_definition`となるLevelConverter。
+
+        Raises:
+            ValueError: definition内部のreferenceやスペクトル規約が不正な場合。
+
+        境界条件:
+            RMSからRMS、ASDからASDのように表面式も線形量も同じ場合だけ使う。
+            RMS入力とconjpair power出力のような非対称接続には通常constructorを使う。
+        """
+
+        return cls(input_definition=definition, output_definition=definition)
+
     def __post_init__(self) -> None:
         """入出力definitionが同じnormalized mean-squareへ接続可能か検証する。"""
 
@@ -491,6 +511,28 @@ class LevelConverter:
         """出力definitionが採用する数式を返す。"""
 
         return self.output_definition.formula
+
+    @property
+    def float64_tiny_level_db(self) -> float:
+        """float64最小正規化線形値に対応する有限dB floorを返す。
+
+        Returns:
+            output definitionの線形量をreferenceで正規化した値が`float64.tiny`のときの
+            dB level。RMS/ASD/conjpair係数は20log10、power/PSDは10log10で計算する。
+
+        境界条件:
+            これはJSON等へ有限値を保存するための明示的なfloor候補であり、
+            `output_to_level`の既定動作を変更しない。floor未指定のゼロ観測値は`-inf`となる。
+        """
+
+        definition = self.output_definition
+        multiplier = (
+            20.0
+            if definition._linear_quantity
+            in {_LinearQuantity.RMS, _LinearQuantity.CONJPAIR_POWER, _LinearQuantity.ASD}
+            else 10.0
+        )
+        return float(multiplier * np.log10(np.finfo(np.float64).tiny))
 
     @overload
     def input_to_linear(self, level_db: RealScalar) -> float: ...
@@ -632,12 +674,12 @@ class LevelConverter:
             bool(np.all(np.isfinite(raw_values))), "observation must contain only finite values."
         )
         if definition._linear_quantity is _LinearQuantity.CONJPAIR_POWER:
-            # zは正周波数の正規化済み係数。conjpair powerは|z|²+|conj(z)|²=2|z|²。
-            normalized_mean_square = (
-                2.0
-                * np.abs(raw_values.astype(np.complex128)) ** 2
-                / definition._reference_mean_square
+            # zは正周波数の正規化済み係数。reference係数A_ref/sqrt(2)との振幅比を
+            # 20log10で写像すれば、10log10(2|z|²/A_ref²)と同じ式になる。
+            linear_ratio = (
+                np.abs(raw_values.astype(np.complex128)) / definition._reference_linear_value
             )
+            multiplier = 20.0
         else:
             require(
                 not np.iscomplexobj(raw_values),
@@ -646,19 +688,21 @@ class LevelConverter:
             values = np.asarray(raw_values, dtype=np.float64)
             require(bool(np.all(values >= 0.0)), "observation must be non-negative.")
             if definition._linear_quantity in {_LinearQuantity.RMS, _LinearQuantity.ASD}:
-                normalized_mean_square = (values / definition._reference_linear_value) ** 2
+                linear_ratio = values / definition._reference_linear_value
+                multiplier = 20.0
             else:
-                normalized_mean_square = values / definition._reference_mean_square
+                linear_ratio = values / definition._reference_mean_square
+                multiplier = 10.0
 
-        ratio = np.asarray(normalized_mean_square, dtype=np.float64)
+        ratio = np.asarray(linear_ratio, dtype=np.float64)
         if floor_db is None:
             with np.errstate(divide="ignore"):
-                levels = 10.0 * np.log10(ratio)
+                levels = multiplier * np.log10(ratio)
         else:
             floor = float(floor_db)
             require(bool(np.isfinite(floor)), "floor_db must be finite when specified.")
-            floor_ratio = 10.0 ** (floor / 10.0)
-            levels = 10.0 * np.log10(np.maximum(ratio, floor_ratio))
+            floor_ratio = 10.0 ** (floor / multiplier)
+            levels = multiplier * np.log10(np.maximum(ratio, floor_ratio))
         return _return_scalar_or_array(observation, np.asarray(levels, dtype=np.float64))
 
     @overload

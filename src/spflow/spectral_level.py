@@ -22,7 +22,7 @@ def _normalized_rms_converter(reference_rms: float = 1.0) -> LevelConverter:
         reference_rms=float(reference_rms),
         reference_label="reference RMS",
     )
-    return LevelConverter(input_definition=definition, output_definition=definition)
+    return LevelConverter.for_definition(definition)
 
 
 def level_db_to_rms_amplitude(level_db_re_rms: float) -> float:
@@ -90,10 +90,7 @@ def noise_asd_level_db_to_band_rms(
         reference_asd=1.0,
         reference_label="reference RMS/sqrt(Hz)",
     )
-    asd_converter = LevelConverter(
-        input_definition=asd_definition,
-        output_definition=asd_definition,
-    )
+    asd_converter = LevelConverter.for_definition(asd_definition)
     linear_asd = asd_converter.input_to_linear(float(level_db_re_rms_per_sqrt_hz))
 
     # ASDは振幅/√Hzなので、一定密度を明示された帯域Bでpower積分すると

@@ -10,11 +10,21 @@ from typing import Any
 
 import numpy as np
 
-from .._validation import require, require_non_negative_float, require_positive_float, require_positive_int
+from .._validation import (
+    require,
+    require_non_negative_float,
+    require_positive_float,
+    require_positive_int,
+)
+from ..level_conversion import LevelConverter, level_20log10_rms
 from .array_design import BandwiseArrayDesign
 from .diagnostic_plotting import plot_bl_comparison, require_matplotlib
 from .directions import make_directions
 from .time_delay import DelayTable
+
+_UNITY_RESPONSE_LEVEL_CONVERTER = LevelConverter.for_definition(
+    level_20log10_rms(reference_rms=1.0, reference_label="mainlobe peak")
+)
 
 
 def _format_sector_field_name(prefix: str, azimuth_deg: float) -> str:
@@ -363,7 +373,13 @@ def _exact_delay_beam_levels_db20(
         / float(sound_speed_m_s)
     )
     beam_magnitude = np.abs(np.mean(np.exp(1j * phase), axis=0))
-    return 20.0 * np.log10(np.maximum(beam_magnitude, np.finfo(np.float64).tiny))
+    return np.asarray(
+        _UNITY_RESPONSE_LEVEL_CONVERTER.output_rms_to_level(
+            beam_magnitude,
+            floor_db=_UNITY_RESPONSE_LEVEL_CONVERTER.float64_tiny_level_db,
+        ),
+        dtype=np.float64,
+    )
 
 
 def _integer_delay_beam_levels_db20(
@@ -412,7 +428,10 @@ def _integer_delay_beam_levels_db20(
         target_arrival_delay_sec[:, np.newaxis] + delay_table.delay_int / float(config.fs_hz)
     )
     beam_magnitude = np.abs(np.mean(np.exp(1j * phase), axis=0))
-    beam_levels_db20 = 20.0 * np.log10(np.maximum(beam_magnitude, np.finfo(np.float64).tiny))
+    beam_levels_db20 = _UNITY_RESPONSE_LEVEL_CONVERTER.output_rms_to_level(
+        beam_magnitude,
+        floor_db=_UNITY_RESPONSE_LEVEL_CONVERTER.float64_tiny_level_db,
+    )
     return axis_azimuth_deg.astype(np.float64), beam_levels_db20.astype(np.float64)
 
 

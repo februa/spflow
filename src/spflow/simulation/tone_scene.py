@@ -203,10 +203,7 @@ def synthesize_tone_scene(
             reference_rms=1.0,
             reference_label="input RMS",
         )
-        effective_level_converter = LevelConverter(
-            input_definition=default_definition,
-            output_definition=default_definition,
-        )
+        effective_level_converter = LevelConverter.for_definition(default_definition)
     else:
         effective_level_converter = level_converter
 

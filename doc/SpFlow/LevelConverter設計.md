@@ -137,3 +137,43 @@ result_level_db = converter.output_to_level(normalized_positive_frequency_coeffi
 `level_db_to_rms_amplitude`、`tone_rms_level_db_to_peak_amplitude`、
 `noise_asd_level_db_to_band_rms`、`rms_amplitude_to_level_db`は互換ファサードとして残す。
 実装式は`LevelConverter`へ委譲し、既存利用者へ新しい実行モデルを強制しない。
+
+## 9. 既存コードへの適用と使い勝手評価
+
+実際のsimulation、beamforming、beamforming evaluationへ適用し、次の経路を
+同じ変換契約へ接続した。
+
+- `ToneScene`のsource levelから実cosine peakへの入力変換
+- 時間領域適応方式とSLC診断の入力level、波形RMS、正負周波数tone応答
+- 固定整相、fractional delay、sparse array、shadingの正規化beam response
+- noise covariance予測、mixed BL、guard外power集約、SNR gainのpower level
+
+適用前は評価関数ごとに`reference_rms`を再指定する必要があり、入力生成時のreferenceを
+取り違える余地があった。評価関数は互換引数`reference_rms`を残しながら、共有する
+`level_converter`も受け取れるようにした。scenario内で繰り返す場合は、小さい局所関数に
+共有Converterを閉じ込め、各呼び出しへ同じkeywordを何度も書かない。
+
+同じdefinitionを入出力へ設定する対称変換は頻出したため、次の短縮形を追加した。
+
+```python
+definition = level_20log10_rms(
+    reference_rms=1.0,
+    reference_label="input RMS",
+)
+converter = LevelConverter.for_definition(definition)
+```
+
+表示・JSON保存の有限下限も呼び出し側で`20log10(tiny)`または`10log10(tiny)`を
+選ばせると重複と選択ミスが生じた。`float64_tiny_level_db`はoutput definitionの
+線形量に合う下限を返す。RMSを先に二乗してmean-squareへ変換すると`tiny**2`が0へ
+underflowするため、`output_to_level`は登録済み表面式を線形量へ直接適用する。
+
+一方、次の式は無理に移行していない。
+
+- FIR/filterbank設計内部のstopband attenuationなど、同じ関数内で閉じる局所的な比
+- complex信号を含み得るtwo-sided FFT係数の表示level
+
+前者は離れた境界間の契約ではなく、Converterを入れてもreference管理上の利益がない。
+後者はconjpair powerではなく、complex basebandにも適用できる登録済みdefinitionが
+現在存在しない。誤ったconjpair係数2を適用するより、用途とFFT正規化を確認してから
+必要最小限のdefinitionを追加する。`tone/noise`分類やFFT実行機能をConverterへ戻さない。

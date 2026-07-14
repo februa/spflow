@@ -28,7 +28,7 @@ def _rms_converter(reference_rms: float = 1.0) -> LevelConverter:
         reference_rms=reference_rms,
         reference_label="input RMS",
     )
-    return LevelConverter(input_definition=definition, output_definition=definition)
+    return LevelConverter.for_definition(definition)
 
 
 def test_rms_converter_round_trip_preserves_scalar_array_and_reference() -> None:
@@ -55,6 +55,49 @@ def test_real_cosine_peak_uses_sqrt_two_times_rms() -> None:
 
     assert converter.input_to_rms(0.0) == pytest.approx(3.0)
     assert converter.input_to_real_cosine_peak(0.0) == pytest.approx(3.0 * np.sqrt(2.0))
+
+
+def test_for_definition_reuses_one_immutable_definition() -> None:
+    """対称変換の生成補助がdefinition選択を増やさず同じ値を共有することを確認する。"""
+
+    definition = level_20log10_rms(reference_rms=1.0, reference_label="input RMS")
+
+    converter = LevelConverter.for_definition(definition)
+
+    assert converter.input_definition is definition
+    assert converter.output_definition is definition
+
+
+def test_float64_floor_is_finite_without_squaring_underflow() -> None:
+    """RMS、power、conjpairの有限floorが極小値の二乗underflowを起こさないことを確認する。"""
+
+    rms_converter = _rms_converter()
+    power_definition = level_10log10_power(
+        reference_power=1.0,
+        reference_label="input power",
+    )
+    power_converter = LevelConverter.for_definition(power_definition)
+    conjpair_definition = level_10log10_conjpair_power(
+        reference_rms=1.0,
+        reference_label="input RMS",
+    )
+    conjpair_converter = LevelConverter.for_definition(conjpair_definition)
+
+    # floorは各definitionが直接受ける線形量のtinyに対応させる。
+    # mean-squareへ先に変換するとRMS tinyの二乗が0へunderflowするため、その回帰を検出する。
+    assert rms_converter.output_rms_to_level(
+        0.0,
+        floor_db=rms_converter.float64_tiny_level_db,
+    ) == pytest.approx(rms_converter.float64_tiny_level_db)
+    assert power_converter.output_to_level(
+        0.0,
+        floor_db=power_converter.float64_tiny_level_db,
+    ) == pytest.approx(power_converter.float64_tiny_level_db)
+    assert conjpair_converter.output_to_level(
+        0.0j,
+        floor_db=conjpair_converter.float64_tiny_level_db,
+    ) == pytest.approx(conjpair_converter.float64_tiny_level_db)
+    assert np.isfinite(rms_converter.output_to_level(np.finfo(np.float64).tiny))
 
 
 def test_conjpair_output_matches_normalized_positive_frequency_formula() -> None:
