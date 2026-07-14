@@ -5,7 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 
+import evaluations.beamforming.scene_renderer_t2a_streaming as t2a_streaming
 from evaluations.beamforming.scene_renderer_t2a_streaming import (
     MatlabArrayCoefficients,
     StreamingBeamBranch,
@@ -56,6 +58,53 @@ def test_frequency_weight_design_returns_three_parallel_methods() -> None:
     assert all(weight.shape == (5, 2, 2) for weight in design.weights.values())
     assert design.ebae_signal_count.shape == (5, 2)
     assert design.ebae_fallback_mask.shape == (5, 2)
+
+
+def test_frequency_weight_design_can_run_only_t2a_ebae(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EBAE単独選択時はMVDR重みを解かず、EBAE完成重みだけを公開する。
+
+    2 channel、`M^2=4` non-overlap snapshotを満たす決定論入力を使う。
+    MVDR solverを例外へ置換し、方式辞書から外すだけで裏でMVDRを計算していないことも
+    固定する。EBAE内部の安全fallback用CBF計算は方式成立条件なので対象外とする。
+    """
+    config = T2aScenarioConfig(
+        fs_hz=64.0,
+        sound_speed_m_s=1500.0,
+        duration_s=2.0,
+        training_duration_s=1.0,
+        target_frequency_hz=8.0,
+        interferer_frequency_hz=16.0,
+        noise_band_hz=(2.0, 24.0),
+        analysis_fft_size=8,
+        analysis_hop_size=8,
+        residual_fir_tap_count=4,
+        runtime_block_size=5,
+    )
+    coefficients = MatlabArrayCoefficients(
+        positions_m=np.array([[-0.1, 0.0, 0.0], [0.1, 0.0, 0.0]], dtype=np.float64),
+        frequency_hz=np.array([0.0, 32.0]),
+        shading=np.ones((2, 2), dtype=np.complex128),
+        active_channel_mask=np.ones((2, 2), dtype=np.bool_),
+    )
+    rng = np.random.default_rng(20260715)
+    training_signal = rng.standard_normal((2, int(config.duration_s * config.fs_hz)))
+
+    def fail_if_mvdr_is_called(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("t2a_ebae-only design must not solve t2a_mvdr weights")
+
+    monkeypatch.setattr(t2a_streaming, "_loaded_mvdr_weight", fail_if_mvdr_is_called)
+    design = design_frequency_weights(
+        training_signal,
+        coefficients,
+        np.array([45.0, 90.0], dtype=np.float64),
+        config,
+        method_ids=("t2a_ebae",),
+    )
+
+    assert tuple(design.weights) == ("t2a_ebae",)
+    assert design.weights["t2a_ebae"].shape == (5, 2, 2)
 
 
 def test_load_matlab_coefficients_preserves_frequency_switched_active_channels(

@@ -52,6 +52,30 @@ ComplexArray = NDArray[np.complex128]
 BoolArray = NDArray[np.bool_]
 IntArray = NDArray[np.int64]
 
+SUPPORTED_METHOD_IDS = ("fixed_baseline", "t2a_mvdr", "t2a_ebae")
+
+
+def _validate_method_ids(method_ids: tuple[str, ...]) -> tuple[str, ...]:
+    """実行対象方式を重複のない非空tupleとして検証する。
+
+    Args:
+        method_ids: `SUPPORTED_METHOD_IDS`から選んだ方式識別子。
+
+    Returns:
+        入力順を維持した方式識別子。
+
+    Raises:
+        ValueError: 空、重複、または未対応方式を含む場合。
+    """
+    if len(method_ids) == 0:
+        raise ValueError("method_ids must contain at least one method.")
+    if len(set(method_ids)) != len(method_ids):
+        raise ValueError("method_ids must not contain duplicates.")
+    unsupported = [method_id for method_id in method_ids if method_id not in SUPPORTED_METHOD_IDS]
+    if unsupported:
+        raise ValueError(f"unsupported method_ids: {unsupported}")
+    return method_ids
+
 
 @dataclass(frozen=True)
 class T2aScenarioConfig:
@@ -574,13 +598,26 @@ def design_frequency_weights(
     coefficients: MatlabArrayCoefficients,
     beam_azimuth_deg: FloatArray,
     config: T2aScenarioConfig,
+    method_ids: tuple[str, ...] = SUPPORTED_METHOD_IDS,
 ) -> FrequencyWeightDesign:
     """候補方位別T共分散からfixed、T2a-MVDR、T2a-EBAE重みを設計する。
 
+    Args:
+        training_signal: 共分散を推定する入力。shape `[n_ch,n_sample]`、単位input RMS。
+        coefficients: 物理位置、周波数別active channel、複素shading。
+        beam_azimuth_deg: 待受方位。shape `[n_beam]`、単位deg。
+        config: sampling、training、FFT、EBAE/MVDR条件。
+        method_ids: 設計する方式。既定は3方式すべて。
+
     Returns:
-        3方式の重み、因果整数遅延、active数、EBAE診断量。重みは`w^H x`表現であり、
-        FIR化時に共役を取る。
+        選択方式の重み、因果整数遅延、active数、EBAE診断量。重みは`w^H x`表現であり、
+        FIR化時に共役を取る。EBAE未選択時のEBAE診断配列は未使用既定値を保持する。
+
+    Raises:
+        ValueError: 方式、入力shape、またはEBAEの`M^2` snapshot条件が不正な場合。
     """
+    selected_method_ids = _validate_method_ids(method_ids)
+    selected_method_set = set(selected_method_ids)
     arrival_delays_s = _arrival_delays_s(
         coefficients.positions_m, beam_azimuth_deg, config.sound_speed_m_s
     )
@@ -591,42 +628,31 @@ def design_frequency_weights(
     n_frequency = frequency_hz.size
     n_beam = beam_azimuth_deg.size
     n_ch = coefficients.positions_m.shape[0]
-    t2a = np.zeros((n_frequency, n_beam, n_ch), dtype=np.complex128)
-    fixed = np.zeros_like(t2a)
-    ebae = np.zeros_like(t2a)
+    weights = {
+        method_id: np.zeros((n_frequency, n_beam, n_ch), dtype=np.complex128)
+        for method_id in selected_method_ids
+    }
     active_count = np.empty(n_frequency, dtype=np.float64)
     ebae_signal_count = np.zeros((n_frequency, n_beam), dtype=np.int64)
     ebae_music_peak_deg = np.full((n_frequency, n_beam), np.nan, dtype=np.float64)
     ebae_fallback = np.zeros((n_frequency, n_beam), dtype=np.bool_)
     # T2aの候補方位別時間切り出しは周波数に依存しないため、各beamで一度だけFFTする。
     # 同じsnapshotを周波数loop内で再生成すると、方式上不要な計算量がn_frequency倍になる。
-    snapshots_by_beam = [
-        _candidate_snapshots(training_signal, causal_delays[beam_index], config)
-        for beam_index in range(n_beam)
-    ]
+    needs_covariance = bool({"t2a_mvdr", "t2a_ebae"} & selected_method_set)
+    snapshots_by_beam = (
+        [
+            _candidate_snapshots(training_signal, causal_delays[beam_index], config)
+            for beam_index in range(n_beam)
+        ]
+        if needs_covariance
+        else []
+    )
     for frequency_index, frequency in enumerate(frequency_hz):
         shading, active = coefficients.table_at(float(frequency))
         active_indices = np.flatnonzero(active)
         active_count[frequency_index] = float(active_indices.size)
         for beam_index in range(n_beam):
-            snapshots = snapshots_by_beam[beam_index][:, frequency_index, :]
-            snapshot_count = int(active_indices.size * active_indices.size)
             is_real_spectrum_boundary = frequency_index in (0, n_frequency - 1)
-            if not is_real_spectrum_boundary and snapshots.shape[0] < snapshot_count:
-                raise ValueError(
-                    "training interval must provide at least M**2 non-overlap snapshots "
-                    f"for EBAE: frequency={frequency:g} Hz, M={active_indices.size}, "
-                    f"required={snapshot_count}, observed={snapshots.shape[0]}."
-                )
-            # 適応binではN/E AICのL=M^2と物理共分散へ平均するsnapshot数を一致させる。
-            selected_snapshot_count = (
-                snapshots.shape[0] if is_real_spectrum_boundary else snapshot_count
-            )
-            active_snapshot = snapshots[:selected_snapshot_count, active_indices]
-            # R=E[xx^H]。snapshot axis=0を平均し、channel×channel共分散を得る。
-            covariance = np.einsum(
-                "fc,fd->cd", active_snapshot, active_snapshot.conj(), optimize=True
-            ) / float(active_snapshot.shape[0])
             physical_tau = arrival_delays_s[beam_index, active_indices]
             integer_tau = integer_offsets[beam_index, active_indices] / config.fs_hz
             # 整数遅延後の残差steeringはD a=exp(-j2πf(tau-q/fs))。
@@ -635,51 +661,73 @@ def design_frequency_weights(
             )
             channel_shading = shading[active_indices]
             fixed_active = residual_constraint / np.vdot(residual_constraint, residual_constraint)
+            unshaded_by_method: dict[str, ComplexArray] = {}
+            if "fixed_baseline" in selected_method_set:
+                unshaded_by_method["fixed_baseline"] = np.asarray(fixed_active, dtype=np.complex128)
             if is_real_spectrum_boundary:
                 # DC/Nyquistは実FIRのHermitian境界であり、複素適応位相を持たせない。
-                mvdr_active = fixed_active
-                ebae_active = fixed_active
-                ebae_music_peak_deg[frequency_index, beam_index] = beam_azimuth_deg[beam_index]
-            else:
-                mvdr_active = _loaded_mvdr_weight(
-                    covariance, residual_constraint, config.diagonal_loading_ratio
-                )
-                # D_b a(phi)により、候補bの整数遅延後座標へ全scan steeringを移す。
-                residual_scan = np.exp(
-                    -1j
-                    * 2.0
-                    * np.pi
-                    * frequency
-                    * (
-                        arrival_delays_s[:, active_indices].T
-                        - integer_offsets[beam_index, active_indices, np.newaxis] / config.fs_hz
+                if "t2a_mvdr" in selected_method_set:
+                    unshaded_by_method["t2a_mvdr"] = np.asarray(fixed_active, dtype=np.complex128)
+                if "t2a_ebae" in selected_method_set:
+                    unshaded_by_method["t2a_ebae"] = np.asarray(fixed_active, dtype=np.complex128)
+                    ebae_music_peak_deg[frequency_index, beam_index] = beam_azimuth_deg[beam_index]
+            elif needs_covariance:
+                snapshots = snapshots_by_beam[beam_index][:, frequency_index, :]
+                ebae_snapshot_count = int(active_indices.size * active_indices.size)
+                if "t2a_ebae" in selected_method_set and snapshots.shape[0] < ebae_snapshot_count:
+                    raise ValueError(
+                        "training interval must provide at least M**2 non-overlap snapshots "
+                        f"for EBAE: frequency={frequency:g} Hz, M={active_indices.size}, "
+                        f"required={ebae_snapshot_count}, observed={snapshots.shape[0]}."
                     )
+                # EBAE選択時は宣言L=M^2と物理平均数を一致させ、比較するMVDRも同じ共分散を使う。
+                selected_snapshot_count = (
+                    ebae_snapshot_count if "t2a_ebae" in selected_method_set else snapshots.shape[0]
                 )
-                ebae_result = design_ebae_weights_band(
-                    covariance,
-                    residual_scan,
-                    snapshot_count=snapshot_count,
-                    config=EbaeConfig(
-                        snapshot_rate_hz=config.fs_hz / config.analysis_hop_size,
-                        integration_time_sec=(
-                            snapshot_count * config.analysis_hop_size / config.fs_hz
+                active_snapshot = snapshots[:selected_snapshot_count, active_indices]
+                # R=E[xx^H]。snapshot axis=0を平均し、channel×channel共分散を得る。
+                covariance = np.einsum(
+                    "fc,fd->cd", active_snapshot, active_snapshot.conj(), optimize=True
+                ) / float(active_snapshot.shape[0])
+                if "t2a_mvdr" in selected_method_set:
+                    unshaded_by_method["t2a_mvdr"] = _loaded_mvdr_weight(
+                        covariance, residual_constraint, config.diagonal_loading_ratio
+                    )
+                if "t2a_ebae" in selected_method_set:
+                    # D_b a(phi)により、候補bの整数遅延後座標へ全scan steeringを移す。
+                    residual_scan = np.exp(
+                        -1j
+                        * 2.0
+                        * np.pi
+                        * frequency
+                        * (
+                            arrival_delays_s[:, active_indices].T
+                            - integer_offsets[beam_index, active_indices, np.newaxis] / config.fs_hz
+                        )
+                    )
+                    ebae_result = design_ebae_weights_band(
+                        covariance,
+                        residual_scan,
+                        snapshot_count=ebae_snapshot_count,
+                        config=EbaeConfig(
+                            snapshot_rate_hz=config.fs_hz / config.analysis_hop_size,
+                            integration_time_sec=(
+                                ebae_snapshot_count * config.analysis_hop_size / config.fs_hz
+                            ),
+                            sigmoid_slope=10.0,
+                            sigmoid_midpoint=0.5,
+                            diagonal_loading=1.0,
                         ),
-                        sigmoid_slope=10.0,
-                        sigmoid_midpoint=0.5,
-                        diagonal_loading=1.0,
-                    ),
-                )
-                ebae_active = np.asarray(ebae_result.weights[:, beam_index], dtype=np.complex128)
-                ebae_signal_count[frequency_index, beam_index] = ebae_result.signal_count
-                ebae_music_peak_deg[frequency_index, beam_index] = float(
-                    beam_azimuth_deg[int(np.argmax(ebae_result.music_spectrum))]
-                )
-                ebae_fallback[frequency_index, beam_index] = ebae_result.used_fallback
-            for destination, unshaded in (
-                (fixed, fixed_active),
-                (t2a, mvdr_active),
-                (ebae, ebae_active),
-            ):
+                    )
+                    unshaded_by_method["t2a_ebae"] = np.asarray(
+                        ebae_result.weights[:, beam_index], dtype=np.complex128
+                    )
+                    ebae_signal_count[frequency_index, beam_index] = ebae_result.signal_count
+                    ebae_music_peak_deg[frequency_index, beam_index] = float(
+                        beam_azimuth_deg[int(np.argmax(ebae_result.music_spectrum))]
+                    )
+                    ebae_fallback[frequency_index, beam_index] = ebae_result.used_fallback
+            for method_id, unshaded in unshaded_by_method.items():
                 # 実信号経路でgを掛ける意味をw^H x規約の重みへ移すため、重み側はconj(g)倍する。
                 shaded = channel_shading.conj() * unshaded
                 denominator = np.vdot(shaded, residual_constraint)
@@ -687,15 +735,11 @@ def design_frequency_weights(
                     # shading後に無歪正規化できない場合は、不完全な適応値でなくCBFを採用する。
                     shaded = fixed_active
                     denominator = np.vdot(shaded, residual_constraint)
-                destination[frequency_index, beam_index, active_indices] = (
+                weights[method_id][frequency_index, beam_index, active_indices] = (
                     shaded / denominator.conjugate()
                 )
     return FrequencyWeightDesign(
-        weights={
-            "fixed_baseline": fixed,
-            "t2a_mvdr": t2a,
-            "t2a_ebae": ebae,
-        },
+        weights=weights,
         causal_delays_samples=np.asarray(causal_delays, dtype=np.int64),
         active_channel_count=active_count,
         ebae_signal_count=ebae_signal_count,
@@ -842,32 +886,44 @@ def _write_bl_fraz_fl(
     predicted_target_aliases_deg: tuple[float, ...],
 ) -> None:
     """同一軸・同一level基準でBL、FL、FRAZを保存する。"""
-    figure, axes = plt.subplots(2, 3, figsize=(18.0, 9.0))
+    if len(fraz_by_method) == 1:
+        # 単独方式は2×2へ詰め、比較方式が存在しない空panelを成果物へ残さない。
+        figure, axes = plt.subplots(2, 2, figsize=(12.0, 9.0))
+        bl_axis = axes[0, 0]
+        fl_axis = axes[0, 1]
+        source_bl_axis = axes[1, 0]
+        fraz_axes = (axes[1, 1],)
+    else:
+        figure, axes = plt.subplots(2, 3, figsize=(18.0, 9.0))
+        bl_axis = axes[0, 0]
+        fl_axis = axes[0, 1]
+        source_bl_axis = axes[0, 2]
+        fraz_axes = tuple(axes[1])
     target_bin = int(np.argmin(np.abs(frequency_hz - config.target_frequency_hz)))
     target_beam = int(np.argmin(np.abs(beam_azimuth_deg - config.target_azimuth_deg)))
     for method_id, fraz in fraz_by_method.items():
-        axes[0, 0].plot(beam_azimuth_deg, fraz[:, target_bin], label=method_id)
-        axes[0, 1].plot(frequency_hz, fraz[target_beam], label=method_id)
+        bl_axis.plot(beam_azimuth_deg, fraz[:, target_bin], label=method_id)
+        fl_axis.plot(frequency_hz, fraz[target_beam], label=method_id)
         source_frequency_bl = np.maximum(
             fraz[:, target_bin],
             fraz[:, int(np.argmin(np.abs(frequency_hz - config.interferer_frequency_hz)))],
         )
-        axes[0, 2].plot(beam_azimuth_deg, source_frequency_bl, label=method_id)
-    axes[0, 0].axvline(config.target_azimuth_deg, color="black", linestyle="--")
+        source_bl_axis.plot(beam_azimuth_deg, source_frequency_bl, label=method_id)
+    bl_axis.axvline(config.target_azimuth_deg, color="black", linestyle="--")
     for alias_deg in predicted_target_aliases_deg:
         # 理論aliasは計算BLを見てから付ける説明ではなく、宣言幾何からの事前予測として描く。
-        axes[0, 0].axvline(alias_deg, color="tab:orange", linestyle=":", alpha=0.8)
-    axes[0, 0].set(
+        bl_axis.axvline(alias_deg, color="tab:orange", linestyle=":", alpha=0.8)
+    bl_axis.set(
         title=f"BL at {frequency_hz[target_bin]:g} Hz",
         xlabel="Waiting-beam azimuth [deg]",
         ylabel="RMS Level [dB re input RMS]",
     )
-    axes[0, 1].set(
+    fl_axis.set(
         title=f"FL at {beam_azimuth_deg[target_beam]:g} deg",
         xlabel="Frequency [Hz]",
         ylabel="RMS Level [dB re input RMS]",
     )
-    axes[0, 2].set(
+    source_bl_axis.set(
         title="Source-frequency BL",
         xlabel="Waiting-beam azimuth [deg]",
         ylabel="RMS Level [dB re input RMS]",
@@ -877,7 +933,7 @@ def _write_bl_fraz_fl(
     finite = np.concatenate([values[np.isfinite(values)] for values in fraz_by_method.values()])
     upper = float(np.max(finite))
     lower = upper - 80.0
-    for axis, (method_id, fraz) in zip(axes[1], fraz_by_method.items(), strict=True):
+    for axis, (method_id, fraz) in zip(fraz_axes, fraz_by_method.items(), strict=False):
         image = axis.pcolormesh(
             azimuth_edges,
             frequency_edges,
@@ -892,7 +948,10 @@ def _write_bl_fraz_fl(
             ylabel="Frequency [Hz]",
         )
         figure.colorbar(image, ax=axis, label="RMS Level [dB re input RMS]")
-    for axis in axes[0]:
+    for axis in fraz_axes[len(fraz_by_method) :]:
+        # 選択方式より多い空panelを表示せず、存在しない方式の結果と誤認させない。
+        axis.set_visible(False)
+    for axis in (bl_axis, fl_axis, source_bl_axis):
         axis.grid(alpha=0.25)
         axis.legend()
     figure.tight_layout()
@@ -906,6 +965,8 @@ def run_evaluation(
     shading_frequency_step_hz: float,
     output_dir: Path,
     config: T2aScenarioConfig | None = None,
+    method_ids: tuple[str, ...] = SUPPORTED_METHOD_IDS,
+    review_title: str = "T2a scene_renderer streaming review pack",
 ) -> None:
     """MATLAB係数読込からscene生成、T2a逐次処理、評価保存まで実行する。
 
@@ -915,14 +976,17 @@ def run_evaluation(
         shading_frequency_step_hz: shading周波数bin間隔。単位はHz。
         output_dir: review pack保存先。
         config: 省略時は再現可能な既定scenario。
+        method_ids: 設計、Flow処理、評価、表示を行う方式識別子。
+        review_title: `review_index.md`先頭に記録する評価名。
 
     Returns:
         なし。
 
     Raises:
-        ValueError: 係数、scene、設計、逐次処理の契約が不正な場合。
+        ValueError: 方式、係数、scene、設計、逐次処理の契約が不正な場合。
     """
     scenario = T2aScenarioConfig() if config is None else config
+    selected_method_ids = _validate_method_ids(method_ids)
     coefficients = load_matlab_array_coefficients(
         positions_path, shading_path, shading_frequency_step_hz
     )
@@ -948,7 +1012,11 @@ def run_evaluation(
         0.0, 180.0 + 0.5 * scenario.beam_azimuth_step_deg, scenario.beam_azimuth_step_deg
     )
     weight_design = design_frequency_weights(
-        rendered.mixed, coefficients, beam_azimuth_deg, scenario
+        rendered.mixed,
+        coefficients,
+        beam_azimuth_deg,
+        scenario,
+        method_ids=selected_method_ids,
     )
     component_signals = {
         "target": rendered.target,
@@ -1114,16 +1182,28 @@ def run_evaluation(
         "runtime_factor": runtime_factor,
         "level_reference": "BL/FRAZ/FL: dB re input RMS",
         "evaluation_patterns": ["sparse_array_design", "fixed_beam_multi_source"],
+        "selected_method_ids": list(selected_method_ids),
         "predicted_uniform_subset_grating_azimuths_deg": predicted_aliases,
     }
     (output_dir / "metadata.json").write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    if selected_method_ids == ("t2a_ebae",):
+        method_description = (
+            "MATLAB係数の周波数別active channelとshadingを適用し、候補方位別T共分散から"
+            "T2a-EBAE残差重みだけを設計、Flow処理、評価、表示した。EBAE内部の成立条件を"
+            "満たさない場合に使う固定整相fallbackは安全契約として残すが、`fixed_baseline`と"
+            "`t2a_mvdr`の独立branchは生成しない。比較baselineを含まないため、本pack単独で"
+            "方式間の採否は判断しない。"
+        )
+    else:
+        method_description = (
+            "MATLAB係数の周波数別active channelとshadingを適用し、選択方式 "
+            f"{', '.join(selected_method_ids)} を同じFlow、完成区間、表示軸で評価した。"
+        )
     (output_dir / "review_index.md").write_text(
-        "# T2a scene_renderer streaming review pack\n\n"
-        "MATLAB係数の周波数別active channelとshadingを適用し、候補方位別T共分散から"
-        "T2a-MVDR/T2a-EBAE残差重みを設計した。`fixed_baseline`を安全側比較として"
-        "同じFlow、完成区間、表示軸で常に併記する。\n\n"
+        f"# {review_title}\n\n"
+        f"{method_description}\n\n"
         "- `rendered_input_spectrum.png`: 整相前target+interferer+noiseのper-bin RMS。\n"
         "- `bl_fraz_fl.png`: 整相後mixed信号のBL、FL、FRAZ。\n"
         "- `source_frequency_bl_overlay.png`: 全source真値周波数の最大BL。\n"
