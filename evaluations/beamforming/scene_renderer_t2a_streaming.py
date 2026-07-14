@@ -7,15 +7,12 @@ T2a-MVDR残差FIR、通常Pythonによるblock逐次処理、BL/FRAZ/FL評価を
 from __future__ import annotations
 
 import argparse
-import csv
-import json
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import matplotlib.pyplot as plt
 import numpy as np
 from numpy.typing import NDArray
 
@@ -42,17 +39,19 @@ from evaluations.beamforming.external_fixed_delay_diff_mvdr_inputs import (  # n
     load_complex_shading_matlab_raw,
     load_positions_matlab_raw,
 )
+from evaluations.beamforming.scene_renderer_t2a_review_reporting import (  # noqa: E402
+    ScenarioSummaryRow,
+    T2aReviewContext,
+    T2aReviewData,
+    write_t2a_review_pack,
+)
 from evaluations.beamforming.scene_renderer_t2a_waveform_reporting import (  # noqa: E402
     WaveformIntegrityResult,
     calculate_streaming_reference_errors,
     calculate_target_waveform_integrity,
     select_diagnostic_zoom_bounds,
-    write_input_waveform_diagnostics,
-    write_output_waveform_diagnostics,
-    write_target_waveform_integrity,
 )
 from spflow.beamforming.ebae import EbaeConfig, design_ebae_weights_band  # noqa: E402
-from spflow.beamforming_evaluation.diagnostic_plotting import centers_to_edges  # noqa: E402
 from spflow.simulation import SignalBlock, StatefulIntegerDelay, VersionedCausalFIR  # noqa: E402
 
 FloatArray = NDArray[np.float64]
@@ -859,12 +858,8 @@ def realize_residual_fir(weights: ComplexArray, tap_count: int) -> tuple[Complex
 
         # irFFT応答はN点周期列なので、末尾から先頭へ跨ぐtap窓も候補に含める。
         # 先頭tap_count-1点を連結し、長さtap_countの全N個の循環区間energyを計算する。
-        extended_energy = np.concatenate(
-            (tap_energy_by_time, tap_energy_by_time[: tap_count - 1])
-        )
-        window_energy = np.convolve(
-            extended_energy, np.ones(tap_count), mode="valid"
-        )[:n_fft]
+        extended_energy = np.concatenate((tap_energy_by_time, tap_energy_by_time[: tap_count - 1]))
+        window_energy = np.convolve(extended_energy, np.ones(tap_count), mode="valid")[:n_fft]
 
         # 最大energy区間を全channel共通で選び、循環順序を保ったままtap index 0..tap_count-1
         # へ並べ直す。この並べ替えによりVersionedCausalFIRへ渡せる因果係数となる。
@@ -875,8 +870,7 @@ def realize_residual_fir(weights: ComplexArray, tap_count: int) -> tuple[Complex
         # energy_ratioはFIR打切りによる応答欠落をbeam単位で診断する値。
         # 無信号重みでも0除算しないよう、分母にfloat最小正規化値を適用する。
         energy_ratio[beam_index] = float(
-            window_energy[start]
-            / max(float(np.sum(tap_energy_by_time)), np.finfo(float).tiny)
+            window_energy[start] / max(float(np.sum(tap_energy_by_time)), np.finfo(float).tiny)
         )
     return coefficients, energy_ratio
 
@@ -936,12 +930,12 @@ def run_streaming_beam_branches(
             # branch出力を元系列上の同じ時刻位置へ戻す。初回履歴不足sampleの完成状態は
             # valid_maskをそのまま保存し、後段のBL/FRAZ/FL評価から除外できるようにする。
             completed_stop = completed_block.start_sample + completed_block.data.shape[1]
-            output[completed_block.method_id][
-                :, completed_block.start_sample : completed_stop
-            ] = completed_block.data
-            valid[completed_block.method_id][
-                :, completed_block.start_sample : completed_stop
-            ] = completed_block.valid_mask
+            output[completed_block.method_id][:, completed_block.start_sample : completed_stop] = (
+                completed_block.data
+            )
+            valid[completed_block.method_id][:, completed_block.start_sample : completed_stop] = (
+                completed_block.valid_mask
+            )
     return {method: (output[method], valid[method]) for method in output}
 
 
@@ -989,109 +983,6 @@ def _make_branches(
         branches.append(StreamingBeamBranch(method_id, delays, coefficients))
         energy[method_id] = energy_ratio
     return branches, energy
-
-
-def _write_input_spectrum(output_path: Path, mixed: FloatArray, config: T2aScenarioConfig) -> None:
-    """整相前rendered target+interferer+noiseの片側RMS spectrumを保存する。"""
-    spectrum = np.fft.rfft(mixed, axis=1)
-    power = np.abs(spectrum / float(mixed.shape[1])) ** 2
-    power[:, 1:-1] *= 2.0
-    level = 10.0 * np.log10(np.maximum(np.mean(power, axis=0), np.finfo(float).tiny))
-    frequency = np.fft.rfftfreq(mixed.shape[1], d=1.0 / config.fs_hz)
-    figure, axis = plt.subplots(figsize=(10.0, 4.0))
-    axis.plot(frequency, level)
-    axis.set(
-        title="Pre-beamforming rendered target + interferer + noise",
-        xlabel="Frequency [Hz]",
-        ylabel="Per-bin RMS Level [dB re input RMS]",
-        xlim=(0.0, config.fs_hz / 2.0),
-    )
-    axis.grid(alpha=0.25)
-    figure.tight_layout()
-    figure.savefig(output_path, dpi=150)
-    plt.close(figure)
-
-
-def _write_bl_fraz_fl(
-    output_path: Path,
-    beam_azimuth_deg: FloatArray,
-    frequency_hz: FloatArray,
-    fraz_by_method: dict[str, FloatArray],
-    config: T2aScenarioConfig,
-    predicted_target_aliases_deg: tuple[float, ...],
-) -> None:
-    """同一軸・同一level基準でBL、FL、FRAZを保存する。"""
-    if len(fraz_by_method) == 1:
-        # 単独方式は2×2へ詰め、比較方式が存在しない空panelを成果物へ残さない。
-        figure, axes = plt.subplots(2, 2, figsize=(12.0, 9.0))
-        bl_axis = axes[0, 0]
-        fl_axis = axes[0, 1]
-        source_bl_axis = axes[1, 0]
-        fraz_axes = (axes[1, 1],)
-    else:
-        figure, axes = plt.subplots(2, 3, figsize=(18.0, 9.0))
-        bl_axis = axes[0, 0]
-        fl_axis = axes[0, 1]
-        source_bl_axis = axes[0, 2]
-        fraz_axes = tuple(axes[1])
-    target_bin = int(np.argmin(np.abs(frequency_hz - config.target_frequency_hz)))
-    target_beam = int(np.argmin(np.abs(beam_azimuth_deg - config.target_azimuth_deg)))
-    for method_id, fraz in fraz_by_method.items():
-        bl_axis.plot(beam_azimuth_deg, fraz[:, target_bin], label=method_id)
-        fl_axis.plot(frequency_hz, fraz[target_beam], label=method_id)
-        source_frequency_bl = np.maximum(
-            fraz[:, target_bin],
-            fraz[:, int(np.argmin(np.abs(frequency_hz - config.interferer_frequency_hz)))],
-        )
-        source_bl_axis.plot(beam_azimuth_deg, source_frequency_bl, label=method_id)
-    bl_axis.axvline(config.target_azimuth_deg, color="black", linestyle="--")
-    for alias_deg in predicted_target_aliases_deg:
-        # 理論aliasは計算BLを見てから付ける説明ではなく、宣言幾何からの事前予測として描く。
-        bl_axis.axvline(alias_deg, color="tab:orange", linestyle=":", alpha=0.8)
-    bl_axis.set(
-        title=f"BL at {frequency_hz[target_bin]:g} Hz",
-        xlabel="Waiting-beam azimuth [deg]",
-        ylabel="RMS Level [dB re input RMS]",
-    )
-    fl_axis.set(
-        title=f"FL at {beam_azimuth_deg[target_beam]:g} deg",
-        xlabel="Frequency [Hz]",
-        ylabel="RMS Level [dB re input RMS]",
-    )
-    source_bl_axis.set(
-        title="Source-frequency BL",
-        xlabel="Waiting-beam azimuth [deg]",
-        ylabel="RMS Level [dB re input RMS]",
-    )
-    azimuth_edges = centers_to_edges(beam_azimuth_deg)
-    frequency_edges = centers_to_edges(frequency_hz)
-    finite = np.concatenate([values[np.isfinite(values)] for values in fraz_by_method.values()])
-    upper = float(np.max(finite))
-    lower = upper - 80.0
-    for axis, (method_id, fraz) in zip(fraz_axes, fraz_by_method.items(), strict=False):
-        image = axis.pcolormesh(
-            azimuth_edges,
-            frequency_edges,
-            fraz.T,
-            shading="auto",
-            vmin=lower,
-            vmax=upper,
-        )
-        axis.set(
-            title=f"FRAZ: {method_id}",
-            xlabel="Waiting-beam azimuth [deg]",
-            ylabel="Frequency [Hz]",
-        )
-        figure.colorbar(image, ax=axis, label="RMS Level [dB re input RMS]")
-    for axis in fraz_axes[len(fraz_by_method) :]:
-        # 選択方式より多い空panelを表示せず、存在しない方式の結果と誤認させない。
-        axis.set_visible(False)
-    for axis in (bl_axis, fl_axis, source_bl_axis):
-        axis.grid(alpha=0.25)
-        axis.legend()
-    figure.tight_layout()
-    figure.savefig(output_path, dpi=160)
-    plt.close(figure)
 
 
 def run_evaluation(
@@ -1153,58 +1044,57 @@ def run_evaluation(
         scenario,
         method_ids=selected_method_ids,
     )
-    _evaluate_and_write_review_pack(
-        positions_path=positions_path,
-        shading_path=shading_path,
-        shading_frequency_step_hz=shading_frequency_step_hz,
-        output_dir=output_dir,
+    review_data = _evaluate_streaming_scenario(
         scenario=scenario,
-        selected_method_ids=selected_method_ids,
-        review_title=review_title,
         coefficients=coefficients,
-        predicted_aliases=predicted_aliases,
         rendered=rendered,
         beam_azimuth_deg=np.asarray(beam_azimuth_deg, dtype=np.float64),
         weight_design=weight_design,
     )
+    # 評価計算が全方式分完成してからreporting境界へ渡し、途中結果を成果物へ公開しない。
+    review_context = T2aReviewContext(
+        scenario=scenario,
+        scenario_metadata=dict(scenario.__dict__),
+        selected_method_ids=selected_method_ids,
+        review_title=review_title,
+        positions_path=positions_path,
+        shading_path=shading_path,
+        shading_frequency_step_hz=shading_frequency_step_hz,
+        n_channel=coefficients.positions_m.shape[0],
+        predicted_aliases_deg=predicted_aliases,
+        rendered_mixed=rendered.mixed,
+        active_channel_count=weight_design.active_channel_count,
+        causal_delays_samples=weight_design.causal_delays_samples,
+        ebae_signal_count=weight_design.ebae_signal_count,
+        ebae_music_peak_azimuth_deg=weight_design.ebae_music_peak_azimuth_deg,
+        ebae_fallback_mask=weight_design.ebae_fallback_mask,
+    )
+    write_t2a_review_pack(output_dir, review_context, review_data)
 
 
-def _evaluate_and_write_review_pack(
+def _evaluate_streaming_scenario(
     *,
-    positions_path: Path,
-    shading_path: Path,
-    shading_frequency_step_hz: float,
-    output_dir: Path,
     scenario: T2aScenarioConfig,
-    selected_method_ids: tuple[str, ...],
-    review_title: str,
     coefficients: MatlabArrayCoefficients,
-    predicted_aliases: dict[str, tuple[float, ...]],
     rendered: RenderedComponents,
     beam_azimuth_deg: FloatArray,
     weight_design: FrequencyWeightDesign,
-) -> None:
-    """完成したsceneと重みを逐次処理し、評価review packを保存する。
+) -> T2aReviewData:
+    """完成したsceneと重みを逐次処理し、固定型の評価結果を返す。
 
     Args:
-        positions_path: metadataへ記録するCOE_POS相当raw path。
-        shading_path: metadataへ記録するCOE_CBFSHADING相当raw path。
-        shading_frequency_step_hz: shading周波数bin間隔。単位はHz。
-        output_dir: review pack保存先。
         scenario: sampling、source、FFT、FIR、block条件。
-        selected_method_ids: 設計済み方式識別子。
-        review_title: review_index先頭の評価名。
         coefficients: 検証済み位置・周波数別active channel・shading。
-        predicted_aliases: source別の事前予測alias方位。値の単位はdeg。
         rendered: target、interferer、noise、mixed。各shapeは[n_ch,n_sample]。
         beam_azimuth_deg: 待受方位。shape [n_beam]、単位deg。
         weight_design: 完成周波数重みとEBAE診断量。
 
     Returns:
-        なし。block逐次処理後のCSV、JSON、NPZ、PNG、review_indexを保存する。
+        全componentのFRAZ、波形完全性、block境界、方式別指標を持つ完成評価結果。
+        本関数はファイルを保存せず、reporting側が直列化する。
 
     Raises:
-        ValueError: 完成sample、波形評価、または表示配列の契約が不正な場合。
+        ValueError: 完成sampleまたは波形評価の契約が不正な場合。
         RuntimeError: component間でFRAZ周波数軸が変化した場合。
     """
     component_signals = {
@@ -1296,7 +1186,7 @@ def _evaluate_and_write_review_pack(
         )
     guard_deg = max(10.0, 2.0 * scenario.beam_azimuth_step_deg)
     non_source = np.abs(beam_azimuth_deg - scenario.target_azimuth_deg) > guard_deg
-    rows: list[dict[str, Any]] = []
+    rows: list[ScenarioSummaryRow] = []
     for method_id in weight_design.weights:
         target_bl = fraz["target"][method_id][:, target_bin]
         peak_index = int(np.argmax(target_bl))
@@ -1305,140 +1195,63 @@ def _evaluate_and_write_review_pack(
         target_power = 10.0 ** (fraz["target"][method_id][target_beam, target_bin] / 10.0)
         noise_power = 10.0 ** (fraz["noise"][method_id][target_beam, target_bin] / 10.0)
         rows.append(
-            {
-                "scenario": "sparse_frequency_switched_two_tone",
-                "method": method_id,
-                "evaluation_pattern": "sparse_array_design+fixed_beam_multi_source",
-                "target_frequency_hz": frequency_hz[target_bin],
-                "target_azimuth_deg": scenario.target_azimuth_deg,
-                "target_peak_azimuth_deg": beam_azimuth_deg[peak_index],
-                "target_peak_error_deg": abs(
-                    beam_azimuth_deg[peak_index] - scenario.target_azimuth_deg
+            ScenarioSummaryRow(
+                scenario="sparse_frequency_switched_two_tone",
+                method=method_id,
+                evaluation_pattern="sparse_array_design+fixed_beam_multi_source",
+                target_frequency_hz=float(frequency_hz[target_bin]),
+                target_azimuth_deg=scenario.target_azimuth_deg,
+                target_peak_azimuth_deg=float(beam_azimuth_deg[peak_index]),
+                target_peak_error_deg=float(
+                    abs(beam_azimuth_deg[peak_index] - scenario.target_azimuth_deg)
                 ),
-                "target_level_db_re_input_rms": target_level,
-                "sidelobe_peak_db_re_mainlobe_peak": sidelobe_peak - float(np.max(target_bl)),
-                "output_snr_db": 10.0
-                * np.log10(
-                    max(target_power, np.finfo(float).tiny) / max(noise_power, np.finfo(float).tiny)
+                target_level_db_re_input_rms=target_level,
+                sidelobe_peak_db_re_mainlobe_peak=(sidelobe_peak - float(np.max(target_bl))),
+                output_snr_db=float(
+                    10.0
+                    * np.log10(
+                        max(target_power, np.finfo(float).tiny)
+                        / max(noise_power, np.finfo(float).tiny)
+                    )
                 ),
-                "interferer_level_at_target_beam_db_re_input_rms": float(
+                interferer_level_at_target_beam_db_re_input_rms=float(
                     fraz["interferer"][method_id][target_beam, interferer_bin]
                 ),
-                "minimum_fir_energy_containment": float(np.min(energy[method_id])),
-                "target_waveform_rms_delta_db": waveform_integrity[method_id].rms_delta_db,
-                "target_waveform_correlation_after_phase_alignment": waveform_integrity[
-                    method_id
-                ].correlation_after_phase_alignment,
-                "target_waveform_residual_rms_db_re_input_rms": waveform_integrity[
-                    method_id
-                ].residual_rms_db_re_input_rms,
-                "target_phase_delay_samples_modulo_period": waveform_integrity[
-                    method_id
-                ].phase_delay_samples_modulo_period,
-                "streaming_one_block_max_abs_error": streaming_overall_error[method_id],
-                "streaming_boundary_max_abs_error": streaming_boundary_error[method_id],
-                "streaming_valid_mask_matches_one_block": streaming_valid_match[method_id],
-                "ebae_signal_count_at_target": (
+                minimum_fir_energy_containment=float(np.min(energy[method_id])),
+                target_waveform_rms_delta_db=waveform_integrity[method_id].rms_delta_db,
+                target_waveform_correlation_after_phase_alignment=(
+                    waveform_integrity[method_id].correlation_after_phase_alignment
+                ),
+                target_waveform_residual_rms_db_re_input_rms=(
+                    waveform_integrity[method_id].residual_rms_db_re_input_rms
+                ),
+                target_phase_delay_samples_modulo_period=(
+                    waveform_integrity[method_id].phase_delay_samples_modulo_period
+                ),
+                streaming_one_block_max_abs_error=streaming_overall_error[method_id],
+                streaming_boundary_max_abs_error=streaming_boundary_error[method_id],
+                streaming_valid_mask_matches_one_block=streaming_valid_match[method_id],
+                ebae_signal_count_at_target=(
                     int(weight_design.ebae_signal_count[target_bin, target_beam])
                     if method_id == "t2a_ebae"
                     else -1
                 ),
-                "ebae_music_peak_azimuth_deg_at_target": (
+                ebae_music_peak_azimuth_deg_at_target=(
                     float(weight_design.ebae_music_peak_azimuth_deg[target_bin, target_beam])
                     if method_id == "t2a_ebae"
                     else float("nan")
                 ),
-                "ebae_fallback_at_target": (
+                ebae_fallback_at_target=(
                     bool(weight_design.ebae_fallback_mask[target_bin, target_beam])
                     if method_id == "t2a_ebae"
                     else False
                 ),
-                "runtime_factor": runtime_factor,
-                "finite": bool(np.all(np.isfinite(fraz["mixed"][method_id]))),
-            }
+                runtime_factor=runtime_factor,
+                finite=bool(np.all(np.isfinite(fraz["mixed"][method_id]))),
+            )
         )
-    with (output_dir / "scenario_summary.csv").open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
-        writer.writeheader()
-        writer.writerows(rows)
-    # worst_casesは採否の自動判定ではなく、peak誤差とFIR包含率が悪い方式を先に見る索引である。
-    worst_rows = sorted(
-        rows,
-        key=lambda row: (
-            -float(row["target_peak_error_deg"]),
-            float(row["minimum_fir_energy_containment"]),
-        ),
-    )
-    with (output_dir / "worst_cases.csv").open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
-        writer.writeheader()
-        writer.writerows(worst_rows)
-    npz_arrays: dict[str, Any] = {
-        "azimuth_deg": beam_azimuth_deg,
-        "frequency_hz": frequency_hz,
-        "active_channel_count": weight_design.active_channel_count,
-        "causal_integer_delays_samples": weight_design.causal_delays_samples,
-        "t2a_ebae_signal_count": weight_design.ebae_signal_count,
-        "t2a_ebae_music_peak_azimuth_deg": weight_design.ebae_music_peak_azimuth_deg,
-        "t2a_ebae_fallback_mask": weight_design.ebae_fallback_mask,
-        "diagnostic_time_s": np.arange(rendered.mixed.shape[1], dtype=np.float64) / scenario.fs_hz,
-        "diagnostic_reference_channel_index": np.asarray(reference_channel, dtype=np.int64),
-        "diagnostic_input_mixed_reference_channel": rendered.mixed[reference_channel],
-    }
-    for component_id, method_levels in fraz.items():
-        for method_id, levels in method_levels.items():
-            npz_arrays[f"{component_id}_{method_id}_fraz_db_re_input_rms"] = levels
-    _write_input_spectrum(output_dir / "rendered_input_spectrum.png", rendered.mixed, scenario)
-    first_method_id = next(iter(weight_design.weights))
-    _, input_zoom_start, input_zoom_stop = diagnostic_zoom[first_method_id]
-    write_input_waveform_diagnostics(
-        output_dir / "input_waveform_diagnostics.png",
-        rendered.mixed,
-        reference_channel,
-        input_zoom_start,
-        input_zoom_stop,
-        scenario,
-    )
-    for method_id in weight_design.weights:
-        mixed_output, mixed_valid = streamed_waveforms["mixed"][method_id]
-        one_block_output, _ = one_block_mixed[method_id]
-        _, zoom_start, zoom_stop = diagnostic_zoom[method_id]
-        write_output_waveform_diagnostics(
-            output_dir / f"output_waveform_diagnostics_{method_id}.png",
-            method_id,
-            mixed_output[target_beam],
-            one_block_output[target_beam],
-            mixed_valid[target_beam],
-            zoom_start,
-            zoom_stop,
-            scenario,
-        )
-        write_target_waveform_integrity(
-            output_dir / f"target_waveform_integrity_{method_id}.png",
-            method_id,
-            waveform_integrity[method_id],
-            scenario,
-        )
-        integrity = waveform_integrity[method_id]
-        npz_arrays[f"{method_id}_target_beam_mixed_output_real"] = np.real(
-            mixed_output[target_beam]
-        )
-        npz_arrays[f"{method_id}_target_beam_mixed_valid_mask"] = mixed_valid[target_beam]
-        npz_arrays[f"{method_id}_target_beam_mixed_one_block_real"] = np.real(
-            one_block_output[target_beam]
-        )
-        npz_arrays[f"{method_id}_target_integrity_input"] = integrity.reference_signal
-        npz_arrays[f"{method_id}_target_integrity_phase_aligned_output"] = (
-            integrity.phase_aligned_output
-        )
-    _write_bl_fraz_fl(
-        output_dir / "bl_fraz_fl.png",
-        beam_azimuth_deg,
-        frequency_hz,
-        fraz["mixed"],
-        scenario,
-        predicted_aliases["target"],
-    )
+    # source-frequency BLはtarget/interferer各真値周波数の最大levelを方位ごとに保持する。
+    # 異周波数sourceをtarget周波数だけのBLで不可視と誤判定しないための評価配列である。
     source_frequency_bl = {
         method_id: np.maximum(
             fraz["mixed"][method_id][:, target_bin],
@@ -1446,100 +1259,29 @@ def _evaluate_and_write_review_pack(
         )
         for method_id in weight_design.weights
     }
-    figure, axis = plt.subplots(figsize=(10.0, 4.5))
-    for method_id, levels in source_frequency_bl.items():
-        axis.plot(beam_azimuth_deg, levels, label=method_id)
-        npz_arrays[f"{method_id}_source_frequency_bl_db_re_input_rms"] = levels
-    axis.axvline(scenario.target_azimuth_deg, color="black", linestyle="--", label="target")
-    axis.axvline(scenario.interferer_azimuth_deg, color="gray", linestyle=":", label="interferer")
-    axis.set(
-        title="Source-frequency BL overlay",
-        xlabel="Waiting-beam azimuth [deg]",
-        ylabel="RMS Level [dB re input RMS]",
-    )
-    axis.grid(alpha=0.25)
-    axis.legend()
-    figure.tight_layout()
-    figure.savefig(output_dir / "source_frequency_bl_overlay.png", dpi=160)
-    plt.close(figure)
-    # FRAZ、波形、境界参照、source-frequency BLが全方式分完成してから一つのNPZを公開する。
-    np.savez_compressed(output_dir / "plot_arrays.npz", **npz_arrays)
-    metadata = {
-        "scenario": scenario.__dict__,
-        "positions_path": str(positions_path),
-        "shading_path": str(shading_path),
-        "shading_frequency_step_hz": shading_frequency_step_hz,
-        "n_channel": coefficients.positions_m.shape[0],
-        "active_channel_count_by_frequency": weight_design.active_channel_count.tolist(),
-        "t2a_ebae_fallback_count": int(np.count_nonzero(weight_design.ebae_fallback_mask)),
-        "valid_sample_counts": valid_counts,
-        "runtime_s": runtime_s,
-        "runtime_factor": runtime_factor,
-        "level_reference": "BL/FRAZ/FL: dB re input RMS",
-        "evaluation_patterns": ["sparse_array_design", "fixed_beam_multi_source"],
-        "selected_method_ids": list(selected_method_ids),
-        "waveform_diagnostics": {
-            "input_reference_channel_index": reference_channel,
-            "output_beam_azimuth_deg": float(beam_azimuth_deg[target_beam]),
-            "spectrum_reference": "per-bin RMS level, dB re input RMS",
-            "phase_delay_definition": "sample delay modulo one target-tone period",
-            "method_metrics": {
-                method_id: {
-                    "target_waveform_rms_delta_db": waveform_integrity[method_id].rms_delta_db,
-                    "target_waveform_correlation_after_phase_alignment": waveform_integrity[
-                        method_id
-                    ].correlation_after_phase_alignment,
-                    "target_waveform_residual_rms_db_re_input_rms": waveform_integrity[
-                        method_id
-                    ].residual_rms_db_re_input_rms,
-                    "target_phase_delay_samples_modulo_period": waveform_integrity[
-                        method_id
-                    ].phase_delay_samples_modulo_period,
-                    "streaming_one_block_max_abs_error": streaming_overall_error[method_id],
-                    "streaming_boundary_max_abs_error": streaming_boundary_error[method_id],
-                    "streaming_valid_mask_matches_one_block": streaming_valid_match[method_id],
-                }
-                for method_id in weight_design.weights
-            },
-        },
-        "predicted_uniform_subset_grating_azimuths_deg": predicted_aliases,
-    }
-    (output_dir / "metadata.json").write_text(
-        json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    if selected_method_ids == ("t2a_ebae",):
-        method_description = (
-            "MATLAB係数の周波数別active channelとshadingを適用し、候補方位別T共分散から"
-            "T2a-EBAE残差重みだけを設計、block逐次処理、評価、表示した。EBAE内部の成立条件を"
-            "満たさない場合に使う固定整相fallbackは安全契約として残すが、`fixed_baseline`と"
-            "`t2a_mvdr`の独立branchは生成しない。比較baselineを含まないため、本pack単独で"
-            "方式間の採否は判断しない。"
-        )
-    else:
-        method_description = (
-            "MATLAB係数の周波数別active channelとshadingを適用し、選択方式 "
-            f"{', '.join(selected_method_ids)} を同じblock反復、完成区間、表示軸で評価した。"
-        )
-    (output_dir / "review_index.md").write_text(
-        f"# {review_title}\n\n"
-        f"{method_description}\n\n"
-        "- `rendered_input_spectrum.png`: 整相前target+interferer+noiseのper-bin RMS。\n"
-        "- `input_waveform_diagnostics.png`: 基準channel入力の全体・block境界拡大波形とspectrum。\n"
-        "- `output_waveform_diagnostics_<method>.png`: target待受beam出力、境界拡大、"
-        "一括block差、spectrum。\n"
-        "- `target_waveform_integrity_<method>.png`: target-only入力と位相整列後出力の"
-        "波形、残差、spectrum。\n"
-        "- `bl_fraz_fl.png`: 整相後mixed信号のBL、FL、FRAZ。\n"
-        "- `source_frequency_bl_overlay.png`: 全source真値周波数の最大BL。\n"
-        "- `scenario_summary.csv`: peak、sidelobe、SNR、FIR、波形完全性、境界、runtime観測値。\n"
-        "- `worst_cases.csv`: レビュー優先順で並べた同じ観測値。自動採否には使わない。\n"
-        "- `plot_arrays.npz`: 描画前配列。BL/FRAZ/FLはdB re input RMS。\n\n"
-        "波形完全性はtarget-only入力の原点最近傍channelとtarget待受beam出力を比較する。"
-        "単一toneの位相遅延は1周期ごとに同値なため、絶対伝搬遅延ではなく1周期を法とする。"
-        "分割streamingと同じ係数を一括blockへ適用した差によりblock境界由来の不連続を確認する。\n\n"
-        "本scenarioは自由音場、水平固定音源、channel独立帯域雑音である。海面・海底反射、"
-        "音速プロファイル、係数更新過渡は扱わず、それらの成立性を本結果から判断しない。\n",
-        encoding="utf-8",
+
+    # 全component、全方式、分割境界参照、評価行が完成してから不変の結果型へまとめる。
+    # reporting側は本結果を直列化するだけで、信号処理式や指標計算を再実装しない。
+    return T2aReviewData(
+        frequency_hz=frequency_hz,
+        beam_azimuth_deg=beam_azimuth_deg,
+        fraz_by_component=fraz,
+        valid_sample_counts=valid_counts,
+        streamed_waveforms=streamed_waveforms,
+        one_block_mixed=one_block_mixed,
+        waveform_integrity_by_method=waveform_integrity,
+        streaming_overall_error_by_method=streaming_overall_error,
+        streaming_boundary_error_by_method=streaming_boundary_error,
+        streaming_valid_match_by_method=streaming_valid_match,
+        diagnostic_zoom_by_method=diagnostic_zoom,
+        source_frequency_bl_by_method=source_frequency_bl,
+        summary_rows=tuple(rows),
+        runtime_s=runtime_s,
+        runtime_factor=runtime_factor,
+        target_frequency_index=target_bin,
+        interferer_frequency_index=interferer_bin,
+        target_beam_index=target_beam,
+        reference_channel_index=reference_channel,
     )
 
 

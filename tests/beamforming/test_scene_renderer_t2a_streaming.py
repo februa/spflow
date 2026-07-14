@@ -14,6 +14,7 @@ from evaluations.beamforming.scene_renderer_t2a_streaming import (
     T2aScenarioConfig,
     design_frequency_weights,
     load_matlab_array_coefficients,
+    run_evaluation,
     run_streaming_beam_branches,
 )
 from evaluations.beamforming.scene_renderer_t2a_waveform_reporting import (
@@ -220,3 +221,49 @@ def test_streaming_beam_branches_reject_duplicate_method_ids() -> None:
 
     with pytest.raises(ValueError, match="method_id values must be unique"):
         run_streaming_beam_branches(np.ones((1, 4), dtype=np.float64), branches, block_size=2)
+
+
+def test_run_evaluation_completes_before_review_pack_serialization(tmp_path: Path) -> None:
+    """固定整相の完成評価結果をreporting境界へ渡して全成果物を生成する。
+
+    2 channel、5 beam、128 sampleの小さい決定論scenarioを使い、MATLAB raw読込、
+    scene生成、重み設計、block逐次処理、固定型評価結果、review pack保存の接続を確認する。
+    適応方式の成立性は別テストで扱い、ここでは責務境界だけを見るためfixed単独とする。
+    """
+    positions_path = tmp_path / "COE_POS"
+    shading_path = tmp_path / "COE_CBFSHADING"
+    output_dir = tmp_path / "review_pack"
+    positions_m = np.array([[-0.1, 0.0, 0.0], [0.1, 0.0, 0.0]], dtype=np.float64)
+    shading = np.ones((2, 2), dtype=np.complex128)
+    np.asarray(positions_m.T, dtype="<f4").reshape(-1, order="F").tofile(positions_path)
+    raw_shading = np.concatenate((shading.real, shading.imag), axis=1)
+    np.asarray(raw_shading, dtype="<f4").reshape(-1, order="F").tofile(shading_path)
+    config = T2aScenarioConfig(
+        fs_hz=64.0,
+        duration_s=2.0,
+        training_duration_s=0.5,
+        target_azimuth_deg=45.0,
+        target_frequency_hz=8.0,
+        interferer_azimuth_deg=90.0,
+        interferer_frequency_hz=16.0,
+        noise_band_hz=(2.0, 24.0),
+        beam_azimuth_step_deg=45.0,
+        analysis_fft_size=8,
+        analysis_hop_size=8,
+        residual_fir_tap_count=4,
+        runtime_block_size=7,
+    )
+
+    run_evaluation(
+        positions_path,
+        shading_path,
+        shading_frequency_step_hz=32.0,
+        output_dir=output_dir,
+        config=config,
+        method_ids=("fixed_baseline",),
+        review_title="responsibility boundary test",
+    )
+
+    assert (output_dir / "scenario_summary.csv").is_file()
+    assert (output_dir / "plot_arrays.npz").is_file()
+    assert (output_dir / "review_index.md").is_file()
