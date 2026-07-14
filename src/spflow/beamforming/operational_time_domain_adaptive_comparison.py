@@ -43,8 +43,8 @@ from .time_domain_adaptive import (
     build_real_tone_constraint_matrix,
     build_time_domain_tone_constraint_vector,
     build_time_tapped_snapshot_matrix,
-    design_time_domain_gsc_weights,
-    design_time_domain_lcmv_weights,
+    design_time_domain_gsc_coefficients,
+    design_time_domain_lcmv_coefficients,
     diagnose_time_domain_adaptive_weights,
     estimate_time_domain_covariance,
     evaluate_constraint_response,
@@ -288,9 +288,10 @@ def _adaptive_response_level_at_azimuth(
     )
     negative_constraint = positive_constraint.conj()
     source_rms = _INPUT_RMS_LEVEL_CONVERTER.input_to_rms(float(source_level_db20))
-    # 時間領域適応重みは複素になり得るため、実 tone の BL レベルは正負周波数の RMS 合成で評価する。
-    positive_response = np.conj(beam_weights[:, 0]) @ positive_constraint
-    negative_response = np.conj(beam_weights[:, 0]) @ negative_constraint
+    # 設計器は実適用係数hを返すため、正負周波数ともh^T cを直接評価する。
+    # 複素係数では両側の応答が非対称になり得るので、最終レベルはRMS合成する。
+    positive_response = beam_weights[:, 0] @ positive_constraint
+    negative_response = beam_weights[:, 0] @ negative_constraint
     level = calculate_real_tone_response_rms_level_db20(
         np.array([positive_response], dtype=np.complex128),
         np.array([negative_response], dtype=np.complex128),
@@ -347,8 +348,8 @@ def _adaptive_response_curve(
         negative_constraint = positive_constraint.conj()
         # target beam 固定 BL なので、各 source 方位の実 tone が同じ FIR 重みへ入ったときの応答を見る。
         # 複素重みでは `H(+f)` と `H(-f)` が非対称になり得るため、両側帯を後で RMS 合成する。
-        positive_response_values[look_index] = np.conj(beam_weights[:, 0]) @ positive_constraint
-        negative_response_values[look_index] = np.conj(beam_weights[:, 0]) @ negative_constraint
+        positive_response_values[look_index] = beam_weights[:, 0] @ positive_constraint
+        negative_response_values[look_index] = beam_weights[:, 0] @ negative_constraint
     return calculate_real_tone_response_rms_level_db20(
         positive_response_values,
         negative_response_values,
@@ -695,7 +696,7 @@ def run_operational_time_domain_adaptive_comparison(
 
     method_weights: dict[str, tuple[NDArray[np.complex128], NDArray[np.complex128], NDArray[np.complex128], float]] = {}
     start_time = time.perf_counter()
-    mvdr_weights = design_time_domain_lcmv_weights(
+    mvdr_weights = design_time_domain_lcmv_coefficients(
         covariance,
         target_constraints,
         mvdr_desired,
@@ -703,7 +704,7 @@ def run_operational_time_domain_adaptive_comparison(
     )
     method_weights["time_domain_mvdr_real"] = (mvdr_weights, target_constraints, mvdr_desired, time.perf_counter() - start_time)
     start_time = time.perf_counter()
-    lcmv_weights = design_time_domain_lcmv_weights(
+    lcmv_weights = design_time_domain_lcmv_coefficients(
         covariance,
         lcmv_constraints,
         lcmv_desired,
@@ -716,7 +717,7 @@ def run_operational_time_domain_adaptive_comparison(
         time.perf_counter() - start_time,
     )
     start_time = time.perf_counter()
-    gsc_weights = design_time_domain_gsc_weights(
+    gsc_weights = design_time_domain_gsc_coefficients(
         covariance,
         lcmv_constraints,
         lcmv_desired,
@@ -724,7 +725,7 @@ def run_operational_time_domain_adaptive_comparison(
     )
     method_weights["time_domain_gsc_equivalent_lcmv"] = (gsc_weights, lcmv_constraints, lcmv_desired, time.perf_counter() - start_time)
     start_time = time.perf_counter()
-    sector_lcmv_weights = design_time_domain_lcmv_weights(
+    sector_lcmv_weights = design_time_domain_lcmv_coefficients(
         covariance,
         sector_lcmv_constraints,
         sector_lcmv_desired,
@@ -737,7 +738,7 @@ def run_operational_time_domain_adaptive_comparison(
         time.perf_counter() - start_time,
     )
     start_time = time.perf_counter()
-    sector_gsc_weights = design_time_domain_gsc_weights(
+    sector_gsc_weights = design_time_domain_gsc_coefficients(
         covariance,
         sector_lcmv_constraints,
         sector_lcmv_desired,

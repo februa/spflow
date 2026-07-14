@@ -16,7 +16,7 @@ from spflow import (
     steering_from_relative_delay,
     synthesize_plane_wave_tone,
 )
-from spflow.beamforming import build_source_sector_mask_from_azimuths, design_cbf_weights
+from spflow.beamforming import build_source_sector_mask_from_azimuths, design_cbf_coefficients
 from spflow.beamforming.diagnostic_plotting import plot_bl_response
 
 
@@ -115,11 +115,11 @@ def main() -> None:
         tau_s,
         np.array([tone_frequency_hz], dtype=np.float64),
     )[:, :, 0]
-    weights = design_cbf_weights(steering)
-    # tone_bin_output shape: [n_beam]。w^H Xをchannel軸で内積する。
+    coefficients = design_cbf_coefficients(steering)
+    # tone_bin_output shape: [n_beam]。h^T Xをchannel軸で内積する。
     tone_bin_output = np.einsum(
         "cb,c->b",
-        np.conjugate(weights),
+        coefficients,
         spectrum[:, tone_bin_index],
     )
     # 実toneの内部正周波数binは負周波数共役対を持つため、2|Y/N|^2がRMS powerとなる。

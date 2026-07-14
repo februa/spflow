@@ -8,7 +8,6 @@ from typing import Any
 import numpy as np
 import pytest
 from numpy.typing import NDArray
-
 from scene_renderer import (
     AcousticSource,
     AmbientField,
@@ -23,8 +22,9 @@ from scene_renderer import (
     tone_component_from_rms_level_db,
 )
 from scene_renderer.receiver import ArrayGeometry
+
 from spflow import (
-    design_cbf_weights,
+    design_cbf_coefficients,
     integrate_one_sided_band_rms_power,
     one_sided_rfft_bin_rms_power,
     relative_arrival_delay,
@@ -195,7 +195,7 @@ def test_scene_renderer_single_source_is_steered_to_requested_azimuth_and_elevat
         relative_delay_s,
         np.array([tone_frequency_hz], dtype=np.float64),
     )[:, :, 0]
-    weights = design_cbf_weights(steering)
+    weights = design_cbf_coefficients(steering)
     # 通常DASはw=a/(a^Ha)を用いたw^H x。snapshot axisを1として全waiting directionへ適用する。
     beam_tone_bin = apply_beamformer(tone_snapshot, weights)[:, 0]
     beam_rms = np.sqrt(2.0) * np.abs(beam_tone_bin) / float(sample_count)
@@ -302,7 +302,7 @@ def test_tone_das_preserves_array_frame_direction_for_heading_and_poles(
     scan_directions, _, _ = _operational_scan_directions()
     delays = relative_arrival_delay(positions, scan_directions, sound_speed_m_per_s=sound_speed)
     steering = steering_from_relative_delay(delays, np.array([frequency_hz]))[:, :, 0]
-    beam = apply_beamformer(snapshot, design_cbf_weights(steering))[:, 0]
+    beam = apply_beamformer(snapshot, design_cbf_coefficients(steering))[:, 0]
     observed_direction = scan_directions[int(np.argmax(np.abs(beam)))]
     expected_direction = _direction_from_azimuth_elevation(
         np.array([source_azimuth_deg]), np.array([source_elevation_deg])
@@ -358,7 +358,7 @@ def test_broadband_das_band_power_peaks_at_requested_direction(
     steering = steering_from_relative_delay(delays, band_frequencies_hz)
     beam_band_spectrum = apply_beamformer_bands(
         channel_band_spectrum,
-        design_cbf_weights(steering),
+        design_cbf_coefficients(steering),
     )
     # band内はDC/Nyquistを含まないため、one-sided RMS powerは2|Y/N|^2である。
     beam_band_power = np.sum(
@@ -398,7 +398,7 @@ def _das_band_output_rms(
     steering = steering_from_relative_delay(delays, frequencies_hz[band_mask])[:, np.newaxis, :]
     beam_spectrum = apply_beamformer_bands(
         channel_spectrum[:, band_mask],
-        design_cbf_weights(steering),
+        design_cbf_coefficients(steering),
     )[0]
     # 全rFFT格子へ戻して既存のone-sided power部品と同じDC/Nyquist規約で積分する。
     full_beam_spectrum = np.zeros(frequencies_hz.size, dtype=np.complex128)

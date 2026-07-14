@@ -29,13 +29,14 @@ from scene_renderer import (
     StaticPose,
     ToneSpectrum,
 )
+
 from spflow import (
     BandwiseArrayDesign,
     PolyphaseDFTFilterBank,
     apply_beamformer_bands,
     beam_response_rms_db,
-    design_cbf_weights_with_channel_window,
-    design_mvdr_weights_with_channel_window,
+    design_cbf_coefficients_with_channel_window,
+    design_mvdr_coefficients_with_channel_window,
     forgetting_factor_from_integration_time,
     integrate_band_covariances,
     integration_blocks_from_integration_time,
@@ -204,7 +205,7 @@ def build_mvdr_weights(
         normalization=fft_size,
         n_blocks=n_blocks,
     )
-    weights = design_mvdr_weights_with_channel_window(
+    weights = design_mvdr_coefficients_with_channel_window(
         rxx,
         steering_target,
         shading_table,
@@ -271,7 +272,7 @@ def evaluate_case(name: str, array_design: BandwiseArrayDesign | None, n_ch: int
         active_aperture = array_design.active_aperture_m
         min_spacing = array_design.minimum_spacing_m
 
-    cbf_weights = design_cbf_weights_with_channel_window(steering_target, shading_table)
+    cbf_weights = design_cbf_coefficients_with_channel_window(steering_target, shading_table)
     requested_time = recommended_integration_time_for_independent_samples(n_ch, fs / fft_size)
     mvdr_weights, effective_time, n_blocks = build_mvdr_weights(
         X_int,
@@ -297,8 +298,8 @@ def evaluate_case(name: str, array_design: BandwiseArrayDesign | None, n_ch: int
         band = int(round(freq / (fs / fft_size))) % fft_size
         cbf_out_amp = tone_amplitude(y_cbf, fs, freq)
         mvdr_out_amp = tone_amplitude(y_mvdr, fs, freq)
-        cbf_target_resp = cbf_weights[:, :, band].conj().T @ steering_target[:, :, band]
-        mvdr_target_resp = mvdr_weights[:, :, band].conj().T @ steering_target[:, :, band]
+        cbf_target_resp = cbf_weights[:, :, band].T @ steering_target[:, :, band]
+        mvdr_target_resp = mvdr_weights[:, :, band].T @ steering_target[:, :, band]
         print(
             f'| {freq:.0f} | {band} | {active_count(band)} | {active_aperture(band):.6f} | {min_spacing(band):.6f} | '
             f'{rms_db_from_amplitude(cbf_out_amp):.3f} | {rms_db_from_amplitude(mvdr_out_amp):.3f} | '

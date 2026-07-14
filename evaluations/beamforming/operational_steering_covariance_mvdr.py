@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -27,22 +27,22 @@ from scene_renderer import (  # noqa: E402
     SourceComponent,
     StaticPose,
 )
-from spflow.beamforming import (  # noqa: E402
-    OperationalShadingDefinition,
-    OperationalSparseArrayDefinition,
-    SelectedFrequencyDirectionCovarianceAccumulator,
-    build_two_second_covariance_snapshot_schedule,
-    design_mvdr_weights,
-    relative_arrival_delay,
-    steering_from_relative_delay,
-)
-from spflow.beamforming.diagnostic_plotting import require_matplotlib  # noqa: E402
+
 from evaluations.beamforming.method3_sparse_64ch_correlation import CoordinateArray  # noqa: E402
 from evaluations.beamforming.steering_power_threshold_calibration import (  # noqa: E402
     calculate_steering_power_calibration_signature,
     calibrate_steering_power_thresholds,
 )
-
+from spflow.beamforming import (  # noqa: E402
+    OperationalShadingDefinition,
+    OperationalSparseArrayDefinition,
+    SelectedFrequencyDirectionCovarianceAccumulator,
+    build_two_second_covariance_snapshot_schedule,
+    design_mvdr_coefficients,
+    relative_arrival_delay,
+    steering_from_relative_delay,
+)
+from spflow.beamforming.diagnostic_plotting import require_matplotlib  # noqa: E402
 
 ARRAY_PATH = ROOT / "artifacts" / "beamforming" / "operational_fractional_delay_performance_test" / "array.json"
 SHADING_PATH = ROOT / "artifacts" / "beamforming" / "operational_fractional_delay_performance_test" / "shading.json"
@@ -184,7 +184,7 @@ def _beam_metrics(
 ) -> tuple[dict[str, float], NDArray[np.float32]]:
     """weightのBL応答、target保存、interferer抑圧、外側peakを返す。"""
 
-    response = np.abs(np.einsum("i,id->d", weight.conj(), steering_scan, optimize=True))
+    response = np.abs(np.einsum("i,id->d", weight, steering_scan, optimize=True))
     target_index = int(np.argmin(np.abs(scan_azimuth_deg - TARGET_AZIMUTH_DEG)))
     interferer_index = int(np.argmin(np.abs(scan_azimuth_deg - INTERFERER_AZIMUTH_DEG)))
     normalized_db = 20.0 * np.log10(np.maximum(response / max(float(response[target_index]), 1.0e-20), 1.0e-12))
@@ -357,17 +357,17 @@ def main() -> None:
         )
         target_direction = int(np.argmin(np.abs(schedule.global_direction_azimuth_deg - TARGET_AZIMUTH_DEG)))
         target_steering = steering[:, target_direction]
-        cbf_weight = np.asarray(shading * target_steering / np.sum(shading), dtype=np.complex64)
+        cbf_weight = np.asarray(np.conj(shading * target_steering / np.sum(shading)), dtype=np.complex64)
         method2_mvdr = np.asarray(
-            design_mvdr_weights(method2_covariance, target_steering, diag_load=DIAGONAL_LOADING)[:, 0],
+            design_mvdr_coefficients(method2_covariance, target_steering, diag_load=DIAGONAL_LOADING)[:, 0],
             dtype=np.complex64,
         )
         selected_mvdr = np.asarray(
-            design_mvdr_weights(selected_covariance, target_steering, diag_load=DIAGONAL_LOADING)[:, 0],
+            design_mvdr_coefficients(selected_covariance, target_steering, diag_load=DIAGONAL_LOADING)[:, 0],
             dtype=np.complex64,
         )
         oracle_noise_mvdr = np.asarray(
-            design_mvdr_weights(noise_reference_covariance, target_steering, diag_load=DIAGONAL_LOADING)[:, 0],
+            design_mvdr_coefficients(noise_reference_covariance, target_steering, diag_load=DIAGONAL_LOADING)[:, 0],
             dtype=np.complex64,
         )
         steering_scan = np.asarray(

@@ -38,9 +38,10 @@ from scene_renderer_mvdr_stability_sweep import (  # noqa: E402
     render_scene,
     steering_from_dir3d,
 )
+
 from spflow.beamforming import (  # noqa: E402
-    design_cbf_weights_with_channel_window,
-    design_mvdr_weights_with_channel_window,
+    design_cbf_coefficients_with_channel_window,
+    design_mvdr_coefficients_with_channel_window,
     make_directions,
 )
 from spflow.beamforming.diagnostic_plotting import require_matplotlib  # noqa: E402
@@ -527,7 +528,7 @@ def _beam_output_spectrum(channel_signals: FloatArray, weights: ComplexArray) ->
     n_rfft_bin = int(input_spectrum.shape[1])
     # weights[:, :, :n_rfft_bin] shape: [n_ch, n_beam, n_rfft_bin]。
     # einsum の c 軸が CH 内積で、b が beam、k が rFFT bin を表す。
-    output = np.einsum("cbk,ck->bk", weights[:, :, :n_rfft_bin].conj(), input_spectrum, optimize=True)
+    output = np.einsum("cbk,ck->bk", weights[:, :, :n_rfft_bin], input_spectrum, optimize=True)
     return np.asarray(output, dtype=np.complex128)
 
 
@@ -624,9 +625,12 @@ def _evaluate_signal_case(
         n_dense_ch=None,
     )
     covariance = _one_block_covariance(input_signal)
-    fixed_weights = np.asarray(design_cbf_weights_with_channel_window(steering, array_design.shading_table), dtype=np.complex128)
+    fixed_weights = np.asarray(
+        design_cbf_coefficients_with_channel_window(steering, array_design.shading_table),
+        dtype=np.complex128,
+    )
     mvdr_weights = np.asarray(
-        design_mvdr_weights_with_channel_window(
+        design_mvdr_coefficients_with_channel_window(
             covariance,
             steering,
             array_design.shading_table,
@@ -1039,4 +1043,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -31,7 +31,7 @@ from spflow import (
     PolyphaseDFTFilterBank,
     apply_beamformer_bands,
     beam_response_rms_db,
-    design_cbf_weights,
+    design_cbf_coefficients,
     relative_arrival_delay,
 )
 
@@ -134,7 +134,7 @@ def test_scene_renderer_overlap_save_cbf_is_closed_on_polyphase_dft_filter_bank(
     fb = PolyphaseDFTFilterBank(fft_size=fb_fft_size)
     X = fb.analysis(x)
     steering = _make_steering_from_scene(receiver, source, environment, fft_size=fb_fft_size, fs=fs)
-    weights = design_cbf_weights(steering)
+    weights = design_cbf_coefficients(steering)
     expected = apply_beamformer_bands(X, weights)
     beamformer = CBFOverlapSaveBeamformer(
         steering,
@@ -152,7 +152,7 @@ def test_scene_renderer_overlap_save_cbf_is_closed_on_polyphase_dft_filter_bank(
     y = fb.synthesis(Y[0], length=x.shape[-1])
     reanalyzed = fb.analysis(y)
 
-    target_response = weights[:, :, target_bin].conj().T @ steering[:, :, target_bin]
+    target_response = weights[:, :, target_bin].T @ steering[:, :, target_bin]
     target_response_db = beam_response_rms_db(target_response[0, 0])
     time_error = np.real(y) - reference
 

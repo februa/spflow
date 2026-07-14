@@ -13,9 +13,9 @@ from spflow import (
     MVDRWeightDesigner,
     StepScheduler,
     apply_beamformer,
+    design_mvdr_coefficients,
+    design_mvdr_coefficients_with_channel_window,
     design_mvdr_overlap_save_filters,
-    design_mvdr_weights,
-    design_mvdr_weights_with_channel_window,
     estimate_covariance,
     forgetting_factor_from_integration_time,
     integrate_band_covariances,
@@ -23,7 +23,7 @@ from spflow import (
     recommended_integration_time_for_independent_samples,
 )
 from spflow.beamforming.covariance import estimate_covariance_snapshots
-from spflow.beamforming.mvdr_weight_designer import design_mvdr_weights_bands
+from spflow.beamforming.mvdr_weight_designer import design_mvdr_coefficients_bands
 
 
 def _collect_overlap_save_output(records: list[tuple[int, np.ndarray]], n_beam: int, n_band: int) -> np.ndarray:
@@ -184,7 +184,7 @@ def test_covariance_estimator_can_be_configured_from_integration_time():
     np.testing.assert_allclose(r2, (1.0 - alpha) * np.array([[0.5 + 0.0j]]) + alpha * np.array([[2.0 + 0.0j]]))
 
 
-def test_design_mvdr_weights_is_distortionless():
+def test_design_mvdr_coefficients_is_distortionless():
     """MVDR 重み設計について 無歪み条件を満たす を確認する。"""
     steering = np.array([[1.0 + 0.0j], [1.0j]])
     Rxx = np.array(
@@ -194,8 +194,8 @@ def test_design_mvdr_weights_is_distortionless():
         ]
     )
 
-    weights = design_mvdr_weights(Rxx, steering, diag_load=1e-3)
-    response = weights.conj().T @ steering
+    weights = design_mvdr_coefficients(Rxx, steering, diag_load=1e-3)
+    response = weights.T @ steering
 
     np.testing.assert_allclose(response, np.ones((1, 1)), atol=1e-6)
 
@@ -206,11 +206,11 @@ def test_design_mvdr_overlap_save_filters_embed_conjugation_in_filter_fft():
     filters = design_mvdr_overlap_save_filters(weights, frame_size=8)
 
     taps = np.fft.ifft(filters, axis=-1)
-    np.testing.assert_allclose(taps[..., 0], weights.conj(), atol=1e-6)
+    np.testing.assert_allclose(taps[..., 0], weights, atol=1e-6)
     np.testing.assert_allclose(taps[..., 1:], 0.0, atol=1e-6)
 
 
-def test_design_mvdr_weights_with_channel_window_uses_only_selected_channels():
+def test_design_mvdr_coefficients_with_channel_window_uses_only_selected_channels():
     """channel window 付き MVDR 重み設計について 選択されたチャネルだけを使う を確認する。"""
     steering = np.array([[1.0 + 0.0j], [1.0 + 0.0j], [1.0 + 0.0j]])
     Rxx = np.array(
@@ -222,14 +222,14 @@ def test_design_mvdr_weights_with_channel_window_uses_only_selected_channels():
     )
     window = np.array([0.0, 1.0, 1.0])
 
-    weights = design_mvdr_weights_with_channel_window(Rxx, steering, window, diag_load=0.0)
+    weights = design_mvdr_coefficients_with_channel_window(Rxx, steering, window, diag_load=0.0)
     shaded = steering * window[:, np.newaxis]
 
     np.testing.assert_allclose(weights[0, 0], 0.0, atol=1e-6)
-    np.testing.assert_allclose(weights.conj().T @ shaded, np.ones((1, 1)), atol=1e-6)
+    np.testing.assert_allclose(weights.T @ shaded, np.ones((1, 1)), atol=1e-6)
 
 
-def test_design_mvdr_weights_with_channel_window_handles_bandwise_input():
+def test_design_mvdr_coefficients_with_channel_window_handles_bandwise_input():
     """channel window 付き MVDR 重み設計が帯域別入力を処理できることを確認する。"""
     steering = np.ones((3, 1, 2), dtype=np.complex64)
     rxx = np.stack(
@@ -253,13 +253,13 @@ def test_design_mvdr_weights_with_channel_window_handles_bandwise_input():
         ]
     )
 
-    weights = design_mvdr_weights_with_channel_window(rxx, steering, window, diag_load=0.0)
+    weights = design_mvdr_coefficients_with_channel_window(rxx, steering, window, diag_load=0.0)
 
     np.testing.assert_allclose(weights[2, 0, 0], 0.0, atol=1e-6)
     np.testing.assert_allclose(weights[0, 0, 1], 0.0, atol=1e-6)
     for band_idx in range(2):
         shaded = steering[:, :, band_idx] * window[:, band_idx][:, np.newaxis]
-        np.testing.assert_allclose(weights[:, :, band_idx].conj().T @ shaded, np.ones((1, 1)), atol=1e-6)
+        np.testing.assert_allclose(weights[:, :, band_idx].T @ shaded, np.ones((1, 1)), atol=1e-6)
 
 
 def test_mvdr_weight_designer_handles_bandwise_input():
@@ -283,10 +283,10 @@ def test_mvdr_weight_designer_handles_bandwise_input():
 
     assert weights.shape == (2, 1, 2)
     for band_idx in range(weights.shape[-1]):
-        response = weights[:, :, band_idx].conj().T @ steering[:, :, band_idx]
+        response = weights[:, :, band_idx].T @ steering[:, :, band_idx]
         np.testing.assert_allclose(response, np.ones((1, 1)), atol=1e-6)
 
-def test_design_mvdr_weights_bands_matches_per_band_design():
+def test_design_mvdr_coefficients_bands_matches_per_band_design():
     """帯域別 MVDR 重み設計が帯域ごとの個別設計結果と一致することを確認する。"""
     steering = np.stack(
         [
@@ -305,9 +305,9 @@ def test_design_mvdr_weights_bands_matches_per_band_design():
         axis=0,
     )
 
-    out = design_mvdr_weights_bands(rxx, steering, diag_load=1e-3)
+    out = design_mvdr_coefficients_bands(rxx, steering, diag_load=1e-3)
     expected = np.stack(
-        [design_mvdr_weights(rxx[idx], steering[:, :, idx], diag_load=1e-3) for idx in range(rxx.shape[0])],
+        [design_mvdr_coefficients(rxx[idx], steering[:, :, idx], diag_load=1e-3) for idx in range(rxx.shape[0])],
         axis=-1,
     )
 
@@ -330,7 +330,7 @@ def test_apply_beamformer_matches_manual_projection():
     )
 
     out = apply_beamformer(X, weights)
-    expected = np.vstack([weights[:, beam].conj() @ X for beam in range(weights.shape[1])])
+    expected = np.vstack([weights[:, beam] @ X for beam in range(weights.shape[1])])
 
     np.testing.assert_allclose(out, expected)
 
@@ -392,16 +392,16 @@ def test_mvdr_weight_callback_publishes_only_completed_weights():
     np.testing.assert_allclose(out1, np.zeros_like(steering))
     assert out2.shape == steering.shape
     for band_idx in range(out2.shape[-1]):
-        response = out2[:, :, band_idx].conj().T @ steering[:, :, band_idx]
+        response = out2[:, :, band_idx].T @ steering[:, :, band_idx]
         np.testing.assert_allclose(response, np.ones((1, 1)), atol=1e-6)
 
 
-def test_design_mvdr_weights_handles_zero_trace_covariance_with_diag_load():
+def test_design_mvdr_coefficients_handles_zero_trace_covariance_with_diag_load():
     """MVDR 重み設計がゼロ trace 共分散でも diagonal loading で安定に動くことを確認する。"""
     steering = np.array([[1.0 + 0.0j], [0.0 + 1.0j]])
     Rxx = np.zeros((2, 2), dtype=np.complex64)
 
-    weights = design_mvdr_weights(Rxx, steering, diag_load=1e-3)
-    response = weights.conj().T @ steering
+    weights = design_mvdr_coefficients(Rxx, steering, diag_load=1e-3)
+    response = weights.T @ steering
 
     np.testing.assert_allclose(response, np.ones((1, 1)), atol=1e-6)

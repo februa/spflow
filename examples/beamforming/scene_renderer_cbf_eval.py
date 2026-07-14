@@ -30,7 +30,7 @@ from scene_renderer import (  # noqa: E402
 from spflow import (  # noqa: E402
     DFT_FilterBank,
     FrameBuffer,
-    design_cbf_weights,
+    design_cbf_coefficients,
     relative_arrival_delay,
     steering_from_relative_delay,
     tone_rms_level_db_to_peak_amplitude,
@@ -127,11 +127,11 @@ def main() -> None:
     weights = np.zeros(
         (steering.shape[0], steering.shape[1], steering.shape[2]), dtype=np.complex64
     )
-    weights[:, :, target_bin] = design_cbf_weights(steering[:, :, target_bin])
+    weights[:, :, target_bin] = design_cbf_coefficients(steering[:, :, target_bin])
 
     y, Y = apply_fixed(x, weights, fb, chunk_size, target_bin)
     rean = fb.analysis(y)
-    resp = weights[:, :, target_bin].conj().T @ steering[:, :, target_bin]
+    resp = weights[:, :, target_bin].T @ steering[:, :, target_bin]
     resp_db = 20 * np.log10(np.abs(resp[0, 0]))
 
     angles = np.linspace(-90.0, 90.0, 181)

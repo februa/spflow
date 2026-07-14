@@ -172,14 +172,14 @@ def _loaded_covariance(covariance: NDArray[Any], diagonal_loading: float) -> NDA
     return covariance_matrix + loading_power * np.eye(n_dof, dtype=np.complex128)
 
 
-def design_time_domain_lcmv_weights(
+def design_time_domain_lcmv_coefficients(
     covariance: NDArray[Any],
     constraint_matrix: NDArray[Any],
     desired_response: NDArray[Any],
     *,
     diagonal_loading: float = 1.0e-3,
 ) -> NDArray[np.complex128]:
-    """時間領域 LCMV 重みを設計する。
+    """時間領域LCMVの実適用係数を設計する。
 
     Args:
         covariance: channel×tap 共分散。shape は `[n_dof, n_dof]`。
@@ -191,8 +191,8 @@ def design_time_domain_lcmv_weights(
         diagonal_loading: 平均対角 power に対する対角ロード比。無次元。
 
     Returns:
-        LCMV 重み。shape は `[n_dof, n_output]`。
-        適用時は `y = w^H x_tap` として使う。
+        LCMV係数`h`。shapeは`[n_dof, n_output]`。
+        適用時は共役を追加せず`y=h^T x_tap`として使う。
 
     Raises:
         ValueError: shape が整合しない場合。
@@ -218,16 +218,18 @@ def design_time_domain_lcmv_weights(
     inverse_covariance_constraints = np.linalg.solve(loaded, constraints)
     constraint_gram = constraints.conj().T @ inverse_covariance_constraints
     lagrange_solution = np.linalg.solve(constraint_gram, response)
-    return np.asarray(inverse_covariance_constraints @ lagrange_solution, dtype=np.complex128)
+    theoretical_weights = inverse_covariance_constraints @ lagrange_solution
+    # 最適化式のwを公開せず、通常のFIR畳み込みへ直接使えるh=conj(w)を返す。
+    return np.asarray(np.conj(theoretical_weights), dtype=np.complex128)
 
 
-def design_time_domain_mvdr_weights(
+def design_time_domain_mvdr_coefficients(
     covariance: NDArray[Any],
     target_constraint_vector: NDArray[Any],
     *,
     diagonal_loading: float = 1.0e-3,
 ) -> NDArray[np.complex128]:
-    """単一 target 制約の時間領域 MVDR 重みを設計する。
+    """単一target制約の時間領域MVDR実適用係数を設計する。
 
     Args:
         covariance: channel×tap 共分散。shape は `[n_dof, n_dof]`。
@@ -235,15 +237,15 @@ def design_time_domain_mvdr_weights(
         diagonal_loading: 平均対角 power に対する対角ロード比。無次元。
 
     Returns:
-        MVDR 重み。shape は `[n_dof, 1]`。
-        `w^H target_constraint_vector = 1` を満たす。
+        MVDR係数`h`。shapeは`[n_dof, 1]`。
+        `h^T target_constraint_vector = 1`を満たす。
 
     Notes:
         MVDR は LCMV の 1 制約の場合であり、ここでは実装を LCMV に一本化する。
     """
     target_constraint = np.asarray(target_constraint_vector, dtype=np.complex128)
     require(target_constraint.ndim == 1, "target_constraint_vector must have shape (n_dof,).")
-    return design_time_domain_lcmv_weights(
+    return design_time_domain_lcmv_coefficients(
         covariance,
         target_constraint[:, np.newaxis],
         np.array([1.0 + 0.0j], dtype=np.complex128),
@@ -289,7 +291,7 @@ def build_gsc_blocking_matrix(constraint_matrix: NDArray[Any], *, rcond: float =
     return np.asarray(vh[rank:, :].conj().T, dtype=np.complex128)
 
 
-def design_time_domain_gsc_weights(
+def design_time_domain_gsc_coefficients(
     covariance: NDArray[Any],
     constraint_matrix: NDArray[Any],
     desired_response: NDArray[Any],
@@ -297,7 +299,7 @@ def design_time_domain_gsc_weights(
     diagonal_loading: float = 1.0e-3,
     rcond: float = 1.0e-10,
 ) -> NDArray[np.complex128]:
-    """GSC 分解で時間領域制約付き最小分散重みを設計する。
+    """GSC分解で時間領域制約付き最小分散の実適用係数を設計する。
 
     Args:
         covariance: channel×tap 共分散。shape は `[n_dof, n_dof]`。
@@ -307,8 +309,8 @@ def design_time_domain_gsc_weights(
         rcond: blocking matrix を作る SVD rank 判定閾値。無次元。
 
     Returns:
-        GSC 重み。shape は `[n_dof, n_output]`。
-        LCMV と同じ `C^H w = f` を満たす。
+        GSC係数`h`。shapeは`[n_dof, n_output]`。
+        理論重み`w=conj(h)`はLCMVと同じ`C^H w=f`を満たす。
 
     Notes:
         GSC は `w = w_q - B g` と分解する。`w_q` は制約を満たす quiescent weight、
@@ -331,33 +333,133 @@ def design_time_domain_gsc_weights(
     quiescent_weights = constraints @ np.linalg.pinv(constraint_gram) @ response
     blocking_matrix = build_gsc_blocking_matrix(constraints, rcond=float(rcond))
     if blocking_matrix.shape[1] == 0:
-        return np.asarray(quiescent_weights, dtype=np.complex128)
+        return np.asarray(np.conj(quiescent_weights), dtype=np.complex128)
 
     blocked_covariance = blocking_matrix.conj().T @ loaded @ blocking_matrix
     blocked_cross = blocking_matrix.conj().T @ loaded @ quiescent_weights
     adaptive_weights = np.linalg.solve(blocked_covariance, blocked_cross)
-    return np.asarray(quiescent_weights - blocking_matrix @ adaptive_weights, dtype=np.complex128)
+    theoretical_weights = quiescent_weights - blocking_matrix @ adaptive_weights
+    return np.asarray(np.conj(theoretical_weights), dtype=np.complex128)
 
 
-def evaluate_constraint_response(weights: NDArray[Any], constraint_matrix: NDArray[Any]) -> NDArray[np.complex128]:
-    """設計重みが制約へ与える応答 `C^H W` を計算する。
+def design_time_domain_lcmv_weights(
+    covariance: NDArray[Any],
+    constraint_matrix: NDArray[Any],
+    desired_response: NDArray[Any],
+    *,
+    diagonal_loading: float = 1.0e-3,
+) -> NDArray[np.complex128]:
+    """時間領域LCMV実適用係数を返す互換名。
 
     Args:
-        weights: 設計済み重み。shape は `[n_dof]` または `[n_dof, n_output]`。
+        covariance: shape`[n_dof, n_dof]`のchannel×tap共分散。
+        constraint_matrix: shape`[n_dof, n_constraint]`の制約行列。
+        desired_response: shape`[n_constraint]`または
+            `[n_constraint, n_output]`の無次元制約応答。
+        diagonal_loading: 平均対角powerに対する対角ロード比。無次元。
+
+    Returns:
+        shape`[n_dof, n_output]`の実適用係数。
+
+    Raises:
+        ValueError: shapeが整合しない、またはdiagonal_loadingが負の場合。
+        numpy.linalg.LinAlgError: loaded covarianceまたは制約Gram行列を解けない場合。
+    """
+    return design_time_domain_lcmv_coefficients(
+        covariance,
+        constraint_matrix,
+        desired_response,
+        diagonal_loading=float(diagonal_loading),
+    )
+
+
+def design_time_domain_mvdr_weights(
+    covariance: NDArray[Any],
+    target_constraint_vector: NDArray[Any],
+    *,
+    diagonal_loading: float = 1.0e-3,
+) -> NDArray[np.complex128]:
+    """時間領域MVDR実適用係数を返す互換名。
+
+    Args:
+        covariance: shape`[n_dof, n_dof]`のchannel×tap共分散。
+        target_constraint_vector: shape`[n_dof]`のtarget制約。
+        diagonal_loading: 平均対角powerに対する対角ロード比。無次元。
+
+    Returns:
+        shape`[n_dof, 1]`の実適用係数。
+
+    Raises:
+        ValueError: shapeが整合しない、またはdiagonal_loadingが負の場合。
+        numpy.linalg.LinAlgError: loaded covarianceを解けない場合。
+    """
+    return design_time_domain_mvdr_coefficients(
+        covariance,
+        target_constraint_vector,
+        diagonal_loading=float(diagonal_loading),
+    )
+
+
+def design_time_domain_gsc_weights(
+    covariance: NDArray[Any],
+    constraint_matrix: NDArray[Any],
+    desired_response: NDArray[Any],
+    *,
+    diagonal_loading: float = 1.0e-3,
+    rcond: float = 1.0e-10,
+) -> NDArray[np.complex128]:
+    """時間領域GSC実適用係数を返す互換名。
+
+    Args:
+        covariance: shape`[n_dof, n_dof]`のchannel×tap共分散。
+        constraint_matrix: shape`[n_dof, n_constraint]`の制約行列。
+        desired_response: shape`[n_constraint]`または
+            `[n_constraint, n_output]`の無次元制約応答。
+        diagonal_loading: 平均対角powerに対する対角ロード比。無次元。
+        rcond: blocking matrixのSVD rank判定比。無次元。
+
+    Returns:
+        shape`[n_dof, n_output]`の実適用係数。
+
+    Raises:
+        ValueError: shape、diagonal_loading、rcondが不正な場合。
+        numpy.linalg.LinAlgError: blocked covarianceを解けない場合。
+    """
+    return design_time_domain_gsc_coefficients(
+        covariance,
+        constraint_matrix,
+        desired_response,
+        diagonal_loading=float(diagonal_loading),
+        rcond=float(rcond),
+    )
+
+
+def evaluate_constraint_response(coefficients: NDArray[Any], constraint_matrix: NDArray[Any]) -> NDArray[np.complex128]:
+    """実適用係数が制約へ与える応答`C^T H`を計算する。
+
+    Args:
+        coefficients: 設計済み実適用係数。shapeは`[n_dof]`または
+            `[n_dof, n_output]`。
         constraint_matrix: 制約行列。shape は `[n_dof, n_constraint]`。
 
     Returns:
         制約応答。shape は `[n_constraint, n_output]`。
         target 保護なら 1、null 制約なら 0 に近いことを確認する。
     """
-    beam_weights = np.asarray(weights, dtype=np.complex128)
-    if beam_weights.ndim == 1:
-        beam_weights = beam_weights[:, np.newaxis]
+    beam_coefficients = np.asarray(coefficients, dtype=np.complex128)
+    if beam_coefficients.ndim == 1:
+        beam_coefficients = beam_coefficients[:, np.newaxis]
     constraints = np.asarray(constraint_matrix, dtype=np.complex128)
-    require(beam_weights.ndim == 2, "weights must have shape (n_dof,) or (n_dof, n_output).")
+    require(
+        beam_coefficients.ndim == 2,
+        "coefficients must have shape (n_dof,) or (n_dof, n_output).",
+    )
     require(constraints.ndim == 2, "constraint_matrix must have shape (n_dof, n_constraint).")
-    require(beam_weights.shape[0] == constraints.shape[0], "weights and constraint_matrix must agree on n_dof.")
-    return np.asarray(constraints.conj().T @ beam_weights, dtype=np.complex128)
+    require(
+        beam_coefficients.shape[0] == constraints.shape[0],
+        "coefficients and constraint_matrix must agree on n_dof.",
+    )
+    return np.asarray(constraints.T @ beam_coefficients, dtype=np.complex128)
 
 
 def diagnose_time_domain_adaptive_weights(

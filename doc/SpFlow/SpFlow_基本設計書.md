@@ -628,8 +628,8 @@ def beamforming_process(X, env):
         "A": env.steering,
     }
 
-    W = env.mvdr_scheduler.process(inputs)
-    Y = apply_beamformer(X, W)
+    H = env.mvdr_scheduler.process(inputs)
+    Y = apply_beamformer(X, H)
 
     return Y
 ```
@@ -728,27 +728,27 @@ on_finish(inputs, done)
 
 ---
 
-## 11. MVDR 重み計算の例
+## 11. MVDR係数計算の例
 
 ### 11.1 方針
 
-MVDR は、ビームフォーマ出力までを Scheduler 内で作らず、重み計算と重み適用を分ける。
+MVDRは、ビームフォーマ出力までをScheduler内で作らず、係数計算と係数適用を分ける。
 
 ```text
 StepScheduler:
-    周波数ビンごとに MVDR 重み W を計算する
+    周波数ビンごとにMVDR実適用係数Hを計算する
 
 apply_beamformer:
-    W を X に適用する
+    Hを共役せずXに適用する
 ```
 
 これにより、以下が容易になる。
 
 ```text
-- W を保存する
-- W を可視化する
-- W の指向性を確認する
-- 同じ W を別の X に適用する
+- Hを保存する
+- Hを可視化する
+- Hの指向性を確認する
+- 同じHを別のXに適用する
 - Bartlett / MVDR などで後段を共通化する
 ```
 
@@ -771,21 +771,22 @@ def mvdr_weight_one_bin(bin_idx, inputs):
     Z = np.linalg.solve(R, Af)
     denom = np.sum(Af.conj() * Z, axis=0)
 
-    Wf = Z / denom[np.newaxis, :]
+    theoretical_weights = Z / denom[np.newaxis, :]
+    Hf = np.conj(theoretical_weights)
 
-    return bin_idx, Wf
+    return bin_idx, Hf
 
 
 def collect_mvdr_weight(results, inputs):
     A = inputs["A"]
     n_ch, n_beam, n_bin = A.shape
 
-    W = np.zeros((n_ch, n_beam, n_bin), dtype=np.complex64)
+    H = np.zeros((n_ch, n_beam, n_bin), dtype=np.complex64)
 
-    for bin_idx, Wf in results:
-        W[:, :, bin_idx] = Wf
+    for bin_idx, Hf in results:
+        H[:, :, bin_idx] = Hf
 
-    return W
+    return H
 ```
 
 呼び出し例：
@@ -797,7 +798,7 @@ inputs = {
     "diag_load": 1e-3,
 }
 
-W = StepScheduler.map(
+H = StepScheduler.map(
     items=range(X.shape[1]),
     func=mvdr_weight_one_bin,
     inputs=inputs,
@@ -840,7 +841,8 @@ class MVDRWeightCallback(DoubleBufferCallback):
         Z = np.linalg.solve(R, Af)
         denom = np.sum(Af.conj() * Z, axis=0)
 
-        self.work[:, :, bin_idx] = Z / denom[np.newaxis, :]
+        theoretical_weights = Z / denom[np.newaxis, :]
+        self.work[:, :, bin_idx] = np.conj(theoretical_weights)
 ```
 
 利用例：
@@ -858,13 +860,14 @@ def beamforming_process(X, env):
         "A": env.steering,
     }
 
-    W = env.mvdr_scheduler.process(inputs)
-    Y = apply_beamformer(X, W)
+    H = env.mvdr_scheduler.process(inputs)
+    Y = apply_beamformer(X, H)
 
     return Y
 ```
 
-初回に `items_per_cycle=4` で未完了の場合、`W` はゼロ配列である。全ビンの更新が完了した周期から、完成した MVDR 重みが返る。
+初回に`items_per_cycle=4`で未完了の場合、`H`はゼロ配列である。全ビンの更新が
+完了した周期から、完成したMVDR実適用係数が返る。
 
 ---
 

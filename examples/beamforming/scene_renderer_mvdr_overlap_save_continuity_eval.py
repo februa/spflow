@@ -27,12 +27,13 @@ from scene_renderer import (
     StaticPose,
     ToneSpectrum,
 )
+
 from spflow import (
     MVDROverlapSaveBeamformer,
     PolyphaseDFTFilterBank,
     apply_beamformer_bands,
     beam_response_rms_db,
-    design_mvdr_weights,
+    design_mvdr_coefficients,
     forgetting_factor_from_integration_time,
     integrate_band_covariances,
     integration_blocks_from_integration_time,
@@ -178,7 +179,7 @@ def main() -> None:
         n_blocks=n_blocks,
     )
     mvdr_weights = np.stack(
-        [design_mvdr_weights(rxx[band], steering[:, :, band], diag_load=1e-3) for band in range(fb.n_bands)],
+        [design_mvdr_coefficients(rxx[band], steering[:, :, band], diag_load=1e-3) for band in range(fb.n_bands)],
         axis=-1,
     )
 
@@ -198,7 +199,7 @@ def main() -> None:
     y_os = np.real(fb.synthesis(Y_os, length=x_mix.shape[-1]))
 
     target_bin = int(round(freq / (fs / fft_size))) % fft_size
-    target_response = mvdr_weights[:, :, target_bin].conj().T @ steering[:, :, target_bin]
+    target_response = mvdr_weights[:, :, target_bin].T @ steering[:, :, target_bin]
 
     direct_jump_abs = np.abs(np.diff(y_direct))
     os_jump_abs = np.abs(np.diff(y_os))

@@ -13,10 +13,12 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-from spflow.beamforming.cbf import design_cbf_weights
+from spflow.beamforming.cbf import design_cbf_coefficients
 from spflow.beamforming.mvdr_filter import beam_response_rms_db
 from spflow.filterbank.daubechies_nonuniform_beamformer import DaubechiesNonuniformBeamformer
-from spflow.filterbank.daubechies_nonuniform_streaming import DaubechiesNonuniformBeamformerStreaming
+from spflow.filterbank.daubechies_nonuniform_streaming import (
+    DaubechiesNonuniformBeamformerStreaming,
+)
 
 
 def _chunk_signal(x: np.ndarray, chunk_size: int) -> list[np.ndarray]:
@@ -36,7 +38,7 @@ def _matched_peak_response_db(beamformer: DaubechiesNonuniformBeamformer, freq_h
     steering = np.asarray(config.steering, dtype=np.complex64)
     used = np.asarray(config.used_channels, dtype=np.int64)
     reduced = steering[used, :, 0] if steering.ndim == 3 else steering[used, :]
-    weights = design_cbf_weights(reduced)
+    weights = design_cbf_coefficients(reduced)
     response = weights[:, 0].conj() @ reduced[:, 0]
     return beam_response_rms_db(response)
 

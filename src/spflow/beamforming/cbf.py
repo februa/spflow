@@ -60,16 +60,17 @@ def apply_channel_window_to_steering(steering: np.ndarray, channel_window: np.nd
     return steering_array * window[:, np.newaxis, :]
 
 
-def design_cbf_weights(steering: np.ndarray) -> np.ndarray:
-    """固定整相 CBF の重みをステアリングから設計する。
+def design_cbf_coefficients(steering: np.ndarray) -> np.ndarray:
+    """固定整相CBFの実適用係数をステアリングから設計する。
 
     Args:
         steering: ステアリングベクトル。shape は `[n_ch, n_beam]` または
             `[n_ch, n_beam, n_band]`。
 
     Returns:
-        CBF 重み。入力と同じ shape で、各ビームは
-        `w = a / (a^H a)` により無歪条件 `w^H a = 1` を満たす。
+        CBF係数`h`。入力と同じshapeで、適用時は`y=h^T x`とする。
+        理論重み`w=a/(a^H a)`に対して`h=conj(w)`であり、
+        無歪条件`h^T a=w^H a=1`を満たす。
 
     Raises:
         ValueError: ステアリング shape が想定と異なる場合。
@@ -77,10 +78,10 @@ def design_cbf_weights(steering: np.ndarray) -> np.ndarray:
     """
     steering_array = np.asarray(steering, dtype=np.complex64)
     if steering_array.ndim == 3:
-        weights = np.zeros_like(steering_array)
+        coefficients = np.zeros_like(steering_array)
         for band_idx in range(steering_array.shape[-1]):
-            weights[:, :, band_idx] = design_cbf_weights(steering_array[:, :, band_idx])
-        return weights
+            coefficients[:, :, band_idx] = design_cbf_coefficients(steering_array[:, :, band_idx])
+        return coefficients
 
     steering_matrix = _as_steering_matrix(steering_array)
     # norm[beam] = a[beam]^H a[beam]。
@@ -89,16 +90,66 @@ def design_cbf_weights(steering: np.ndarray) -> np.ndarray:
     norm = np.sum(np.abs(steering_matrix) ** 2, axis=0, keepdims=True)
     if np.any(norm <= 0.0):
         raise ValueError("steering vectors must be non-zero.")
-    return steering_matrix / norm
+    # 適用側は共役なしのh^T xだけを計算するため、設計境界でh=conj(w)へ変換する。
+    return np.conj(steering_matrix / norm)
+
+
+def design_cbf_coefficients_with_channel_window(steering: np.ndarray, channel_window: np.ndarray) -> np.ndarray:
+    """チャネルshading適用後のCBF実適用係数を設計する。
+
+    Args:
+        steering: ステアリングベクトル。shapeは`[n_ch, n_beam]`または
+            `[n_ch, n_beam, n_band]`。
+        channel_window: チャネル窓。shapeは`[n_ch]`または`[n_ch, n_band]`。
+
+    Returns:
+        `y=h^T x`へ直接渡せるCBF係数。shapeはsteeringと同じ。
+
+    Raises:
+        ValueError: steeringまたはchannel_windowのshapeが整合しない場合。
+    """
+    return design_cbf_coefficients(apply_channel_window_to_steering(steering, channel_window))
+
+
+def design_cbf_weights(steering: np.ndarray) -> np.ndarray:
+    """`design_cbf_coefficients()`の互換名として実適用係数を返す。
+
+    Args:
+        steering: ステアリングベクトル。shapeは`[n_ch, n_beam]`または
+            `[n_ch, n_beam, n_band]`。値は無次元複素応答である。
+
+    Returns:
+        `y=h^T x`へ直接使うCBF実適用係数。shapeはsteeringと同じ。
+
+    Raises:
+        ValueError: steeringのshapeが不正、または零ベクトルを含む場合。
+
+    境界条件:
+        新規コードでは、戻り値が理論重みではなく実適用係数であることを
+        名前で示す`design_cbf_coefficients()`を使用する。
+    """
+    return design_cbf_coefficients(steering)
 
 
 def design_cbf_weights_with_channel_window(steering: np.ndarray, channel_window: np.ndarray) -> np.ndarray:
-    """チャネル shading 適用後の CBF 重みを設計する。"""
-    return design_cbf_weights(apply_channel_window_to_steering(steering, channel_window))
+    """channel window付きCBF実適用係数を返す互換名。
+
+    Args:
+        steering: shape`[n_ch, n_beam]`または`[n_ch, n_beam, n_band]`の
+            ステアリングベクトル。
+        channel_window: shape`[n_ch]`または`[n_ch, n_band]`の無次元窓。
+
+    Returns:
+        `y=h^T x`へ直接使う係数。shapeはsteeringと同じ。
+
+    Raises:
+        ValueError: steeringとchannel_windowのshapeが整合しない場合。
+    """
+    return design_cbf_coefficients_with_channel_window(steering, channel_window)
 
 
 def design_cbf_overlap_save_filters(steering: np.ndarray, frame_size: int) -> np.ndarray:
-    """CBF 重みを overlap-save 用フィルタ FFT へ変換する。
+    """CBF実適用係数をoverlap-save用フィルタFFTへ変換する。
 
     Args:
         steering: ステアリングベクトル。shape は `[n_ch, n_beam]` または
@@ -109,27 +160,40 @@ def design_cbf_overlap_save_filters(steering: np.ndarray, frame_size: int) -> np
         フィルタ FFT。shape は `[n_ch, n_beam, n_band, frame_size]` 相当。
 
     Notes:
-        時間領域フィルタ側へ複素共役を焼き込むことで、実行時は `w^H x` の
-        共役転置を毎回計算せず、単純な周波数ビンごとの積和で投影できる。
+        設計器が返した実適用係数をそのままFIR tapとする。実行時は
+        周波数ビンごとの転置内積だけを行い、追加の複素共役を取らない。
     """
-    weights = design_cbf_weights(steering)
-    taps = np.conjugate(weights)[..., np.newaxis]
+    coefficients = design_cbf_coefficients(steering)
+    taps = coefficients[..., np.newaxis]
     return make_filter_fft(taps, frame_size=frame_size, axis=-1)
 
 
 class CBFBeamformer:
-    """固定 CBF 重みでサブバンドスナップショットを投影する。
+    """固定CBF実適用係数でサブバンドスナップショットを投影する。
 
-    このクラスは既知ステアリングから固定重みを構成し、各フレームを
+    このクラスは既知ステアリングから固定係数を構成し、各フレームを
     ビーム出力へ写像する。共分散推定や適応更新は責務に含めない。
     """
 
     def __init__(self, steering: np.ndarray, channel_window: np.ndarray | None = None) -> None:
-        self.weights = (
-            design_cbf_weights(steering)
+        self.coefficients = (
+            design_cbf_coefficients(steering)
             if channel_window is None
-            else design_cbf_weights_with_channel_window(steering, channel_window)
+            else design_cbf_coefficients_with_channel_window(steering, channel_window)
         )
+
+    @property
+    def weights(self) -> np.ndarray:
+        """互換名として保持中の実適用係数を返す。
+
+        Returns:
+            shape`[n_ch, n_beam]`または`[n_ch, n_beam, n_band]`の係数。
+            戻り値は`coefficients`と同じ配列であり、`y=h^T x`へ直接使用する。
+
+        境界条件:
+            新規コードでは意味を明示する`coefficients`属性を使用する。
+        """
+        return self.coefficients
 
     def process(self, X: np.ndarray) -> np.ndarray:
         """サブバンド観測を固定 CBF でビーム出力へ変換する。
@@ -143,16 +207,16 @@ class CBFBeamformer:
             帯域込みでは `[n_beam, n_band]` または `[n_beam, n_band, n_frame]`。
         """
         snapshots = np.asarray(X)
-        if snapshots.ndim == 2 and self.weights.ndim == 3:
-            return apply_beamformer_bands(snapshots, self.weights)
-        return apply_beamformer(snapshots, self.weights)
+        if snapshots.ndim == 2 and self.coefficients.ndim == 3:
+            return apply_beamformer_bands(snapshots, self.coefficients)
+        return apply_beamformer(snapshots, self.coefficients)
 
 
 class CBFOverlapSaveBeamformer:
-    """帯域別 CBF 重みを overlap-save FIR として逐次適用する。
+    """帯域別CBF実適用係数をoverlap-save FIRとして逐次適用する。
 
     入力は各帯域の複素時間列であり、各帯域を独立に FFT ブロック処理して
-    ビーム出力へ変換する。フィルタ設計は固定で、適応重み更新は行わない。
+    ビーム出力へ変換する。フィルタ設計は固定で、適応係数更新は行わない。
     """
 
     def __init__(

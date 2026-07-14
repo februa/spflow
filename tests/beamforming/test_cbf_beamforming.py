@@ -12,9 +12,9 @@ from spflow import (
     apply_beamformer,
     apply_beamformer_bands,
     apply_channel_window_to_steering,
+    design_cbf_coefficients,
+    design_cbf_coefficients_with_channel_window,
     design_cbf_overlap_save_filters,
-    design_cbf_weights,
-    design_cbf_weights_with_channel_window,
     make_directions,
 )
 
@@ -246,29 +246,29 @@ def test_apply_channel_window_to_steering_supports_bandwise_table():
     np.testing.assert_allclose(shaded[:, 0, 1], np.array([0.0, 1.0, 1.0]))
 
 
-def test_design_cbf_weights_is_distortionless_for_target():
+def test_design_cbf_coefficients_is_distortionless_for_target():
     """CBF 重み設計が target に対して無歪みであることを確認する。"""
     steering = np.array([[1.0 + 0.0j], [1.0j]])
 
-    weights = design_cbf_weights(steering)
-    response = weights.conj().T @ steering
+    weights = design_cbf_coefficients(steering)
+    response = weights.T @ steering
 
     np.testing.assert_allclose(response, np.ones((1, 1)), atol=1e-6)
 
 
-def test_design_cbf_weights_with_channel_window_is_distortionless_on_shaded_steering():
+def test_design_cbf_coefficients_with_channel_window_is_distortionless_on_shaded_steering():
     """channel window 付き CBF 重み設計が shading 付き steering に対して無歪みであることを確認する。"""
     steering = np.array([[1.0 + 0.0j], [1.0 + 0.0j], [1.0 + 0.0j]])
     window = np.array([0.0, 1.0, 1.0])
 
     shaded = apply_channel_window_to_steering(steering, window)
-    weights = design_cbf_weights_with_channel_window(steering, window)
+    weights = design_cbf_coefficients_with_channel_window(steering, window)
 
     np.testing.assert_allclose(weights[0, 0], 0.0, atol=1e-6)
-    np.testing.assert_allclose(weights.conj().T @ shaded, np.ones((1, 1)), atol=1e-6)
+    np.testing.assert_allclose(weights.T @ shaded, np.ones((1, 1)), atol=1e-6)
 
 
-def test_design_cbf_weights_handles_bandwise_input():
+def test_design_cbf_coefficients_handles_bandwise_input():
     """CBF 重み設計が帯域別入力を処理できることを確認する。"""
     steering = np.stack(
         [
@@ -278,22 +278,22 @@ def test_design_cbf_weights_handles_bandwise_input():
         axis=-1,
     )
 
-    weights = design_cbf_weights(steering)
+    weights = design_cbf_coefficients(steering)
 
     assert weights.shape == steering.shape
     for band_idx in range(weights.shape[-1]):
-        response = weights[:, :, band_idx].conj().T @ steering[:, :, band_idx]
+        response = weights[:, :, band_idx].T @ steering[:, :, band_idx]
         np.testing.assert_allclose(response, np.ones((1, 1)), atol=1e-6)
 
 
 def test_design_cbf_overlap_save_filters_embed_conjugation_in_filter_fft():
-    """CBF overlap-save フィルタ設計が複素共役を filter FFT に埋め込むことを確認する。"""
+    """CBF overlap-saveフィルタが設計済み係数をそのままtapに使うことを確認する。"""
     steering = np.array([[[1.0 + 0.0j], [1.0j]]]).transpose(0, 2, 1)
     filters = design_cbf_overlap_save_filters(steering, frame_size=8)
-    weights = design_cbf_weights(steering)
+    weights = design_cbf_coefficients(steering)
 
     taps = np.fft.ifft(filters, axis=-1)
-    np.testing.assert_allclose(taps[..., 0], weights.conj(), atol=1e-6)
+    np.testing.assert_allclose(taps[..., 0], weights, atol=1e-6)
     np.testing.assert_allclose(taps[..., 1:], 0.0, atol=1e-6)
 
 
@@ -309,8 +309,10 @@ def test_cbf_beamformer_matches_manual_projection():
 
     beamformer = CBFBeamformer(steering)
     out = beamformer.process(X)
-    expected = apply_beamformer(X, design_cbf_weights(steering))
+    expected = apply_beamformer(X, design_cbf_coefficients(steering))
 
+    # 旧weights属性は実適用係数を指す互換名として残し、追加の共役規約を持たせない。
+    np.testing.assert_allclose(beamformer.weights, beamformer.coefficients)
     np.testing.assert_allclose(out, expected)
 
 
@@ -348,12 +350,12 @@ def test_apply_beamformer_bands_projects_all_bins():
         ],
         axis=-1,
     )
-    weights = design_cbf_weights(steering)
+    weights = design_cbf_coefficients(steering)
 
     out = apply_beamformer_bands(X, weights)
 
     expected = np.array([
-        [weights[:, 0, 0].conj() @ X[:, 0], weights[:, 0, 1].conj() @ X[:, 1]],
+        [weights[:, 0, 0] @ X[:, 0], weights[:, 0, 1] @ X[:, 1]],
     ])
     np.testing.assert_allclose(out, expected)
 
@@ -376,6 +378,6 @@ def test_cbf_overlap_save_beamformer_matches_pointwise_projection_for_length1_fi
     records.extend(beamformer.flush())
 
     out = _collect_overlap_save_output(records, n_beam=1, n_band=1)
-    expected = apply_beamformer(X[:, 0, :], design_cbf_weights(steering[:, :, 0]))
+    expected = apply_beamformer(X[:, 0, :], design_cbf_coefficients(steering[:, :, 0]))
 
     np.testing.assert_allclose(out[0, 0, : X.shape[-1]], expected[0], atol=1e-6)

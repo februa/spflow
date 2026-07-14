@@ -2,21 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Literal, TypeVar
 
 import numpy as np
 
 from .._validation import require, require_non_negative_float, require_positive_int
-from ..beamforming.cbf import design_cbf_weights
+from ..beamforming.cbf import design_cbf_coefficients
 from ..beamforming.covariance import CovarianceEstimator, forgetting_factor_from_integration_time
 from ..beamforming.mvdr_filter import apply_beamformer_filter_fft
-from ..beamforming.mvdr_weight_designer import design_mvdr_weights_bands
+from ..beamforming.mvdr_weight_designer import design_mvdr_coefficients_bands
 from ..frequency import OverlapSaveBuffer, ValidRegionExtractor, make_filter_fft
 from .formal_complex_pr_stage import FormalBandPacket
 from .nonuniform_tree import NonuniformBandPacket, NonuniformBandSpec
-
 
 BeamformerMode = Literal["cbf", "mvdr"]
 LeafOutputPathMode = Literal["leaf_independent_one_sided"]
@@ -227,15 +226,30 @@ def _ols_fir_pinv(fft_size: int, valid_size: int) -> np.ndarray:
 
 
 def design_one_sided_ols_filter_fft(
-    weights_positive: np.ndarray,
+    coefficients_positive: np.ndarray,
     *,
     fft_size: int,
     valid_size: int,
     axis: int = -1,
 ) -> np.ndarray:
-    """one-side 重みから overlap-save 契約を満たす filter FFT を作る。
+    """one-side実適用係数からoverlap-save契約を満たすfilter FFTを作る。
 
-    one-side 重みだけを保持しつつ output path を正式な overlap-save として扱うため、
+    Args:
+        coefficients_positive: one-sided周波数格子上の実適用係数。
+            frequency axisは`axis`で指定し、長さは`fft_size // 2 + 1`。
+        fft_size: full FFT長。単位はsample。
+        valid_size: overlap-saveで公開する有効sample数。
+        axis: coefficients_positiveの周波数axis。
+
+    Returns:
+        causal FIRへ射影したfull filter FFT。shapeは周波数axisだけが
+        `fft_size`へ変わり、dtypeはcomplex64。
+
+    Raises:
+        ValueError: fft_size、valid_size、axis、one-sided bin数が不正な場合。
+
+    境界条件:
+    one-side係数だけを保持しつつoutput pathを正式なoverlap-saveとして扱うため、
     まず暫定 full 応答を定め、その full 応答を
 
     - `M <= N - H + 1`
@@ -249,14 +263,15 @@ def design_one_sided_ols_filter_fft(
     require_positive_int("valid_size", valid_size)
     require(valid_size <= fft_size, "valid_size must not exceed fft_size.")
 
-    arr = np.asarray(weights_positive, dtype=np.complex64)
+    arr = np.asarray(coefficients_positive, dtype=np.complex64)
     work_axis = axis
     if work_axis < 0:
         work_axis += arr.ndim
     if work_axis < 0 or work_axis >= arr.ndim:
-        raise ValueError("axis is out of bounds for weights_positive.")
+        raise ValueError("axis is out of bounds for coefficients_positive.")
 
-    desired_full_response = np.conjugate(expand_one_sided_response(arr, fft_size, axis=work_axis))
+    # 設計器が返したhを周波数応答としてそのままFIRへ射影し、追加の共役は取らない。
+    desired_full_response = expand_one_sided_response(arr, fft_size, axis=work_axis)
     frequency_index = np.arange(fft_size, dtype=np.float32)
     delay_samples = _ols_filter_delay_samples(fft_size, valid_size)
     delay_phase = np.exp(-2j * np.pi * frequency_index * delay_samples / fft_size).astype(np.complex64)
@@ -315,7 +330,7 @@ class NonuniformLeafProcessor:
         self._n_short_positive_bins = one_sided_bin_count(config.statistics_fft_size)
         self._n_output_positive_bins = one_sided_bin_count(self._output_fft_size)
         self._steering_short_positive = self._prepare_steering_positive(config.steering)
-        self._current_weights_short_positive = design_cbf_weights(self._steering_short_positive)
+        self._current_weights_short_positive = design_cbf_coefficients(self._steering_short_positive)
         self._current_weights_output_positive = self._prepare_output_weights_positive(
             self._current_weights_short_positive
         )
@@ -581,7 +596,7 @@ class NonuniformLeafProcessor:
     def _refresh_mvdr_weights(self) -> None:
         """最新共分散から MVDR 重みと OLS filter FFT を再設計する。"""
 
-        self._current_weights_short_positive = design_mvdr_weights_bands(
+        self._current_weights_short_positive = design_mvdr_coefficients_bands(
             self._current_covariances_positive,
             self._steering_short_positive,
             diag_load=self.config.diag_load,

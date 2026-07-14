@@ -9,9 +9,9 @@ from spflow.beamforming import (
     build_gsc_blocking_matrix,
     build_time_domain_tone_constraint_vector,
     build_time_tapped_snapshot_matrix,
-    design_time_domain_gsc_weights,
-    design_time_domain_lcmv_weights,
-    design_time_domain_mvdr_weights,
+    design_time_domain_gsc_coefficients,
+    design_time_domain_lcmv_coefficients,
+    design_time_domain_mvdr_coefficients,
     diagnose_time_domain_adaptive_weights,
     estimate_time_domain_covariance,
     evaluate_constraint_response,
@@ -48,7 +48,7 @@ def test_time_domain_mvdr_preserves_target_constraint() -> None:
     # MVDR はこの R に対して target 制約下の出力 power を最小化する。
     covariance = 10.0 * interferer_constraint[:, np.newaxis] @ interferer_constraint.conj()[np.newaxis, :]
     covariance += 0.1 * np.eye(interferer_constraint.size, dtype=np.complex128)
-    weights = design_time_domain_mvdr_weights(covariance, target_constraint, diagonal_loading=1.0e-4)
+    weights = design_time_domain_mvdr_coefficients(covariance, target_constraint, diagonal_loading=1.0e-4)
 
     target_response = evaluate_constraint_response(weights, target_constraint[:, np.newaxis])
     interferer_response = evaluate_constraint_response(weights, interferer_constraint[:, np.newaxis])
@@ -78,7 +78,7 @@ def test_time_domain_lcmv_can_place_explicit_interferer_null() -> None:
     # 単位共分散では、LCMV は制約を満たす最小ノルム解になる。
     # ここでは null 制約の代数的な正しさだけを切り出して確認する。
     covariance = np.eye(constraints.shape[0], dtype=np.complex128)
-    weights = design_time_domain_lcmv_weights(covariance, constraints, desired_response, diagonal_loading=0.0)
+    weights = design_time_domain_lcmv_coefficients(covariance, constraints, desired_response, diagonal_loading=0.0)
     responses = evaluate_constraint_response(weights, constraints)
 
     np.testing.assert_allclose(responses[:, 0], desired_response, atol=1.0e-8)
@@ -113,8 +113,8 @@ def test_time_domain_gsc_matches_lcmv_solution_for_same_constraints() -> None:
     # 正定値共分散を作り、GSC の blocked covariance が解ける条件にする。
     covariance = random_matrix @ random_matrix.conj().T + 0.5 * np.eye(constraints.shape[0], dtype=np.complex128)
 
-    lcmv_weights = design_time_domain_lcmv_weights(covariance, constraints, desired_response, diagonal_loading=1.0e-3)
-    gsc_weights = design_time_domain_gsc_weights(covariance, constraints, desired_response, diagonal_loading=1.0e-3)
+    lcmv_weights = design_time_domain_lcmv_coefficients(covariance, constraints, desired_response, diagonal_loading=1.0e-3)
+    gsc_weights = design_time_domain_gsc_coefficients(covariance, constraints, desired_response, diagonal_loading=1.0e-3)
 
     np.testing.assert_allclose(gsc_weights, lcmv_weights, atol=1.0e-8)
     blocking_matrix = build_gsc_blocking_matrix(constraints)
@@ -135,7 +135,7 @@ def test_time_domain_fir_application_preserves_constrained_tone() -> None:
         tap_len=tap_len,
     )
     covariance = np.eye(constraint.size, dtype=np.complex128)
-    weights = design_time_domain_mvdr_weights(covariance, constraint, diagonal_loading=0.0)
+    weights = design_time_domain_mvdr_coefficients(covariance, constraint, diagonal_loading=0.0)
 
     time_index = np.arange(n_sample, dtype=np.float64)
     base_tone = np.exp(1j * 2.0 * np.pi * frequency_hz * time_index / fs_hz)
@@ -160,7 +160,7 @@ def test_time_domain_covariance_diagnostics_reports_loaded_condition_number() ->
     tapped = build_time_tapped_snapshot_matrix(channel_signals, tap_len=tap_len)
     covariance = estimate_time_domain_covariance(tapped)
     constraint = np.ones((tapped.shape[0], 1), dtype=np.complex128)
-    weights = design_time_domain_lcmv_weights(
+    weights = design_time_domain_lcmv_coefficients(
         covariance,
         constraint,
         np.array([1.0 + 0.0j], dtype=np.complex128),

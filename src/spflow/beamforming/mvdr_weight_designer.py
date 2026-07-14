@@ -32,8 +32,8 @@ def _validate_bandwise_inputs(covariance: np.ndarray, steering_array: np.ndarray
     return covariance.shape[0], covariance.shape[1], steering_array.shape[1]
 
 
-def design_mvdr_weights(Rxx: np.ndarray, steering: np.ndarray, diag_load: float = 1e-3) -> np.ndarray:
-    """単一帯域の MVDR 重みを設計する。
+def design_mvdr_coefficients(Rxx: np.ndarray, steering: np.ndarray, diag_load: float = 1e-3) -> np.ndarray:
+    """単一帯域のMVDR実適用係数を設計する。
 
     Args:
         Rxx: 空間共分散。shape は `[n_ch, n_ch]`。
@@ -41,11 +41,12 @@ def design_mvdr_weights(Rxx: np.ndarray, steering: np.ndarray, diag_load: float 
         diag_load: 対角ローディング係数。無次元。
 
     Returns:
-        MVDR 重み。shape は `[n_ch, n_beam]`。
+        MVDR係数`h`。shapeは`[n_ch, n_beam]`。
+        適用時は共役を追加せず`y=h^T x`として使う。
 
     Notes:
-        MVDR は `w = R^{-1} a / (a^H R^{-1} a)` により、
-        目標方向に対する無歪条件を満たしつつ出力電力を最小化する。
+        MVDRの理論重み`w=R^{-1}a/(a^H R^{-1}a)`から、実適用係数
+        `h=conj(w)`へ設計境界で変換する。これにより`h^T a=w^H a=1`となる。
     """
     covariance = np.asarray(Rxx, dtype=np.complex64)
     steering_matrix = _as_steering_matrix(steering)
@@ -70,11 +71,26 @@ def design_mvdr_weights(Rxx: np.ndarray, steering: np.ndarray, diag_load: float 
     response = np.linalg.solve(loaded, steering_matrix)
     # denom[beam] = a^H R^{-1} a。これで正規化すると w^H a = 1 になる。
     denom = np.sum(steering_matrix.conj() * response, axis=0)
-    return response / denom[np.newaxis, :]
+    theoretical_weights = response / denom[np.newaxis, :]
+    # 適用側はh^T xだけを計算するため、理論重みwの共役を実適用係数として返す。
+    return np.conj(theoretical_weights)
 
 
-def design_mvdr_weights_bands(Rxx: np.ndarray, steering: np.ndarray, diag_load: float = 1e-3) -> np.ndarray:
-    """帯域ごとの MVDR 重みを一括設計する。"""
+def design_mvdr_coefficients_bands(Rxx: np.ndarray, steering: np.ndarray, diag_load: float = 1e-3) -> np.ndarray:
+    """帯域ごとのMVDR実適用係数を一括設計する。
+
+    Args:
+        Rxx: 帯域別空間共分散。shapeは`[n_band, n_ch, n_ch]`。
+        steering: 帯域別ステアリング。shapeは`[n_ch, n_beam, n_band]`。
+        diag_load: 各帯域の平均対角powerに対する対角ロード比。無次元。
+
+    Returns:
+        `y=h^T x`へ直接使う係数。shapeは`[n_ch, n_beam, n_band]`。
+
+    Raises:
+        ValueError: shapeが整合しない、またはdiag_loadが負の場合。
+        numpy.linalg.LinAlgError: 対角ロード後の共分散を解けない場合。
+    """
     covariance = np.asarray(Rxx, dtype=np.complex64)
     steering_array = np.asarray(steering, dtype=np.complex64)
     if diag_load < 0.0:
@@ -93,20 +109,37 @@ def design_mvdr_weights_bands(Rxx: np.ndarray, steering: np.ndarray, diag_load: 
     steering_batch = np.moveaxis(steering_array, -1, 0)
     response = np.linalg.solve(loaded, steering_batch)
     denom = np.sum(steering_batch.conj() * response, axis=1)
-    weights = response / denom[:, np.newaxis, :]
-    return np.moveaxis(weights, 0, -1)
+    theoretical_weights = response / denom[:, np.newaxis, :]
+    return np.conj(np.moveaxis(theoretical_weights, 0, -1))
 
 
-def design_mvdr_weights_with_channel_window(
+def design_mvdr_coefficients_with_channel_window(
     Rxx: np.ndarray,
     steering: np.ndarray,
     channel_window: np.ndarray,
     diag_load: float = 1e-3,
 ) -> np.ndarray:
-    """チャネル選択テーブルを考慮した MVDR 重みを設計する。
+    """チャネル選択テーブルを考慮したMVDR実適用係数を設計する。
 
-    実運用では shading を連続重みではなくチャネル有効/無効の選択器として解釈し、
-    `channel_window != 0` のチャネルだけで縮退共分散を作って MVDR を解く。
+    Args:
+        Rxx: 単一帯域`[n_ch, n_ch]`または帯域別
+            `[n_band, n_ch, n_ch]`の空間共分散。
+        steering: 単一帯域`[n_ch, n_beam]`または帯域別
+            `[n_ch, n_beam, n_band]`のステアリング。
+        channel_window: shape`[n_ch]`または`[n_ch, n_band]`の無次元窓。
+            非零channelだけをMVDR設計へ使用する。
+        diag_load: 平均対角powerに対する対角ロード比。無次元。
+
+    Returns:
+        steeringと同じshapeの実適用係数。無効channelは0とする。
+
+    Raises:
+        ValueError: shapeが整合しない、全channelが無効、またはdiag_loadが負の場合。
+        numpy.linalg.LinAlgError: 有効channelの共分散を解けない場合。
+
+    境界条件:
+        shadingを連続係数ではなくchannel有効・無効の選択器として解釈し、
+        `channel_window != 0`の部分共分散だけでMVDRを解く。
     """
     covariance = np.asarray(Rxx, dtype=np.complex64)
     steering_array = np.asarray(steering, dtype=np.complex64)
@@ -125,7 +158,11 @@ def design_mvdr_weights_with_channel_window(
             raise ValueError('channel_window must select at least one channel.')
         # 非選択チャネルまで含めて MVDR を解くと、ゼロ開口なのに数値的に寄与してしまう。
         # そのため選択チャネルだけで縮退問題を解き、最後に元 shape へ戻す。
-        reduced = design_mvdr_weights(covariance[np.ix_(used, used)], steering_matrix[used], diag_load=diag_load)
+        reduced = design_mvdr_coefficients(
+            covariance[np.ix_(used, used)],
+            steering_matrix[used],
+            diag_load=diag_load,
+        )
         full = np.zeros_like(steering_matrix)
         full[used] = reduced
         return full
@@ -151,23 +188,89 @@ def design_mvdr_weights_with_channel_window(
 
     n_band, n_ch = covariance.shape[0], covariance.shape[1]
     n_beam = steering_array.shape[1]
-    weights = np.zeros((n_ch, n_beam, n_band), dtype=np.complex64)
+    coefficients = np.zeros((n_ch, n_beam, n_band), dtype=np.complex64)
     for band_idx in range(n_band):
         used = window[:, band_idx] != 0.0
         if not np.any(used):
             raise ValueError('Each band must select at least one channel.')
         # 帯域ごとに有効開口が異なるため、MVDR は各 band の部分行列で独立に解く。
-        reduced = design_mvdr_weights(
+        reduced = design_mvdr_coefficients(
             covariance[band_idx][np.ix_(used, used)],
             steering_array[used, :, band_idx],
             diag_load=diag_load,
         )
-        weights[used, :, band_idx] = reduced
-    return weights
+        coefficients[used, :, band_idx] = reduced
+    return coefficients
+
+
+def design_mvdr_weights(Rxx: np.ndarray, steering: np.ndarray, diag_load: float = 1e-3) -> np.ndarray:
+    """単一帯域MVDR実適用係数を返す互換名。
+
+    Args:
+        Rxx: 空間共分散。shapeは`[n_ch, n_ch]`。
+        steering: ステアリング。shapeは`[n_ch]`または`[n_ch, n_beam]`。
+        diag_load: 平均対角powerに対する対角ロード比。無次元。
+
+    Returns:
+        `y=h^T x`へ直接使う係数。shapeは`[n_ch, n_beam]`。
+
+    Raises:
+        ValueError: shapeが不正、またはdiag_loadが負の場合。
+        numpy.linalg.LinAlgError: 共分散を解けない場合。
+    """
+    return design_mvdr_coefficients(Rxx, steering, diag_load=diag_load)
+
+
+def design_mvdr_weights_bands(Rxx: np.ndarray, steering: np.ndarray, diag_load: float = 1e-3) -> np.ndarray:
+    """帯域別MVDR実適用係数を返す互換名。
+
+    Args:
+        Rxx: shape`[n_band, n_ch, n_ch]`の帯域別共分散。
+        steering: shape`[n_ch, n_beam, n_band]`のステアリング。
+        diag_load: 平均対角powerに対する対角ロード比。無次元。
+
+    Returns:
+        shape`[n_ch, n_beam, n_band]`の実適用係数。
+
+    Raises:
+        ValueError: shapeが整合しない、またはdiag_loadが負の場合。
+        numpy.linalg.LinAlgError: 共分散を解けない場合。
+    """
+    return design_mvdr_coefficients_bands(Rxx, steering, diag_load=diag_load)
+
+
+def design_mvdr_weights_with_channel_window(
+    Rxx: np.ndarray,
+    steering: np.ndarray,
+    channel_window: np.ndarray,
+    diag_load: float = 1e-3,
+) -> np.ndarray:
+    """channel window付きMVDR実適用係数を返す互換名。
+
+    Args:
+        Rxx: 単一帯域または帯域別共分散。
+        steering: 対応するステアリングベクトル。
+        channel_window: 有効channelを非零で示すshape`[n_ch]`または
+            `[n_ch, n_band]`の無次元窓。
+        diag_load: 平均対角powerに対する対角ロード比。無次元。
+
+    Returns:
+        steeringと同じshapeの実適用係数。
+
+    Raises:
+        ValueError: shapeが整合しない、全channelが無効、またはdiag_loadが負の場合。
+        numpy.linalg.LinAlgError: 有効channelの共分散を解けない場合。
+    """
+    return design_mvdr_coefficients_with_channel_window(
+        Rxx,
+        steering,
+        channel_window,
+        diag_load=diag_load,
+    )
 
 
 class MVDRWeightDesigner:
-    """単一帯域または多帯域の MVDR 重みを設計する薄いラッパー。
+    """単一帯域または多帯域のMVDR実適用係数を設計する互換ラッパー。
 
     このクラスは共分散 shape に応じて単一帯域版と多帯域版を切り替える。
     共分散推定やスケジューリングは責務に含めない。
@@ -179,20 +282,20 @@ class MVDRWeightDesigner:
         self.diag_load = diag_load
 
     def process(self, Rxx: np.ndarray, steering: np.ndarray) -> np.ndarray:
-        """共分散とステアリングから MVDR 重みを計算する。"""
+        """共分散とステアリングからMVDR実適用係数を計算する。"""
         covariance = np.asarray(Rxx, dtype=np.complex64)
         steering_array = np.asarray(steering, dtype=np.complex64)
 
         if covariance.ndim == 2:
-            return design_mvdr_weights(covariance, steering_array, diag_load=self.diag_load)
+            return design_mvdr_coefficients(covariance, steering_array, diag_load=self.diag_load)
 
-        return design_mvdr_weights_bands(covariance, steering_array, diag_load=self.diag_load)
+        return design_mvdr_coefficients_bands(covariance, steering_array, diag_load=self.diag_load)
 
 
 class MVDRWeightCallback(DoubleBufferCallback):
-    """StepScheduler 用の帯域別 MVDR 重み更新コールバック。
+    """StepScheduler用の帯域別MVDR実適用係数更新コールバック。
 
-    1 ステップで 1 帯域ずつ重みを更新し、全帯域完了後に publish する。
+    1ステップで1帯域ずつ係数を更新し、全帯域完了後にpublishする。
     重い行列演算を時間分散するための補助クラスである。
     """
 
@@ -210,7 +313,7 @@ class MVDRWeightCallback(DoubleBufferCallback):
         """出力バッファの初期値を作る。
 
         `steering` と同じ `[n_ch, n_beam, n_band]` shape を確保し、
-        未計算帯域はゼロ重みで初期化する。
+        未計算帯域はゼロ係数で初期化する。
         """
         steering = np.asarray(inputs["steering"], dtype=np.complex64)
         if steering.ndim != 3:
@@ -229,7 +332,7 @@ class MVDRWeightCallback(DoubleBufferCallback):
         return range(covariance.shape[0])
 
     def update_item(self, item: Any, inputs: Any) -> None:
-        """指定帯域の MVDR 重みだけを更新する。
+        """指定帯域のMVDR実適用係数だけを更新する。
 
         Args:
             item: 帯域インデックス。

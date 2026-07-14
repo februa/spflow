@@ -26,12 +26,13 @@ from scene_renderer import (
     StaticPose,
     ToneSpectrum,
 )
+
 from spflow import (
     PolyphaseDFTFilterBank,
     apply_beamformer_bands,
     beam_response_rms_db,
-    design_cbf_weights,
-    design_mvdr_weights,
+    design_cbf_coefficients,
+    design_mvdr_coefficients,
     forgetting_factor_from_integration_time,
     integrate_band_covariances,
     integration_blocks_from_integration_time,
@@ -193,7 +194,7 @@ def main() -> None:
     X_cov = fb.analysis(x_cov)
     steering_target, dir3d_target, axis_az, axis_el = make_target_beam_steering(receiver, target, environment, fft_size, fs)
     steering_interferer, _, _, _ = make_target_beam_steering(receiver, interferer, environment, fft_size, fs)
-    cbf_weights = design_cbf_weights(steering_target)
+    cbf_weights = design_cbf_coefficients(steering_target)
 
     forgetting_factor = forgetting_factor_from_integration_time(integration_time, rate)
     n_blocks = integration_blocks_from_integration_time(integration_time, rate)
@@ -205,7 +206,7 @@ def main() -> None:
     )
 
     mvdr_weights = np.stack(
-        [design_mvdr_weights(rxx[band], steering_target[:, :, band], diag_load=1e-3) for band in range(X_mix.shape[1])],
+        [design_mvdr_coefficients(rxx[band], steering_target[:, :, band], diag_load=1e-3) for band in range(X_mix.shape[1])],
         axis=-1,
     )
 
@@ -216,10 +217,10 @@ def main() -> None:
     reanalyzed_mvdr = fb.analysis(y_mvdr)
 
     target_bin = int(round(freq / (fs / fft_size))) % fft_size
-    mvdr_target_response = mvdr_weights[:, :, target_bin].conj().T @ steering_target[:, :, target_bin]
-    cbf_target_response = cbf_weights[:, :, target_bin].conj().T @ steering_target[:, :, target_bin]
-    mvdr_interferer_response = mvdr_weights[:, :, target_bin].conj().T @ steering_interferer[:, :, target_bin]
-    cbf_interferer_response = cbf_weights[:, :, target_bin].conj().T @ steering_interferer[:, :, target_bin]
+    mvdr_target_response = mvdr_weights[:, :, target_bin].T @ steering_target[:, :, target_bin]
+    cbf_target_response = cbf_weights[:, :, target_bin].T @ steering_target[:, :, target_bin]
+    mvdr_interferer_response = mvdr_weights[:, :, target_bin].T @ steering_interferer[:, :, target_bin]
+    cbf_interferer_response = cbf_weights[:, :, target_bin].T @ steering_interferer[:, :, target_bin]
 
     cbf_err = y_cbf - reference
     mvdr_err = y_mvdr - reference

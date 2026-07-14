@@ -27,8 +27,14 @@ from scene_renderer import (
     StaticPose,
     ToneSpectrum,
 )
-from spflow import CBFOverlapSaveBeamformer, PolyphaseDFTFilterBank, apply_beamformer_bands, beam_response_rms_db, design_cbf_weights
 
+from spflow import (
+    CBFOverlapSaveBeamformer,
+    PolyphaseDFTFilterBank,
+    apply_beamformer_bands,
+    beam_response_rms_db,
+    design_cbf_coefficients,
+)
 
 FREQUENCIES = [10.0, 100.0, 490.0, 500.0, 510.0, 990.0, 1000.0, 1010.0, 3990.0, 4000.0, 4010.0, 7500.0, 7900.0]
 
@@ -124,7 +130,7 @@ def evaluate_frequency(freq: float) -> dict[str, float]:
     fb = PolyphaseDFTFilterBank(fft_size=fb_fft_size)
     X = fb.analysis(x)
     steering = make_steering(receiver, source, environment, fft_size=fb_fft_size, fs=fs)
-    weights = design_cbf_weights(steering)
+    weights = design_cbf_coefficients(steering)
     expected = apply_beamformer_bands(X, weights)
     beamformer = CBFOverlapSaveBeamformer(
         steering,
@@ -143,7 +149,7 @@ def evaluate_frequency(freq: float) -> dict[str, float]:
     reanalyzed = fb.analysis(y)
 
     nearest_bin = int(round(freq / (fs / fb_fft_size))) % fb_fft_size
-    target_response = weights[:, :, nearest_bin].conj().T @ steering[:, :, nearest_bin]
+    target_response = weights[:, :, nearest_bin].T @ steering[:, :, nearest_bin]
     time_error = np.real(y) - reference
 
     return {

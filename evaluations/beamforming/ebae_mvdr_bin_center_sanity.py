@@ -12,8 +12,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from spflow.beamforming.ebae import EbaeConfig, design_ebae_weights_band
-from spflow.beamforming.mvdr_weight_designer import design_mvdr_weights
-
+from spflow.beamforming.mvdr_weight_designer import design_mvdr_coefficients
 
 FloatArray = NDArray[np.float64]
 ComplexArray = NDArray[np.complex128]
@@ -118,7 +117,7 @@ def _power_level_db(power: FloatArray) -> FloatArray:
 
 def _method_metrics(
     method: str,
-    weights: ComplexArray,
+    coefficients: ComplexArray,
     source_steering: ComplexArray,
     azimuth_deg: FloatArray,
 ) -> tuple[dict[str, Any], FloatArray, FloatArray, FloatArray]:
@@ -126,7 +125,7 @@ def _method_metrics(
 
     Args:
         method: 方式ID。
-        weights: beam重み。shapeは``[n_ch,n_beam]``。
+        coefficients: beam実適用係数。shapeは``[n_ch,n_beam]``。
         source_steering: source steering。shapeは``[n_ch]``。
         azimuth_deg: 待受beam方位。shapeは``[n_beam]``、単位はdeg。
 
@@ -134,11 +133,11 @@ def _method_metrics(
         ``(summary, target_bl, noise_bl, mixed_bl)``。各BL shapeは``[n_beam]``、
         levelはdB re input RMS。
     """
-    # response[beam]=w(theta_b)^H a(theta_source)。source RMS=1なので振幅が出力RMSに等しい。
-    response = np.asarray(weights.conj().T @ source_steering, dtype=np.complex128)
+    # response[beam]=h(theta_b)^T a(theta_source)。source RMS=1なので振幅が出力RMSに等しい。
+    response = np.asarray(coefficients.T @ source_steering, dtype=np.complex128)
     target_power = SOURCE_POWER_RE_INPUT_RMS2 * np.abs(response) ** 2
     # 空間白色雑音ではw^H(sigma^2 I)w=sigma^2 sum_ch|w_ch|^2となる。
-    noise_power = NOISE_POWER_RE_INPUT_RMS2_PER_CHANNEL * np.sum(np.abs(weights) ** 2, axis=0)
+    noise_power = NOISE_POWER_RE_INPUT_RMS2_PER_CHANNEL * np.sum(np.abs(coefficients) ** 2, axis=0)
     mixed_power = target_power + noise_power
     target_bl_db = _power_level_db(np.asarray(target_power, dtype=np.float64))
     noise_bl_db = _power_level_db(np.asarray(noise_power, dtype=np.float64))
@@ -160,7 +159,7 @@ def _method_metrics(
         "noise_target_beam_db_re_input_rms": float(noise_bl_db[target_index]),
         "mixed_target_beam_db_re_input_rms": float(mixed_bl_db[target_index]),
         "distortionless_error": float(abs(response[target_index] - 1.0)),
-        "weight_norm_target_beam": float(np.linalg.norm(weights[:, target_index])),
+        "weight_norm_target_beam": float(np.linalg.norm(coefficients[:, target_index])),
     }
     return summary, target_bl_db, noise_bl_db, mixed_bl_db
 
@@ -208,17 +207,18 @@ def calculate_ebae_mvdr_bin_center_sanity() -> EbaeMvdrSanityResult:
 
     # MVDRは同じ完成共分散を使い、追加loadingなしで解析共分散の基準解を作る。
     # 共分散にはsigma_n^2 Iが含まれ正定値なので、数値安定化loadingは不要である。
-    mvdr_weights = np.asarray(
-        design_mvdr_weights(covariance, steering, diag_load=0.0),
+    mvdr_coefficients = np.asarray(
+        design_mvdr_coefficients(covariance, steering, diag_load=0.0),
         dtype=np.complex128,
     )
-    # EBAE公開結果を本評価のcomplex128規約へ揃え、方式間の丸め差を比較へ混ぜない。
-    ebae_weights = np.asarray(ebae_result.weights, dtype=np.complex128)
+    # EBAEは理論重みwを返す既存APIなので、評価適用境界でh=conj(w)へ変換する。
+    # complex128へ揃え、方式間の丸め差を比較へ混ぜない。
+    ebae_coefficients = np.asarray(np.conj(ebae_result.weights), dtype=np.complex128)
     ebae_summary, ebae_target, ebae_noise, ebae_mixed = _method_metrics(
-        "ebae_dl1", ebae_weights, source_steering, azimuth_deg
+        "ebae_dl1", ebae_coefficients, source_steering, azimuth_deg
     )
     mvdr_summary, mvdr_target, mvdr_noise, mvdr_mixed = _method_metrics(
-        "mvdr", mvdr_weights, source_steering, azimuth_deg
+        "mvdr", mvdr_coefficients, source_steering, azimuth_deg
     )
 
     comparison_mask = (ebae_target > DISPLAY_FLOOR_DB_RE_INPUT_RMS) & (

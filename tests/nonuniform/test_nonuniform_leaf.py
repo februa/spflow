@@ -6,7 +6,7 @@
 import numpy as np
 import pytest
 
-from spflow.beamforming.mvdr_filter import beam_response_rms_db, apply_beamformer_filter_fft
+from spflow.beamforming.mvdr_filter import apply_beamformer_filter_fft, beam_response_rms_db
 from spflow.filterbank.daubechies_nonuniform_beamformer import (
     DaubechiesNonuniformBeamformer,
     make_reference_dense_sparse_array_design,
@@ -19,8 +19,8 @@ from spflow.filterbank.nonuniform_leaf import (
     one_sided_bin_count,
     resample_frequency_response,
 )
-from spflow.frequency.overlap_save import OverlapSaveBuffer, ValidRegionExtractor
 from spflow.filterbank.nonuniform_tree import NonuniformBandPacket, NonuniformTreeFilterBank
+from spflow.frequency.overlap_save import OverlapSaveBuffer, ValidRegionExtractor
 
 
 def _collect_packet_samples(packets: list[NonuniformBandPacket]) -> np.ndarray:
@@ -298,10 +298,10 @@ def test_nonuniform_leaf_processor_mvdr_reduces_interferer_response_and_target_e
 
     target_bin = int(round(target_relative_frequency_hz / fs_leaf * 256))
     weights = mvdr_processor.current_weights_short[:, 0, target_bin]
-    target_response = weights.conj() @ reduced_target_steering[:, 0]
+    target_response = weights @ reduced_target_steering[:, 0]
     cbf_weights = reduced_target_steering[:, 0] / reduced_target_steering.shape[0]
     cbf_interferer_response_db = beam_response_rms_db(cbf_weights.conj() @ reduced_interferer_steering[:, 0])
-    mvdr_interferer_response_db = beam_response_rms_db(weights.conj() @ reduced_interferer_steering[:, 0])
+    mvdr_interferer_response_db = beam_response_rms_db(weights @ reduced_interferer_steering[:, 0])
 
     np.testing.assert_allclose(target_response, 1.0 + 0.0j, atol=1e-6)
     assert mvdr_interferer_response_db <= cbf_interferer_response_db - 1.5

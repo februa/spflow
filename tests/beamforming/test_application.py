@@ -11,7 +11,9 @@ from spflow.beamforming.application import (
     apply_beamformer_filter_fft,
     apply_time_domain_fir_beamformer,
 )
+from spflow.beamforming.cbf import design_cbf_coefficients, design_cbf_weights
 from spflow.beamforming.mvdr_filter import apply_beamformer as legacy_apply_beamformer
+from spflow.beamforming.mvdr_weight_designer import design_mvdr_coefficients, design_mvdr_weights
 from spflow.beamforming_evaluation import SourceSectorMask
 from spflow.sidelobe_cancellation import BeamDomainSLC
 
@@ -25,8 +27,21 @@ def test_responsibility_packages_own_array_design_and_slc_implementations() -> N
     assert legacy_apply_beamformer is apply_beamformer
 
 
-def test_single_band_and_banded_application_use_same_conjugate_inner_product() -> None:
-    """単一帯域と帯域別適用が同じ`w^H x`規約になることを確認する。"""
+def test_legacy_weight_design_names_return_direct_application_coefficients() -> None:
+    """旧weight設計名が新しい実適用係数と同じ配列を返すことを確認する。"""
+
+    steering = np.array([[1.0 + 0.0j], [0.0 + 1.0j]], dtype=np.complex64)
+    covariance = np.eye(2, dtype=np.complex64)
+
+    np.testing.assert_allclose(design_cbf_weights(steering), design_cbf_coefficients(steering))
+    np.testing.assert_allclose(
+        design_mvdr_weights(covariance, steering, diag_load=0.0),
+        design_mvdr_coefficients(covariance, steering, diag_load=0.0),
+    )
+
+
+def test_single_band_and_banded_application_use_same_transpose_inner_product() -> None:
+    """単一帯域と帯域別適用が同じ`h^T x`規約になることを確認する。"""
 
     snapshots = np.array([[1.0 + 1.0j, 2.0], [3.0, 4.0 - 1.0j]], dtype=np.complex64)
     weights = np.array([[0.5 + 0.25j], [0.5 - 0.25j]], dtype=np.complex64)
@@ -42,8 +57,8 @@ def test_single_band_and_banded_application_use_same_conjugate_inner_product() -
     np.testing.assert_allclose(banded_output[:, 0, :], single_output, atol=1.0e-6)
 
 
-def test_time_and_frequency_application_keep_filter_conjugation_explicit() -> None:
-    """時間FIRとfilter FFT適用がfilter側に共役を持つ同じ規約で動作することを確認する。"""
+def test_time_and_frequency_application_use_coefficients_without_conjugation() -> None:
+    """時間FIRとfilter FFTが設計済み係数を共役せず適用することを確認する。"""
 
     channel_signals = np.array([[1.0, 2.0, 3.0], [2.0, 4.0, 6.0]], dtype=np.float64)
     weights = np.array([0.25 + 0.5j, 0.75 - 0.25j], dtype=np.complex128)
@@ -53,13 +68,13 @@ def test_time_and_frequency_application_keep_filter_conjugation_explicit() -> No
         weights,
         tap_len=1,
     )
-    expected_time_output = weights.conj()[np.newaxis, :] @ channel_signals
+    expected_time_output = weights[np.newaxis, :] @ channel_signals
     np.testing.assert_allclose(time_output, expected_time_output, atol=1.0e-12)
 
     input_spectrum = np.fft.fft(channel_signals, axis=1).astype(np.complex64)
-    # filter_spectrumへconj(w)を焼き込むため、適用関数内では追加の共役を取らない。
+    # 設計済み係数を時間・周波数領域の両方でそのまま掛け、適用側では共役しない。
     filter_spectrum = np.repeat(
-        weights.conj().astype(np.complex64)[:, np.newaxis, np.newaxis],
+        weights.astype(np.complex64)[:, np.newaxis, np.newaxis],
         input_spectrum.shape[1],
         axis=2,
     )

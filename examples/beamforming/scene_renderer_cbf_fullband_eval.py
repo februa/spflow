@@ -26,7 +26,8 @@ from scene_renderer import (
     StaticPose,
     ToneSpectrum,
 )
-from spflow import FrameBuffer, FullDFTFilterBank, design_cbf_weights
+
+from spflow import FrameBuffer, FullDFTFilterBank, design_cbf_coefficients
 from spflow.beamforming import apply_beamformer
 
 
@@ -116,13 +117,13 @@ def main() -> None:
     fb = FullDFTFilterBank(fft_size=fft_size, hop_size=hop_size)
     steering = make_steering(receiver, source, environment, fft_size, fs)
     weights = np.zeros((steering.shape[0], steering.shape[1], steering.shape[2]), dtype=np.complex64)
-    weights[:, :, pos_band] = design_cbf_weights(steering[:, :, pos_band])
-    weights[:, :, neg_band] = design_cbf_weights(steering[:, :, neg_band])
+    weights[:, :, pos_band] = design_cbf_coefficients(steering[:, :, pos_band])
+    weights[:, :, neg_band] = design_cbf_coefficients(steering[:, :, neg_band])
 
     y, Y = apply_fixed(x, weights, fb, chunk_size, pos_band, neg_band)
     rean = fb.analysis(y)
-    resp_pos = weights[:, :, pos_band].conj().T @ steering[:, :, pos_band]
-    resp_neg = weights[:, :, neg_band].conj().T @ steering[:, :, neg_band]
+    resp_pos = weights[:, :, pos_band].T @ steering[:, :, pos_band]
+    resp_neg = weights[:, :, neg_band].T @ steering[:, :, neg_band]
 
     err = y - reference
     print(f'positive_target_response_db={20 * np.log10(np.abs(resp_pos[0, 0])):.12f}')

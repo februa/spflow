@@ -33,12 +33,12 @@ beamforming周辺は、処理順序ではなく再利用部品の責務で次の
 
 | package | 責務 | 責務に含めないもの |
 | --- | --- | --- |
-| `spflow.beamforming` | steering/重み/遅延filterの設計と、設計済み重みの信号への適用 | array候補探索、BL描画、SLC |
+| `spflow.beamforming` | steering/実適用係数/遅延filterの設計と、設計済み係数の信号への適用 | array候補探索、BL描画、SLC |
 | `spflow.array_design` | array幾何、active channel、shadingの事前設計と設計時評価 | 実時間信号処理、SLC |
 | `spflow.beamforming_evaluation` | BL/FRAZ/BTR、level、metric、可視化支援 | 重み適用、運用状態保持 |
 | `spflow.sidelobe_cancellation` | beamforming後のbeam出力に対するSLC | sensor信号からのbeamforming |
 
-位相遅延filterはbeamforming出力を実現するための重み/フィルタ設計なので
+位相遅延filterはbeamforming出力を実現するための係数/フィルタ設計なので
 `spflow.beamforming`へ残す。array設計は性能を決める重要要素だが、信号処理実行前の
 事前設計であるため`spflow.array_design`へ分ける。重要度は配置理由にしない。
 
@@ -68,24 +68,39 @@ Matplotlib、report pack、個別scenarioをimportしてはいけない。
 旧scenario workflowと`beamforming.__init__`は互換期間だけ例外とし、処理本体を持たない
 facadeとして段階的に縮小する。
 
-## 5. 信号への重み適用
+## 5. 信号へのビームフォーマ係数適用
 
-CBF、MVDR、LCMV、GSCは重み設計方法が異なるが、信号適用の中心式は共通である。
+CBF、MVDR、LCMV、GSCは理論上の重み設計方法が異なるが、信号へ実際に掛ける
+係数`h`を設計側で確定すれば、適用式は共通化できる。
 
 ```text
-y[out, n] = sum_dof conj(w[dof, out]) * x[dof, n]
+y[out, n] = sum_dof h[dof, out] * x[dof, n]
 ```
+
+理論式が`y=w^H x`で記述される方式では、設計器が`h=conj(w)`へ変換して返す。
+共役規約は方式を知る設計側の責務であり、適用側へbooleanや列挙値で選択させない。
+時間領域FIRは`h[ch,tap]`を通常の畳み込み係数として使い、周波数領域でも
+`H[ch,beam,freq] X[ch,freq]`を積和する。どちらも適用時に追加の共役を取らない。
 
 `spflow.beamforming.application`は方式名を持たず、次を提供する。
 
-- `apply_beamformer`: 単一帯域snapshotの`w^H x`
-- `apply_beamformer_bands`: band軸を保持した`w^H x`
-- `apply_beamformer_filter_fft`: filter側へ`conj(w)`を含めた周波数領域積和
+- `apply_beamformer`: 単一帯域snapshotの`h^T x`
+- `apply_beamformer_bands`: band軸を保持した`h^T x`
+- `apply_beamformer_filter_fft`: 設計済みfilter FFTの周波数領域積和
 - `build_time_tapped_snapshot_matrix`: channel×tap自由度への展開
-- `apply_time_domain_fir_beamformer`: 時間領域FIR重みの`w^H x`
+- `apply_time_domain_fir_beamformer`: 時間領域FIR係数の通常の畳み込み
 
 時間領域と周波数領域を巨大なProcessorへ統合しない。shape、axis、境界処理が異なるため
-関数は分けるが、共役方向と「設計済み重みを適用するだけ」という契約を共有する。
+関数は分けるが、「設計済み係数を共役せず適用するだけ」という契約を共有する。
+
+公開の標準設計関数は`design_cbf_coefficients`、`design_mvdr_coefficients`、
+`design_time_domain_lcmv_coefficients`のように、戻り値が実適用係数であることを名前で示す。
+旧`design_*_weights`はimport互換のため残すが、同じ実適用係数を返す。
+
+係数はNumPy配列のまま返す。現時点ではshapeと領域を関数名・docstringで十分に
+区別でき、専用の`BeamformerCoefficients`型を導入するとNumPy処理、保存、既存コードへの
+局所導入に余計な依存が増えるためである。FFT長、tap原点、sample rateなど、配列だけでは
+防げない不整合が複数経路で実際に確認された場合に限り、固定shape結果型を再検討する。
 
 ## 6. private依存の分類
 

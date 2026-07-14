@@ -36,43 +36,58 @@ def beam_response_rms_db(response: np.ndarray | complex) -> float:
     )
 
 
-def design_mvdr_overlap_save_filters(weights: np.ndarray, frame_size: int) -> np.ndarray:
-    """MVDR 重みを overlap-save 用フィルタ FFT へ変換する。"""
-    beam_weights = np.asarray(weights, dtype=np.complex64)
-    if beam_weights.ndim == 2:
-        beam_weights = beam_weights[:, :, np.newaxis]
-    if beam_weights.ndim != 3:
-        raise ValueError("weights must have shape (n_ch, n_beam) or (n_ch, n_beam, n_band).")
+def design_mvdr_overlap_save_filters(coefficients: np.ndarray, frame_size: int) -> np.ndarray:
+    """MVDR実適用係数をoverlap-save用フィルタFFTへ変換する。
 
-    taps = np.conjugate(beam_weights)[..., np.newaxis]
+    Args:
+        coefficients: `y=h^T x`へ直接使うMVDR係数。shapeは
+            `[n_ch, n_beam]`または`[n_ch, n_beam, n_band]`。
+        frame_size: FFT長。単位はsample。
+
+    Returns:
+        filter FFT。shapeは`[n_ch, n_beam, n_band, frame_size]`。
+
+    Raises:
+        ValueError: coefficientsのshapeが想定と異なる場合。
+    """
+    beam_coefficients = np.asarray(coefficients, dtype=np.complex64)
+    if beam_coefficients.ndim == 2:
+        beam_coefficients = beam_coefficients[:, :, np.newaxis]
+    if beam_coefficients.ndim != 3:
+        raise ValueError("coefficients must have shape (n_ch, n_beam) or (n_ch, n_beam, n_band).")
+
+    # 設計側でh=conj(w)へ変換済みなので、FIR tapへ追加の共役を掛けない。
+    taps = beam_coefficients[..., np.newaxis]
     return make_filter_fft(taps, frame_size=frame_size, axis=-1)
 
 
 class MVDRFilter:
-    """保持済みまたは外部指定の MVDR 重みを観測へ適用する。
+    """保持済みまたは外部指定のMVDR実適用係数を観測へ適用する。
 
-    このクラスは重み適用だけを担当し、共分散推定や重み再設計は責務に含めない。
+    このクラスは`y=h^T x`の係数適用だけを担当し、共分散推定や係数再設計は
+    責務に含めない。既存APIとの互換性のため引数名`weights`は維持するが、
+    値は設計側で共役規約を反映済みの実適用係数である。
     """
 
     def __init__(self, weights: np.ndarray | None = None) -> None:
         self.weights = None if weights is None else np.asarray(weights, dtype=np.complex64)
 
     def update_weights(self, weights: np.ndarray) -> None:
-        """保持する MVDR 重みを更新する。
+        """保持するMVDR実適用係数を更新する。
 
         Args:
-            weights: 新しい重み。shape は `[n_ch, n_beam]` または
+            weights: 新しい実適用係数。shape は `[n_ch, n_beam]` または
                 `[n_ch, n_beam, n_band]`。
         """
         self.weights = np.asarray(weights, dtype=np.complex64)
 
     def process(self, X: np.ndarray, weights: np.ndarray | None = None) -> np.ndarray:
-        """観測を MVDR 重みでビーム出力へ変換する。
+        """観測をMVDR実適用係数でビーム出力へ変換する。
 
         Args:
             X: 観測スナップショット。単一帯域では `[n_ch, n_frame]`、
                 帯域込みでは `[n_ch, n_band]` または `[n_ch, n_band, n_frame]`。
-            weights: 今回だけ使う重み。省略時は内部保持重みを用いる。
+            weights: 今回だけ使う実適用係数。省略時は内部保持係数を用いる。
 
         Returns:
             ビーム出力。
@@ -86,10 +101,10 @@ class MVDRFilter:
 
 
 class MVDROverlapSaveBeamformer:
-    """帯域別 MVDR 重みを overlap-save FIR として逐次適用する。
+    """帯域別MVDR実適用係数をoverlap-save FIRとして逐次適用する。
 
-    各帯域の複素時間列を独立に FFT ブロック処理し、MVDR 重みを周波数領域 FIR
-    として畳み込む。重み更新と実行は分離し、処理中の適応推定はここでは行わない。
+    各帯域の複素時間列を独立にFFTブロック処理し、MVDR係数を周波数領域FIR
+    として畳み込む。係数更新と実行は分離し、処理中の適応推定はここでは行わない。
     """
 
     def __init__(
@@ -127,7 +142,7 @@ class MVDROverlapSaveBeamformer:
         ]
 
     def update_weights(self, weights: np.ndarray) -> None:
-        """帯域別 MVDR 重みと対応するフィルタ FFT を更新する。"""
+        """帯域別MVDR実適用係数と対応するフィルタFFTを更新する。"""
         beam_weights = np.asarray(weights, dtype=np.complex64)
         if beam_weights.ndim == 2:
             beam_weights = beam_weights[:, :, np.newaxis]

@@ -30,20 +30,20 @@ from scene_renderer import (
     StaticPose,
     ToneSpectrum,
 )
+
 from spflow import (
     BandwiseArrayDesign,
     PolyphaseDFTFilterBank,
     apply_beamformer_bands,
     beam_response_rms_db,
-    design_cbf_weights_with_channel_window,
-    design_mvdr_weights_with_channel_window,
+    design_cbf_coefficients_with_channel_window,
+    design_mvdr_coefficients_with_channel_window,
     forgetting_factor_from_integration_time,
     integrate_band_covariances,
     integration_blocks_from_integration_time,
     make_directions,
     recommended_integration_time_for_independent_samples,
 )
-
 
 DEFAULT_FREQS = [100.0, 500.0, 1000.0, 2000.0, 4000.0, 6000.0, 8000.0, 10000.0]
 
@@ -339,7 +339,7 @@ def evaluate_frequency(
     fb = PolyphaseDFTFilterBank(fft_size=fft_size)
     X_mix = fb.analysis(x_mix)
     steering_target = make_beam_steering(receiver, target, environment, fft_size, fs)
-    cbf_weights = design_cbf_weights_with_channel_window(steering_target, array_design.shading_table)
+    cbf_weights = design_cbf_coefficients_with_channel_window(steering_target, array_design.shading_table)
 
     rate = fs / fft_size
     effective_integration_time = (
@@ -354,7 +354,7 @@ def evaluate_frequency(
         fs=fs,
     )
 
-    mvdr_weights = design_mvdr_weights_with_channel_window(
+    mvdr_weights = design_mvdr_coefficients_with_channel_window(
         rxx,
         steering_target,
         array_design.shading_table,
@@ -368,15 +368,15 @@ def evaluate_frequency(
     reanalyzed_mvdr = fb.analysis(y_mvdr)
 
     target_bin = int(round(freq / (fs / fft_size))) % fft_size
-    cbf_target_response = cbf_weights[:, :, target_bin].conj().T @ steering_target[:, :, target_bin]
-    mvdr_target_response = mvdr_weights[:, :, target_bin].conj().T @ steering_target[:, :, target_bin]
+    cbf_target_response = cbf_weights[:, :, target_bin].T @ steering_target[:, :, target_bin]
+    mvdr_target_response = mvdr_weights[:, :, target_bin].T @ steering_target[:, :, target_bin]
 
     cbf_interferer_db = float('nan')
     mvdr_interferer_db = float('nan')
     if interferer is not None:
         steering_interferer = make_beam_steering(receiver, interferer, environment, fft_size, fs)
-        cbf_interferer_response = cbf_weights[:, :, target_bin].conj().T @ steering_interferer[:, :, target_bin]
-        mvdr_interferer_response = mvdr_weights[:, :, target_bin].conj().T @ steering_interferer[:, :, target_bin]
+        cbf_interferer_response = cbf_weights[:, :, target_bin].T @ steering_interferer[:, :, target_bin]
+        mvdr_interferer_response = mvdr_weights[:, :, target_bin].T @ steering_interferer[:, :, target_bin]
         cbf_interferer_db = beam_response_rms_db(cbf_interferer_response[0, 0])
         mvdr_interferer_db = beam_response_rms_db(mvdr_interferer_response[0, 0])
 

@@ -26,7 +26,8 @@ from scene_renderer import (
     StaticPose,
     ToneSpectrum,
 )
-from spflow import FullDFTFilterBank, FrameBuffer, apply_beamformer_bands, design_cbf_weights
+
+from spflow import FrameBuffer, FullDFTFilterBank, apply_beamformer_bands, design_cbf_coefficients
 
 
 def signal_peak_amplitude(level_db20: float) -> float:
@@ -111,11 +112,11 @@ def main() -> None:
 
     fb = FullDFTFilterBank(fft_size=fft_size, hop_size=hop_size)
     steering = make_steering(receiver, source, environment, fft_size, fs)
-    weights = design_cbf_weights(steering)
+    weights = design_cbf_coefficients(steering)
 
     y, Y = apply_fixed(x, weights, fb, chunk_size)
     rean = fb.analysis(y)
-    resp = weights[:, :, target_bin].conj().T @ steering[:, :, target_bin]
+    resp = weights[:, :, target_bin].T @ steering[:, :, target_bin]
 
     err = np.real(y) - reference
     print(f'target_response_db={20 * np.log10(np.abs(resp[0, 0])):.12f}')

@@ -10,13 +10,14 @@ from numpy.typing import NDArray
 from .._validation import require, require_positive_int
 
 
-def apply_beamformer(snapshots: NDArray[Any], weights: NDArray[Any]) -> NDArray[np.complex64]:
-    """単一帯域の複素重みを観測snapshotへ適用する。
+def apply_beamformer(snapshots: NDArray[Any], coefficients: NDArray[Any]) -> NDArray[np.complex64]:
+    """単一帯域の設計済みビームフォーマ係数を観測snapshotへ適用する。
 
     Args:
         snapshots: 観測snapshot。shapeは`[n_ch, n_frame]`。axis=0はsensor channel、
             axis=1は独立な時間frameまたはsnapshotである。
-        weights: 設計済み重み。shapeは`[n_ch]`または`[n_ch, n_beam]`。
+        coefficients: 設計済みの実適用係数。shapeは`[n_ch]`または
+            `[n_ch, n_beam]`。設計上必要な複素共役は係数へ反映済みとする。
 
     Returns:
         ビーム出力。shapeは`[n_beam, n_frame]`、dtypeは`complex64`。
@@ -25,35 +26,44 @@ def apply_beamformer(snapshots: NDArray[Any], weights: NDArray[Any]) -> NDArray[
         ValueError: 入力が2次元でない、またはchannel数が一致しない場合。
 
     境界条件:
-        この関数は`y=w^H x`の適用だけを担い、重み設計、FFT、状態保持は行わない。
+        この関数は`y=h^T x`の適用だけを担い、係数設計、FFT、状態保持は行わない。
+        理論重み`w`を`w^H x`として使う設計では、設計側が`h=conj(w)`を返す。
     """
 
     values = np.asarray(snapshots, dtype=np.complex64)
-    beam_weights = np.asarray(weights, dtype=np.complex64)
+    beam_coefficients = np.asarray(coefficients, dtype=np.complex64)
     require(values.ndim == 2, "snapshots must have shape (n_ch, n_frame).")
-    if beam_weights.ndim == 1:
-        beam_weights = beam_weights[:, np.newaxis]
-    require(beam_weights.ndim == 2, "weights must have shape (n_ch,) or (n_ch, n_beam).")
-    require(values.shape[0] == beam_weights.shape[0], "snapshots and weights must agree on n_ch.")
+    if beam_coefficients.ndim == 1:
+        beam_coefficients = beam_coefficients[:, np.newaxis]
+    require(
+        beam_coefficients.ndim == 2,
+        "coefficients must have shape (n_ch,) or (n_ch, n_beam).",
+    )
+    require(
+        values.shape[0] == beam_coefficients.shape[0],
+        "snapshots and coefficients must agree on n_ch.",
+    )
 
-    # values shape: [n_ch, n_frame]、beam_weights shape: [n_ch, n_beam]。
-    # channel軸だけをw^H xとして畳み込み、beam軸とframe軸を保持する。
+    # values shape: [n_ch, n_frame]、beam_coefficients shape: [n_ch, n_beam]。
+    # channel軸だけをh^T xとして畳み込み、beam軸とframe軸を保持する。
+    # 共役をここで取らないことで、係数の表現規約を設計側へ一元化する。
     return np.asarray(
-        np.einsum("cf,cb->bf", values, beam_weights.conj(), optimize=True),
+        np.einsum("cf,cb->bf", values, beam_coefficients, optimize=True),
         dtype=np.complex64,
     )
 
 
 def apply_beamformer_bands(
     snapshots: NDArray[Any],
-    weights: NDArray[Any],
+    coefficients: NDArray[Any],
 ) -> NDArray[np.complex64]:
-    """帯域別の複素重みを観測snapshotへ適用する。
+    """帯域別の設計済みビームフォーマ係数を観測snapshotへ適用する。
 
     Args:
         snapshots: shape`[n_ch, n_band]`または`[n_ch, n_band, n_frame]`の観測。
             axis=0はsensor channel、axis=1は周波数帯域、axis=2は時間frameである。
-        weights: 帯域別重み。shapeは`[n_ch, n_beam, n_band]`。
+        coefficients: 帯域別の実適用係数。shapeは`[n_ch, n_beam, n_band]`。
+            設計上必要な複素共役は係数へ反映済みとする。
 
     Returns:
         2次元入力ではshape`[n_beam, n_band]`、3次元入力では
@@ -67,28 +77,28 @@ def apply_beamformer_bands(
     """
 
     values = np.asarray(snapshots, dtype=np.complex64)
-    beam_weights = np.asarray(weights, dtype=np.complex64)
+    beam_coefficients = np.asarray(coefficients, dtype=np.complex64)
     require(
-        beam_weights.ndim == 3,
-        "weights must have shape (n_ch, n_beam, n_band).",
+        beam_coefficients.ndim == 3,
+        "coefficients must have shape (n_ch, n_beam, n_band).",
     )
     require(values.ndim in {2, 3}, "snapshots must have 2 or 3 dimensions.")
     require(
-        values.shape[0] == beam_weights.shape[0] and values.shape[1] == beam_weights.shape[2],
-        "snapshots and weights must agree on n_ch and n_band.",
+        values.shape[0] == beam_coefficients.shape[0] and values.shape[1] == beam_coefficients.shape[2],
+        "snapshots and coefficients must agree on n_ch and n_band.",
     )
 
     if values.ndim == 2:
-        # values shape: [n_ch, n_band]、weights shape: [n_ch, n_beam, n_band]。
+        # values shape: [n_ch, n_band]、coefficients shape: [n_ch, n_beam, n_band]。
         return np.asarray(
-            np.einsum("cb,cdb->db", values, beam_weights.conj(), optimize=True),
+            np.einsum("cb,cdb->db", values, beam_coefficients, optimize=True),
             dtype=np.complex64,
         )
 
     # values shape: [n_ch, n_band, n_frame]。
     # channel軸だけを内積とし、beam、band、frameの各軸を保持する。
     return np.asarray(
-        np.einsum("cbf,cdb->dbf", values, beam_weights.conj(), optimize=True),
+        np.einsum("cbf,cdb->dbf", values, beam_coefficients, optimize=True),
         dtype=np.complex64,
     )
 
@@ -101,8 +111,8 @@ def apply_beamformer_filter_fft(
 
     Args:
         input_spectrum: 入力FFT。shapeは`[n_ch, n_freq]`。axis=1はFFT周波数bin。
-        filter_spectrum: filter FFT。shapeは`[n_ch, n_beam, n_freq]`。
-            `w^H x`の共役はfilter側へ事前に含める。
+        filter_spectrum: 設計済み実適用filterのFFT。shapeは
+            `[n_ch, n_beam, n_freq]`。適用時に追加の共役は取らない。
 
     Returns:
         出力spectrum。shapeは`[n_beam, n_freq]`、dtypeは`complex64`。
@@ -178,7 +188,7 @@ def build_time_tapped_snapshot_matrix(
 
 def apply_time_domain_fir_beamformer(
     channel_signals: NDArray[Any],
-    weights: NDArray[Any],
+    coefficients: NDArray[Any],
     *,
     tap_len: int,
 ) -> NDArray[np.complex128]:
@@ -186,7 +196,7 @@ def apply_time_domain_fir_beamformer(
 
     Args:
         channel_signals: 入力信号。shapeは`[n_ch, n_sample]`。
-        weights: FIR重み。shapeは`[n_ch * tap_len]`または
+        coefficients: FIRの実適用係数。shapeは`[n_ch * tap_len]`または
             `[n_ch * tap_len, n_output]`。
         tap_len: FIR tap数`L`。単位はsample。
 
@@ -199,27 +209,27 @@ def apply_time_domain_fir_beamformer(
 
     境界条件:
         先頭を0とすることで、未完成のFIR出力を完成値として公開しない。
-        重み設計、共分散推定、streaming状態保持は責務に含めない。
+        係数設計、共分散推定、streaming状態保持は責務に含めない。
     """
 
     tapped = build_time_tapped_snapshot_matrix(channel_signals, tap_len=int(tap_len))
-    beam_weights = np.asarray(weights, dtype=np.complex128)
-    if beam_weights.ndim == 1:
-        beam_weights = beam_weights[:, np.newaxis]
+    beam_coefficients = np.asarray(coefficients, dtype=np.complex128)
+    if beam_coefficients.ndim == 1:
+        beam_coefficients = beam_coefficients[:, np.newaxis]
     require(
-        beam_weights.ndim == 2,
-        "weights must have shape (n_dof,) or (n_dof, n_output).",
+        beam_coefficients.ndim == 2,
+        "coefficients must have shape (n_dof,) or (n_dof, n_output).",
     )
     require(
-        beam_weights.shape[0] == tapped.shape[0],
-        "weights and channel_signals must agree on n_ch * tap_len.",
+        beam_coefficients.shape[0] == tapped.shape[0],
+        "coefficients and channel_signals must agree on n_ch * tap_len.",
     )
 
     n_sample = int(np.asarray(channel_signals).shape[1])
-    output = np.zeros((beam_weights.shape[1], n_sample), dtype=np.complex128)
-    # y[out,n]=Σ_dof conj(w[dof,out]) X_tap[dof,n]。
-    # 時間領域でも周波数領域と同じw^H x規約を使用する。
-    output[:, int(tap_len) - 1 :] = beam_weights.conj().T @ tapped
+    output = np.zeros((beam_coefficients.shape[1], n_sample), dtype=np.complex128)
+    # y[out,n]=Σ_dof h[dof,out] X_tap[dof,n]。
+    # 時間領域FIRでも係数を共役せず、通常の畳み込み係数として適用する。
+    output[:, int(tap_len) - 1 :] = beam_coefficients.T @ tapped
     return output
 
 
