@@ -1,7 +1,7 @@
 """scene_renderer信号へMATLAB運用係数を使うT2a逐次整相を適用する。
 
 一つの実行で、シナリオ生成、MATLAB生成rawアレイ係数読込、候補方位別T共分散、
-T2a-MVDR残差FIR、Flowによるblock逐次処理、BL/FRAZ/FL評価を再現する。
+T2a-MVDR残差FIR、通常Pythonによるblock逐次処理、BL/FRAZ/FL評価を再現する。
 """
 
 from __future__ import annotations
@@ -41,6 +41,15 @@ from scene_renderer.receiver import ArrayGeometry  # noqa: E402
 from evaluations.beamforming.external_fixed_delay_diff_mvdr_inputs import (  # noqa: E402
     load_complex_shading_matlab_raw,
     load_positions_matlab_raw,
+)
+from evaluations.beamforming.scene_renderer_t2a_waveform_reporting import (  # noqa: E402
+    WaveformIntegrityResult,
+    calculate_streaming_reference_errors,
+    calculate_target_waveform_integrity,
+    select_diagnostic_zoom_bounds,
+    write_input_waveform_diagnostics,
+    write_output_waveform_diagnostics,
+    write_target_waveform_integrity,
 )
 from spflow import Flow  # noqa: E402
 from spflow.beamforming.ebae import EbaeConfig, design_ebae_weights_band  # noqa: E402
@@ -225,30 +234,8 @@ class FrequencyWeightDesign:
 
 
 @dataclass(frozen=True)
-class WaveformIntegrityResult:
-    """target-only入力と整相出力を位相整列して得た波形完全性を保持する。
-
-    `reference_signal`と`phase_aligned_output`は共通評価区間のshape `[n_sample]`、
-    振幅単位はinput RMS基準である。`phase_delay_samples_modulo_period`はtarget toneの
-    1周期を法とする位相差のsample換算であり、絶対伝搬遅延ではない。
-
-    本結果型は完成した観測値と描画配列だけを保持し、EBAE重み設計、streaming処理、
-    合否判定は責務に含めない。信号処理上はtarget-only無歪性の診断段に位置づく。
-    """
-
-    analysis_start_sample: int
-    analysis_stop_sample: int
-    phase_delay_samples_modulo_period: float
-    rms_delta_db: float
-    correlation_after_phase_alignment: float
-    residual_rms_db_re_input_rms: float
-    reference_signal: FloatArray
-    phase_aligned_output: FloatArray
-
-
-@dataclass(frozen=True)
 class RuntimeBlock:
-    """Flowへ渡す入力blockを保持する。
+    """方式branchへ渡す入力blockを保持する。
 
     `data`はshape `[n_ch,n_block_sample]`、`start_sample`は元系列上の先頭sampleである。
     """
@@ -259,7 +246,7 @@ class RuntimeBlock:
 
 @dataclass(frozen=True)
 class BeamBlock:
-    """Flowから回収する完成状態付きbeam blockを保持する。
+    """方式branchから回収する完成状態付きbeam blockを保持する。
 
     `data`と`valid_mask`はshape `[n_beam,n_block_sample]`で、axis=0は待受方位、
     axis=1は時刻である。`method_id`は`fixed_baseline`、`t2a_mvdr`、`t2a_ebae`である。
@@ -800,16 +787,78 @@ def realize_residual_fir(weights: ComplexArray, tap_count: int) -> tuple[Complex
     return coefficients, energy_ratio
 
 
+def process_runtime_block_with_flow(
+    runtime_block: RuntimeBlock,
+    branches: list[StreamingBeamBranch],
+) -> list[BeamBlock]:
+    """一つの信号blockを完成係数保持済みの方式branch群へ適用する。
+
+    Args:
+        runtime_block: 分岐前のchannel入力。data shape `[n_ch,n_block_sample]`、
+            振幅単位はinput RMS基準。
+        branches: fixed、T2a-MVDR、T2a-EBAE等の方式branch。各branchは完成FIR係数、
+            整数delay履歴、FIR履歴を保持する。
+
+    Returns:
+        方式別の完成出力block。各data shape `[n_beam,n_block_sample]`。
+
+    Raises:
+        ValueError: 方式branchが空の場合。
+
+    信号処理上の位置づけ:
+        T2aでは係数設計がstreaming開始前に完了しているため、frameごとの信号経路と
+        係数更新経路のzipは行わない。完成係数を持つbranchを方式経路として分岐させ、
+        同じ入力blockを各branchへ適用する箇所だけをFlowで表現する。
+    """
+    if len(branches) == 0:
+        raise ValueError("branches must contain at least one streaming branch.")
+
+    # 変数1: 分岐前の信号経路。1個の入力blockだけを保持する。
+    input_block_flow = Flow.from_value(runtime_block)
+
+    # 変数2: 方式経路。各branchは方式固有の完成係数と逐次処理履歴を保持する。
+    method_branch_flow = Flow.many(branches)
+
+    def apply_input_block_to_method_branches(
+        block: RuntimeBlock,
+        method_flow: Flow[StreamingBeamBranch],
+    ) -> Flow[BeamBlock]:
+        """同じ入力blockを全方式branchへ適用し、方式別出力へ分岐する。"""
+        return method_flow.map(lambda branch: branch.process(block))
+
+    # 変数3: 信号経路と方式経路の適用後。method数と同数のBeamBlockを保持する。
+    application_flow = input_block_flow.map(
+        apply_input_block_to_method_branches,
+        method_branch_flow,
+    )
+
+    # 変数4: Flowから通常Pythonへ戻し、時刻位置に従う収集処理へ渡す。
+    output_blocks = application_flow.to_list()
+    return output_blocks
+
+
 def run_streaming_flow(
     signal: FloatArray,
     branches: list[StreamingBeamBranch],
     block_size: int,
 ) -> dict[str, tuple[ComplexArray, BoolArray]]:
-    """Flowで全方式のblock逐次処理を読みやすく接続する。
+    """通常Pythonでblock反復し、各blockはFlowで方式分岐して完成出力を収集する。
 
-    `Flow.many(branches) -> process(block) -> collect`という通常Pythonの反復を使い、
-    Flowへrate、DAG、状態管理を持たせない。各branchの状態は独立クラスが保持する。
+    Args:
+        signal: channel入力。shape `[n_ch,n_sample]`、input RMS基準。
+        branches: 方式別の状態付き整数delay・FIR処理branch。
+        block_size: 入力分割長。単位sample。
+
+    Returns:
+        方式ごとの`(output, valid_mask)`。双方shape `[n_beam,n_sample]`。
+
+    Raises:
+        ValueError: branchが空、block長が不正、または入力shapeが不正な場合。
     """
+    if len(branches) == 0:
+        raise ValueError("branches must contain at least one streaming branch.")
+    if signal.ndim != 2 or block_size <= 0:
+        raise ValueError("signal must have shape [n_ch, n_sample] and block_size must be positive.")
     n_beam = branches[0].n_beam
     output = {
         branch.method_id: np.empty((n_beam, signal.shape[1]), dtype=np.complex128)
@@ -828,7 +877,8 @@ def run_streaming_flow(
     for start in range(0, signal.shape[1], block_size):
         stop = min(start + block_size, signal.shape[1])
         runtime_block = RuntimeBlock(start, signal[:, start:stop])
-        Flow.many(branches).map(lambda branch: branch.process(runtime_block)).map(collect)
+        for completed_block in process_runtime_block_with_flow(runtime_block, branches):
+            collect(completed_block)
     return {method: (output[method], valid[method]) for method in output}
 
 
@@ -878,163 +928,6 @@ def _make_branches(
     return branches, energy
 
 
-def _one_sided_rms_spectrum(signal: FloatArray, fs_hz: float) -> tuple[FloatArray, FloatArray]:
-    """実時間信号の片側per-bin RMS levelを計算する。
-
-    Args:
-        signal: 実信号。shape `[n_sample]`、振幅単位はinput RMS基準。
-        fs_hz: 標本化周波数。単位はHz。
-
-    Returns:
-        `(frequency_hz, level_db)`。双方shape `[n_frequency]`。levelは
-        `dB re input RMS`のper-bin RMSである。
-
-    Raises:
-        ValueError: 信号が1次元でない、2 sample未満、有限でない、またはfsが正でない場合。
-    """
-    values = np.asarray(signal, dtype=np.float64)
-    if values.ndim != 1 or values.size < 2:
-        raise ValueError("signal must be a one-dimensional array with at least two samples.")
-    if fs_hz <= 0.0 or not bool(np.all(np.isfinite(values))):
-        raise ValueError("fs_hz must be positive and signal must be finite.")
-    spectrum = np.fft.rfft(values)
-    # 実信号の片側per-bin RMS powerは内側binだけ2|X/N|^2とする。
-    power = np.abs(spectrum / float(values.size)) ** 2
-    if values.size % 2 == 0 and power.size > 2:
-        # 偶数長では末尾がNyquistなので2倍しない。
-        power[1:-1] *= 2.0
-    elif values.size % 2 == 1 and power.size > 1:
-        # 奇数長rFFTにはNyquist binがないため、DC以外をすべて2倍する。
-        power[1:] *= 2.0
-    frequency_hz = np.fft.rfftfreq(values.size, d=1.0 / fs_hz)
-    level_db = 10.0 * np.log10(np.maximum(power, np.finfo(np.float64).tiny))
-    return (
-        np.asarray(frequency_hz, dtype=np.float64),
-        np.asarray(level_db, dtype=np.float64),
-    )
-
-
-def calculate_target_waveform_integrity(
-    reference_signal: FloatArray,
-    beam_output: ComplexArray,
-    valid_mask: BoolArray,
-    config: T2aScenarioConfig,
-) -> WaveformIntegrityResult:
-    """target-only出力を入力へ位相整列し、波形完全性を計算する。
-
-    Args:
-        reference_signal: 基準channelのtarget-only入力。shape `[n_sample]`、input RMS基準。
-        beam_output: target待受beamのtarget-only出力。shape `[n_sample]`、input RMS基準。
-        valid_mask: beam出力の完成sample。shape `[n_sample]`、Trueだけを評価する。
-        config: fs、target周波数、training区間を与えるscenario条件。
-
-    Returns:
-        位相差、RMS差、位相整列後相関、残差level、および共通評価区間の波形。
-
-    Raises:
-        ValueError: shape不一致、評価区間不足、非有限値、target周波数が無効、または
-            基準信号のtarget成分が数値床以下の場合。
-
-    境界条件:
-        重み設計へ使ったtraining区間と未完成FIR履歴は除外する。単一toneでは絶対遅延を
-        1周期ごとに一意化できないため、位相遅延はtarget周期を法とするsample数で返す。
-    """
-    reference = np.asarray(reference_signal, dtype=np.float64)
-    output = np.asarray(beam_output, dtype=np.complex128)
-    valid = np.asarray(valid_mask, dtype=np.bool_)
-    if reference.ndim != 1 or output.ndim != 1 or valid.ndim != 1:
-        raise ValueError("waveform integrity inputs must be one-dimensional.")
-    if reference.shape != output.shape or reference.shape != valid.shape:
-        raise ValueError("reference_signal, beam_output, and valid_mask must share shape.")
-    if not 0.0 < config.target_frequency_hz < config.fs_hz / 2.0:
-        raise ValueError("target_frequency_hz must lie inside the positive Nyquist band.")
-    evaluation_valid = valid.copy()
-    training_sample_count = int(round(config.training_duration_s * config.fs_hz))
-    evaluation_valid[:training_sample_count] = False
-    indices = np.flatnonzero(evaluation_valid)
-    if indices.size < config.analysis_fft_size:
-        raise ValueError("too few completed post-training samples for waveform integrity.")
-    start = int(indices[0])
-    stop = int(indices[-1]) + 1
-    if not bool(np.all(evaluation_valid[start:stop])):
-        # 内部欠損を一つの連続系列としてFFTすると、不連続を方式の歪みと混同するため拒否する。
-        raise ValueError("waveform integrity requires one contiguous completed interval.")
-    reference_segment = reference[start:stop]
-    output_segment = np.real(output[start:stop])
-    if not bool(np.all(np.isfinite(reference_segment))) or not bool(
-        np.all(np.isfinite(output_segment))
-    ):
-        raise ValueError("waveform integrity interval must contain finite values.")
-
-    sample_index = np.arange(start, stop, dtype=np.float64)
-    # exact target周波数への複素射影で、FFT bin丸めに依存せず入力・出力の位相差を求める。
-    carrier = np.exp(-1j * 2.0 * np.pi * config.target_frequency_hz * sample_index / config.fs_hz)
-    reference_phasor = 2.0 * np.mean(reference_segment * carrier)
-    output_phasor = 2.0 * np.mean(output_segment * carrier)
-    if abs(reference_phasor) <= np.finfo(np.float64).eps:
-        raise ValueError("reference target component is below the numerical floor.")
-    phase_delta_rad = float(np.angle(output_phasor / reference_phasor))
-    phase_delay_samples = (
-        phase_delta_rad * config.fs_hz / (2.0 * np.pi * config.target_frequency_hz)
-    )
-
-    # 出力へ線形位相exp(-j2πfD/fs)を与え、target toneで観測した位相遅延Dを除去する。
-    # 振幅応答は変えないため、整列後残差は位相遅延以外の波形変化を表す。
-    output_spectrum = np.fft.rfft(output_segment)
-    frequency_hz = np.fft.rfftfreq(output_segment.size, d=1.0 / config.fs_hz)
-    phase_correction = np.exp(-1j * 2.0 * np.pi * frequency_hz * phase_delay_samples / config.fs_hz)
-    phase_aligned = np.fft.irfft(output_spectrum * phase_correction, n=output_segment.size)
-    input_rms = float(np.sqrt(np.mean(reference_segment**2)))
-    output_rms = float(np.sqrt(np.mean(output_segment**2)))
-    if input_rms <= np.finfo(np.float64).eps or output_rms <= np.finfo(np.float64).eps:
-        raise ValueError("waveform integrity RMS must exceed the numerical floor.")
-    correlation = float(np.corrcoef(reference_segment, phase_aligned)[0, 1])
-    residual_rms = float(np.sqrt(np.mean((phase_aligned - reference_segment) ** 2)))
-    return WaveformIntegrityResult(
-        analysis_start_sample=start,
-        analysis_stop_sample=stop,
-        phase_delay_samples_modulo_period=phase_delay_samples,
-        rms_delta_db=20.0 * np.log10(output_rms / input_rms),
-        correlation_after_phase_alignment=correlation,
-        residual_rms_db_re_input_rms=20.0 * np.log10(max(residual_rms, np.finfo(np.float64).tiny)),
-        reference_signal=np.asarray(reference_segment, dtype=np.float64),
-        phase_aligned_output=np.asarray(phase_aligned, dtype=np.float64),
-    )
-
-
-def _streaming_reference_errors(
-    streamed_output: ComplexArray,
-    one_block_output: ComplexArray,
-    valid_mask: BoolArray,
-    block_size: int,
-) -> tuple[float, float]:
-    """分割streamingと一括blockの全体誤差・block境界近傍誤差を返す。
-
-    入力配列はshape `[n_sample]`、振幅単位はinput RMS基準である。戻り値は
-    `(全完成区間の最大絶対誤差, 各block境界前後1 sampleの最大絶対誤差)`である。
-    """
-    streamed = np.asarray(streamed_output, dtype=np.complex128)
-    one_block = np.asarray(one_block_output, dtype=np.complex128)
-    valid = np.asarray(valid_mask, dtype=np.bool_)
-    if streamed.ndim != 1 or streamed.shape != one_block.shape or streamed.shape != valid.shape:
-        raise ValueError("streamed, one-block, and valid arrays must share one-dimensional shape.")
-    if block_size <= 0 or not bool(np.any(valid)):
-        raise ValueError(
-            "block_size must be positive and valid_mask must contain completed samples."
-        )
-    difference = np.abs(streamed - one_block)
-    overall_error = float(np.max(difference[valid]))
-    boundary_mask = np.zeros(valid.shape, dtype=np.bool_)
-    for boundary in range(block_size, streamed.size, block_size):
-        # 境界直前・直後の2 sampleは、履歴更新漏れによる段差が最初に現れる位置である。
-        boundary_mask[max(0, boundary - 1) : min(streamed.size, boundary + 1)] = True
-    completed_boundary = boundary_mask & valid
-    boundary_error = (
-        float(np.max(difference[completed_boundary])) if bool(np.any(completed_boundary)) else 0.0
-    )
-    return overall_error, boundary_error
-
-
 def _write_input_spectrum(output_path: Path, mixed: FloatArray, config: T2aScenarioConfig) -> None:
     """整相前rendered target+interferer+noiseの片側RMS spectrumを保存する。"""
     spectrum = np.fft.rfft(mixed, axis=1)
@@ -1053,278 +946,6 @@ def _write_input_spectrum(output_path: Path, mixed: FloatArray, config: T2aScena
     axis.grid(alpha=0.25)
     figure.tight_layout()
     figure.savefig(output_path, dpi=150)
-    plt.close(figure)
-
-
-def _diagnostic_zoom_bounds(
-    valid_mask: BoolArray,
-    block_size: int,
-    minimum_sample: int,
-) -> tuple[int, int, int]:
-    """完成区間内のblock境界と拡大表示範囲を選ぶ。
-
-    Args:
-        valid_mask: 出力完成sample。shape `[n_sample]`。
-        block_size: streaming block長。単位sample。
-        minimum_sample: training等を除外する最小sample index。
-
-    Returns:
-        `(boundary_sample, zoom_start, zoom_stop)`。すべてsample index。
-
-    Raises:
-        ValueError: 完成したblock境界を含む表示範囲を確保できない場合。
-    """
-    valid = np.asarray(valid_mask, dtype=np.bool_)
-    if valid.ndim != 1 or block_size <= 0 or minimum_sample < 0:
-        raise ValueError("valid_mask, block_size, and minimum_sample are invalid.")
-    half_width = min(max(block_size // 2, 32), 256)
-    for boundary in range(block_size, valid.size, block_size):
-        start = boundary - half_width
-        stop = boundary + half_width
-        if start >= minimum_sample and stop <= valid.size and bool(np.all(valid[start:stop])):
-            return boundary, start, stop
-    raise ValueError("no completed streaming boundary is available for diagnostic zoom.")
-
-
-def _draw_block_boundaries(
-    axis: Any,
-    start_sample: int,
-    stop_sample: int,
-    block_size: int,
-    fs_hz: float,
-) -> None:
-    """時間波形axisへruntime block境界をsample時刻で描く。"""
-    first_boundary = ((start_sample + block_size - 1) // block_size) * block_size
-    for boundary in range(first_boundary, stop_sample, block_size):
-        axis.axvline(boundary / fs_hz, color="tab:red", linestyle=":", alpha=0.75)
-
-
-def _write_input_waveform_diagnostics(
-    output_path: Path,
-    input_signal: FloatArray,
-    reference_channel_index: int,
-    zoom_start: int,
-    zoom_stop: int,
-    config: T2aScenarioConfig,
-) -> None:
-    """整相前mixed入力の全体波形、境界拡大波形、spectrumを保存する。
-
-    Args:
-        output_path: PNG保存先。
-        input_signal: beamformer入力。shape `[n_ch,n_sample]`、input RMS基準。
-        reference_channel_index: 表示する物理channel index。
-        zoom_start: 拡大区間先頭。単位sample。
-        zoom_stop: 拡大区間終端。単位sample、終端は含まない。
-        config: fs、training時間、block長を与えるscenario条件。
-
-    Raises:
-        ValueError: channelまたは拡大範囲が入力shape外の場合。
-    """
-    values = np.asarray(input_signal, dtype=np.float64)
-    if values.ndim != 2 or not 0 <= reference_channel_index < values.shape[0]:
-        raise ValueError("input_signal or reference_channel_index is invalid.")
-    if not 0 <= zoom_start < zoom_stop <= values.shape[1]:
-        raise ValueError("input waveform zoom range lies outside the signal.")
-    waveform = values[reference_channel_index]
-    time_s = np.arange(waveform.size, dtype=np.float64) / config.fs_hz
-    spectrum_start = int(round(config.training_duration_s * config.fs_hz))
-    frequency_hz, level_db = _one_sided_rms_spectrum(waveform[spectrum_start:], config.fs_hz)
-    upper_db = float(np.max(level_db)) + 3.0
-    lower_db = upper_db - 120.0
-
-    figure, axes = plt.subplots(3, 1, figsize=(12.0, 10.0))
-    axes[0].plot(time_s, waveform, linewidth=0.7)
-    axes[0].set(
-        title=f"Pre-beamforming mixed input: channel {reference_channel_index}",
-        xlabel="Time [s]",
-        ylabel="Amplitude [re input RMS]",
-    )
-    zoom_time_s = time_s[zoom_start:zoom_stop]
-    axes[1].plot(zoom_time_s, waveform[zoom_start:zoom_stop], linewidth=1.0)
-    _draw_block_boundaries(axes[1], zoom_start, zoom_stop, config.runtime_block_size, config.fs_hz)
-    axes[1].set(
-        title="Input waveform zoom; red dotted lines are runtime block boundaries",
-        xlabel="Time [s]",
-        ylabel="Amplitude [re input RMS]",
-    )
-    axes[2].plot(frequency_hz, np.maximum(level_db, lower_db))
-    axes[2].set(
-        title="Pre-beamforming mixed input spectrum after training interval",
-        xlabel="Frequency [Hz]",
-        ylabel="Per-bin RMS Level [dB re input RMS]",
-        xlim=(0.0, config.fs_hz / 2.0),
-        ylim=(lower_db, upper_db),
-    )
-    for axis in axes:
-        axis.grid(alpha=0.25)
-    figure.tight_layout()
-    figure.savefig(output_path, dpi=160)
-    plt.close(figure)
-
-
-def _write_output_waveform_diagnostics(
-    output_path: Path,
-    method_id: str,
-    streamed_output: ComplexArray,
-    one_block_output: ComplexArray,
-    valid_mask: BoolArray,
-    zoom_start: int,
-    zoom_stop: int,
-    config: T2aScenarioConfig,
-) -> None:
-    """target待受beamのmixed出力波形、境界、一括誤差、spectrumを保存する。
-
-    入力3配列はshape `[n_sample]`、振幅単位はinput RMS基準である。分割streamingと
-    一括blockは同じ完成係数を使い、その差はblock境界が加えた実装誤差を表す。
-    """
-    streamed = np.asarray(streamed_output, dtype=np.complex128)
-    one_block = np.asarray(one_block_output, dtype=np.complex128)
-    valid = np.asarray(valid_mask, dtype=np.bool_)
-    if streamed.ndim != 1 or streamed.shape != one_block.shape or streamed.shape != valid.shape:
-        raise ValueError("output diagnostic arrays must share one-dimensional shape.")
-    if not 0 <= zoom_start < zoom_stop <= streamed.size:
-        raise ValueError("output waveform zoom range lies outside the signal.")
-    real_output = np.real(streamed)
-    plot_output = np.where(valid, real_output, np.nan)
-    time_s = np.arange(streamed.size, dtype=np.float64) / config.fs_hz
-    spectrum_start = max(zoom_start, int(round(config.training_duration_s * config.fs_hz)))
-    completed = real_output[spectrum_start:]
-    if not bool(np.all(valid[spectrum_start:])):
-        raise ValueError("output spectrum interval contains incomplete samples.")
-    frequency_hz, level_db = _one_sided_rms_spectrum(completed, config.fs_hz)
-    upper_db = float(np.max(level_db)) + 3.0
-    lower_db = upper_db - 120.0
-    difference = np.real(streamed - one_block)
-
-    figure, axes = plt.subplots(2, 2, figsize=(14.0, 9.0))
-    axes[0, 0].plot(time_s, plot_output, linewidth=0.7)
-    axes[0, 0].set(
-        title=f"Post-beamforming mixed output: {method_id}, target beam",
-        xlabel="Time [s]",
-        ylabel="Amplitude [re input RMS]",
-    )
-    axes[0, 1].plot(
-        time_s[zoom_start:zoom_stop], real_output[zoom_start:zoom_stop], label="streaming"
-    )
-    axes[0, 1].plot(
-        time_s[zoom_start:zoom_stop],
-        np.real(one_block[zoom_start:zoom_stop]),
-        linestyle="--",
-        label="one block",
-    )
-    _draw_block_boundaries(
-        axes[0, 1], zoom_start, zoom_stop, config.runtime_block_size, config.fs_hz
-    )
-    axes[0, 1].set(
-        title="Output zoom at runtime block boundary",
-        xlabel="Time [s]",
-        ylabel="Amplitude [re input RMS]",
-    )
-    axes[0, 1].legend()
-    axes[1, 0].plot(time_s[zoom_start:zoom_stop], difference[zoom_start:zoom_stop], color="tab:red")
-    _draw_block_boundaries(
-        axes[1, 0], zoom_start, zoom_stop, config.runtime_block_size, config.fs_hz
-    )
-    maximum_error = float(np.max(np.abs(difference[valid])))
-    axes[1, 0].set(
-        title=f"Streaming minus one-block reference; max |error|={maximum_error:.3g}",
-        xlabel="Time [s]",
-        ylabel="Error [re input RMS]",
-    )
-    axes[1, 1].plot(frequency_hz, np.maximum(level_db, lower_db))
-    axes[1, 1].set(
-        title="Post-beamforming mixed output spectrum after training interval",
-        xlabel="Frequency [Hz]",
-        ylabel="Per-bin RMS Level [dB re input RMS]",
-        xlim=(0.0, config.fs_hz / 2.0),
-        ylim=(lower_db, upper_db),
-    )
-    for axis in axes.flat:
-        axis.grid(alpha=0.25)
-    figure.tight_layout()
-    figure.savefig(output_path, dpi=160)
-    plt.close(figure)
-
-
-def _write_target_waveform_integrity(
-    output_path: Path,
-    method_id: str,
-    integrity: WaveformIntegrityResult,
-    config: T2aScenarioConfig,
-) -> None:
-    """target-only入力と位相整列後出力の波形・spectrum・残差を保存する。
-
-    `integrity`内の波形はshape `[n_sample]`、振幅単位はinput RMS基準である。
-    spectrumはper-bin RMSの`dB re input RMS`で同一軸表示する。
-    """
-    reference = integrity.reference_signal
-    aligned = integrity.phase_aligned_output
-    sample_count = reference.size
-    time_s = (
-        integrity.analysis_start_sample + np.arange(sample_count, dtype=np.float64)
-    ) / config.fs_hz
-    # target toneを少なくとも8周期表示し、過密な全区間overlayで局所歪みを隠さない。
-    period_samples = max(1, int(round(config.fs_hz / config.target_frequency_hz)))
-    zoom_count = min(sample_count, max(8 * period_samples, 64))
-    frequency_hz, input_level_db = _one_sided_rms_spectrum(reference, config.fs_hz)
-    _, output_level_db = _one_sided_rms_spectrum(aligned, config.fs_hz)
-    upper_db = max(float(np.max(input_level_db)), float(np.max(output_level_db))) + 3.0
-    lower_db = upper_db - 120.0
-    residual = aligned - reference
-
-    figure, axes = plt.subplots(2, 2, figsize=(14.0, 9.0))
-    axes[0, 0].plot(time_s[:zoom_count], reference[:zoom_count], label="input target-only")
-    axes[0, 0].plot(
-        time_s[:zoom_count], aligned[:zoom_count], linestyle="--", label="phase-aligned output"
-    )
-    axes[0, 0].set(
-        title=f"Target-only waveform integrity: {method_id}",
-        xlabel="Time [s]",
-        ylabel="Amplitude [re input RMS]",
-    )
-    axes[0, 0].legend()
-    axes[0, 1].plot(time_s[:zoom_count], residual[:zoom_count], color="tab:red")
-    axes[0, 1].set(
-        title="Phase-aligned output minus input",
-        xlabel="Time [s]",
-        ylabel="Residual [re input RMS]",
-    )
-    axes[1, 0].plot(frequency_hz, np.maximum(input_level_db, lower_db), label="input")
-    axes[1, 0].plot(
-        frequency_hz,
-        np.maximum(output_level_db, lower_db),
-        linestyle="--",
-        label="phase-aligned output",
-    )
-    axes[1, 0].set(
-        title="Target-only input/output spectrum",
-        xlabel="Frequency [Hz]",
-        ylabel="Per-bin RMS Level [dB re input RMS]",
-        xlim=(0.0, config.fs_hz / 2.0),
-        ylim=(lower_db, upper_db),
-    )
-    axes[1, 0].legend()
-    axes[1, 1].axis("off")
-    axes[1, 1].text(
-        0.02,
-        0.95,
-        "\n".join(
-            (
-                "phase delay modulo period: "
-                f"{integrity.phase_delay_samples_modulo_period:.6g} sample",
-                f"output/input RMS delta: {integrity.rms_delta_db:.6g} dB",
-                "correlation after phase alignment: "
-                f"{integrity.correlation_after_phase_alignment:.9f}",
-                f"residual RMS: {integrity.residual_rms_db_re_input_rms:.6g} dB re input RMS",
-            )
-        ),
-        va="top",
-        family="monospace",
-    )
-    for axis in (axes[0, 0], axes[0, 1], axes[1, 0]):
-        axis.grid(alpha=0.25)
-    figure.tight_layout()
-    figure.savefig(output_path, dpi=160)
     plt.close(figure)
 
 
@@ -1427,7 +1048,7 @@ def run_evaluation(
         shading_frequency_step_hz: shading周波数bin間隔。単位はHz。
         output_dir: review pack保存先。
         config: 省略時は再現可能な既定scenario。
-        method_ids: 設計、Flow処理、評価、表示を行う方式識別子。
+        method_ids: 設計、逐次処理、評価、表示を行う方式識別子。
         review_title: `review_index.md`先頭に記録する評価名。
 
     Returns:
@@ -1469,6 +1090,60 @@ def run_evaluation(
         scenario,
         method_ids=selected_method_ids,
     )
+    _evaluate_and_write_review_pack(
+        positions_path=positions_path,
+        shading_path=shading_path,
+        shading_frequency_step_hz=shading_frequency_step_hz,
+        output_dir=output_dir,
+        scenario=scenario,
+        selected_method_ids=selected_method_ids,
+        review_title=review_title,
+        coefficients=coefficients,
+        predicted_aliases=predicted_aliases,
+        rendered=rendered,
+        beam_azimuth_deg=np.asarray(beam_azimuth_deg, dtype=np.float64),
+        weight_design=weight_design,
+    )
+
+
+def _evaluate_and_write_review_pack(
+    *,
+    positions_path: Path,
+    shading_path: Path,
+    shading_frequency_step_hz: float,
+    output_dir: Path,
+    scenario: T2aScenarioConfig,
+    selected_method_ids: tuple[str, ...],
+    review_title: str,
+    coefficients: MatlabArrayCoefficients,
+    predicted_aliases: dict[str, tuple[float, ...]],
+    rendered: RenderedComponents,
+    beam_azimuth_deg: FloatArray,
+    weight_design: FrequencyWeightDesign,
+) -> None:
+    """完成したsceneと重みを逐次処理し、評価review packを保存する。
+
+    Args:
+        positions_path: metadataへ記録するCOE_POS相当raw path。
+        shading_path: metadataへ記録するCOE_CBFSHADING相当raw path。
+        shading_frequency_step_hz: shading周波数bin間隔。単位はHz。
+        output_dir: review pack保存先。
+        scenario: sampling、source、FFT、FIR、block条件。
+        selected_method_ids: 設計済み方式識別子。
+        review_title: review_index先頭の評価名。
+        coefficients: 検証済み位置・周波数別active channel・shading。
+        predicted_aliases: source別の事前予測alias方位。値の単位はdeg。
+        rendered: target、interferer、noise、mixed。各shapeは[n_ch,n_sample]。
+        beam_azimuth_deg: 待受方位。shape [n_beam]、単位deg。
+        weight_design: 完成周波数重みとEBAE診断量。
+
+    Returns:
+        なし。block逐次処理後のCSV、JSON、NPZ、PNG、review_indexを保存する。
+
+    Raises:
+        ValueError: 完成sample、波形評価、または表示配列の契約が不正な場合。
+        RuntimeError: component間でFRAZ周波数軸が変化した場合。
+    """
     component_signals = {
         "target": rendered.target,
         "interferer": rendered.interferer,
@@ -1521,7 +1196,9 @@ def run_evaluation(
         scenario.residual_fir_tap_count,
     )
     one_block_mixed = run_streaming_flow(
-        rendered.mixed, one_block_branches, block_size=rendered.mixed.shape[1]
+        rendered.mixed,
+        one_block_branches,
+        block_size=rendered.mixed.shape[1],
     )
     waveform_integrity: dict[str, WaveformIntegrityResult] = {}
     streaming_overall_error: dict[str, float] = {}
@@ -1538,7 +1215,7 @@ def run_evaluation(
             target_valid[target_beam],
             scenario,
         )
-        overall_error, boundary_error = _streaming_reference_errors(
+        overall_error, boundary_error = calculate_streaming_reference_errors(
             mixed_output[target_beam],
             one_block_output[target_beam],
             mixed_valid[target_beam],
@@ -1549,7 +1226,7 @@ def run_evaluation(
         streaming_valid_match[method_id] = bool(
             np.array_equal(mixed_valid[target_beam], one_block_valid[target_beam])
         )
-        diagnostic_zoom[method_id] = _diagnostic_zoom_bounds(
+        diagnostic_zoom[method_id] = select_diagnostic_zoom_bounds(
             mixed_valid[target_beam],
             scenario.runtime_block_size,
             int(round(scenario.training_duration_s * scenario.fs_hz)),
@@ -1651,7 +1328,7 @@ def run_evaluation(
     _write_input_spectrum(output_dir / "rendered_input_spectrum.png", rendered.mixed, scenario)
     first_method_id = next(iter(weight_design.weights))
     _, input_zoom_start, input_zoom_stop = diagnostic_zoom[first_method_id]
-    _write_input_waveform_diagnostics(
+    write_input_waveform_diagnostics(
         output_dir / "input_waveform_diagnostics.png",
         rendered.mixed,
         reference_channel,
@@ -1663,7 +1340,7 @@ def run_evaluation(
         mixed_output, mixed_valid = streamed_waveforms["mixed"][method_id]
         one_block_output, _ = one_block_mixed[method_id]
         _, zoom_start, zoom_stop = diagnostic_zoom[method_id]
-        _write_output_waveform_diagnostics(
+        write_output_waveform_diagnostics(
             output_dir / f"output_waveform_diagnostics_{method_id}.png",
             method_id,
             mixed_output[target_beam],
@@ -1673,7 +1350,7 @@ def run_evaluation(
             zoom_stop,
             scenario,
         )
-        _write_target_waveform_integrity(
+        write_target_waveform_integrity(
             output_dir / f"target_waveform_integrity_{method_id}.png",
             method_id,
             waveform_integrity[method_id],
@@ -1770,7 +1447,7 @@ def run_evaluation(
     if selected_method_ids == ("t2a_ebae",):
         method_description = (
             "MATLAB係数の周波数別active channelとshadingを適用し、候補方位別T共分散から"
-            "T2a-EBAE残差重みだけを設計、Flow処理、評価、表示した。EBAE内部の成立条件を"
+            "T2a-EBAE残差重みだけを設計、block逐次処理、評価、表示した。EBAE内部の成立条件を"
             "満たさない場合に使う固定整相fallbackは安全契約として残すが、`fixed_baseline`と"
             "`t2a_mvdr`の独立branchは生成しない。比較baselineを含まないため、本pack単独で"
             "方式間の採否は判断しない。"
@@ -1778,7 +1455,7 @@ def run_evaluation(
     else:
         method_description = (
             "MATLAB係数の周波数別active channelとshadingを適用し、選択方式 "
-            f"{', '.join(selected_method_ids)} を同じFlow、完成区間、表示軸で評価した。"
+            f"{', '.join(selected_method_ids)} を同じblock反復、完成区間、表示軸で評価した。"
         )
     (output_dir / "review_index.md").write_text(
         f"# {review_title}\n\n"

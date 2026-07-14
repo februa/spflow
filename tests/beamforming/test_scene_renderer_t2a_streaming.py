@@ -12,10 +12,12 @@ from evaluations.beamforming.scene_renderer_t2a_streaming import (
     MatlabArrayCoefficients,
     StreamingBeamBranch,
     T2aScenarioConfig,
-    calculate_target_waveform_integrity,
     design_frequency_weights,
     load_matlab_array_coefficients,
     run_streaming_flow,
+)
+from evaluations.beamforming.scene_renderer_t2a_waveform_reporting import (
+    calculate_target_waveform_integrity,
 )
 
 
@@ -187,6 +189,7 @@ def test_flow_streaming_branch_matches_single_block_processing() -> None:
         ],
         dtype=np.complex128,
     )
+
     split = run_streaming_flow(
         signal,
         [StreamingBeamBranch("t2a_mvdr", delays, coefficients)],
