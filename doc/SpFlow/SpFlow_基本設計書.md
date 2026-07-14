@@ -371,6 +371,11 @@ flow.map(func, *args, **kwargs)
 flow.to_list()
 ```
 
+`Flow`は継承用の基底クラスではなく、完成した軽量コンテナとして提供する。
+継承による拡張は公開契約に含めず、`from_value`と`many`は常に`Flow`を返す。
+処理の追加はsubclass methodではなく、`map`へ渡す通常の関数、または状態を持つ独立クラスで行う。
+これによりFlowの型引数を項目型だけに限定し、独自Processor階層を導入しない。
+
 ### 7.4 map の戻り値規約
 
 `Flow.map()` に渡す関数は、以下の戻り値を返せる。

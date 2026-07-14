@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Callable, Concatenate, Generic, NoReturn, ParamSpec, TypeVar, overload
+from typing import Callable, Concatenate, Generic, NoReturn, ParamSpec, TypeVar, final, overload
 
 InputT = TypeVar("InputT")
 OutputT = TypeVar("OutputT")
@@ -11,6 +11,7 @@ ValueT = TypeVar("ValueT")
 ArgsT = ParamSpec("ArgsT")
 
 
+@final
 class Flow(Generic[InputT]):
     """0 個・1 個・複数個の値を同一インターフェースで扱う軽量コンテナ。
 
@@ -19,6 +20,9 @@ class Flow(Generic[InputT]):
 
     型引数`InputT`は保持する項目の型だけを表し、項目数や処理レートを表さない。
     したがって`Flow[Frame]`も0個・1個・複数個のFrameを保持できる。
+
+    Flowは継承による拡張を公開契約に含めない。処理追加はFlowのsubclassではなく、
+    `map`へ渡す通常の関数または状態を持つ独立クラスとして実装する。
     """
 
     def __init__(self, items: list[InputT] | None = None) -> None:
@@ -36,12 +40,17 @@ class Flow(Generic[InputT]):
         `value=None`も1項目として保持し、次の`map`へ渡す。これにより、値がない周期でも
         現在段の状態更新を実行できる。callbackが返した`None`は次段出力なしとして扱うため、
         入力地点の`None`と処理結果の`None`では境界上の意味が異なる。
+
+        このfactoryは常に`Flow[ValueT]`を返す。Flowのsubclass生成は契約に含めない。
         """
         return Flow[ValueT]([value])
 
     @staticmethod
     def many(items: Iterable[ValueT]) -> Flow[ValueT]:
-        """反復可能オブジェクトから項目型を維持したFlowを作る。"""
+        """反復可能オブジェクトから項目型を維持したFlowを作る。
+
+        このfactoryは常に`Flow[ValueT]`を返す。Flowのsubclass生成は契約に含めない。
+        """
         return Flow[ValueT](list(items))
 
     @overload
