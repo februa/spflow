@@ -645,18 +645,35 @@ def design_frequency_weights(
     Raises:
         ValueError: 方式、入力shape、またはEBAEの`M^2` snapshot条件が不正な場合。
     """
+    # 出力方式をここで確定し、不要な共分散推定や適応重み設計を実行しない。
+    # selected_method_idsの順序は、戻り値weightsの方式順としても維持する。
     selected_method_ids = _validate_method_ids(method_ids)
     selected_method_set = set(selected_method_ids)
+
+    # arrival_delays_s shape: [beam,ch]、単位s。アレイ基準点に対する物理到来時間差を、
+    # 各待受方位beamと各センサchannelの組合せについて計算する。
     arrival_delays_s = _arrival_delays_s(
         coefficients.positions_m, beam_azimuth_deg, config.sound_speed_m_s
     )
+
+    # integer_offsets shape: [beam,ch]、単位sample。物理遅延を最近傍sampleへ量子化し、
+    # 整数遅延器が担当する成分q=round(fs*tau)と、残差FIRが担当する小数成分へ分ける。
     integer_offsets = np.rint(arrival_delays_s * config.fs_hz).astype(np.int64)
-    # T共分散のx[n+tau]と因果bufferのx[n-d]を対応させるためd=max(tau)-tauとする。
+
+    # causal_delays[beam,ch] shape: [beam,ch]、単位sample。T共分散のx[n+q]と
+    # 因果bufferのx[n-d]を対応させるため、beam内の共通遅延を加えてd=max_ch(q)-qとする。
+    # この共通遅延はbeam出力時刻だけを後方へ移し、channel間の相対遅延を変えない。
     causal_delays = np.max(integer_offsets, axis=1, keepdims=True) - integer_offsets
+
+    # frequency_hzはrFFTの非負周波数軸[n_frequency]。weightsのaxis順は
+    # [frequency,beam,ch]に固定し、周波数ごとのactive channel表と直接対応させる。
     frequency_hz = np.fft.rfftfreq(config.analysis_fft_size, d=1.0 / config.fs_hz)
     n_frequency = frequency_hz.size
     n_beam = beam_azimuth_deg.size
     n_ch = coefficients.positions_m.shape[0]
+
+    # inactive channelは重み0のまま残す。これにより周波数ごとにactive数が変化しても、
+    # 全方式の出力shapeを[n_frequency,n_beam,n_ch]へ固定できる。
     weights = {
         method_id: np.zeros((n_frequency, n_beam, n_ch), dtype=np.complex128)
         for method_id in selected_method_ids
@@ -665,8 +682,10 @@ def design_frequency_weights(
     ebae_signal_count = np.zeros((n_frequency, n_beam), dtype=np.int64)
     ebae_music_peak_deg = np.full((n_frequency, n_beam), np.nan, dtype=np.float64)
     ebae_fallback = np.zeros((n_frequency, n_beam), dtype=np.bool_)
+
     # T2aの候補方位別時間切り出しは周波数に依存しないため、各beamで一度だけFFTする。
     # 同じsnapshotを周波数loop内で再生成すると、方式上不要な計算量がn_frequency倍になる。
+    # snapshots_by_beam[beam] shape: [frame,frequency,ch]。
     needs_covariance = bool({"t2a_mvdr", "t2a_ebae"} & selected_method_set)
     snapshots_by_beam = (
         [
@@ -676,31 +695,48 @@ def design_frequency_weights(
         if needs_covariance
         else []
     )
+
+    # 外側をfrequency、内側をbeamとし、同じ周波数では全beamへ同一のactive channelと
+    # shading表を使う。共分散と制約ベクトルは各frequency・beamの組合せごとに設計する。
     for frequency_index, frequency in enumerate(frequency_hz):
         shading, active = coefficients.table_at(float(frequency))
         active_indices = np.flatnonzero(active)
         active_count[frequency_index] = float(active_indices.size)
         for beam_index in range(n_beam):
             is_real_spectrum_boundary = frequency_index in (0, n_frequency - 1)
+
+            # physical_tauとinteger_tauはactive channelだけのshape [n_active_ch]。
+            # 両者の差tau-q/fsが整数整相後に残る小数遅延であり、残差FIRが補償する。
             physical_tau = arrival_delays_s[beam_index, active_indices]
             integer_tau = integer_offsets[beam_index, active_indices] / config.fs_hz
-            # 整数遅延後の残差steeringはD a=exp(-j2πf(tau-q/fs))。
+
+            # residual_constraint a_res shape: [n_active_ch]。
+            # 整数遅延後の残差steeringはD a=exp(-j2πf(tau-q/fs))であり、
+            # 最終重みは無歪条件w^H a_res=1を満たすように正規化する。
             residual_constraint = np.exp(
                 -1j * 2.0 * np.pi * frequency * (physical_tau - integer_tau)
             )
             channel_shading = shading[active_indices]
+
+            # fixed_active=a_res/(a_res^H a_res)は残差座標上の固定整相重み。
+            # 適応設計が成立しない場合にも公開できる、安全側の完成重みとして使用する。
             fixed_active = residual_constraint / np.vdot(residual_constraint, residual_constraint)
+
+            # このfrequency・beamで成立した方式別の未shading重みだけを一時保持する。
+            # weights本体への格納は、全方式共通のshadingと無歪正規化を適用した後に行う。
             unshaded_by_method: dict[str, ComplexArray] = {}
             if "fixed_baseline" in selected_method_set:
                 unshaded_by_method["fixed_baseline"] = np.asarray(fixed_active, dtype=np.complex128)
             if is_real_spectrum_boundary:
-                # DC/Nyquistは実FIRのHermitian境界であり、複素適応位相を持たせない。
+                # DC/Nyquistは実FIRを作るrFFTのHermitian境界であり、独立な負周波数対を
+                # 持たない。この境界では適応解を作らず、完成済みfixed重みを採用する。
                 if "t2a_mvdr" in selected_method_set:
                     unshaded_by_method["t2a_mvdr"] = np.asarray(fixed_active, dtype=np.complex128)
                 if "t2a_ebae" in selected_method_set:
                     unshaded_by_method["t2a_ebae"] = np.asarray(fixed_active, dtype=np.complex128)
                     ebae_music_peak_deg[frequency_index, beam_index] = beam_azimuth_deg[beam_index]
             elif needs_covariance:
+                # snapshots shape: [frame,ch]。候補beamへ整数整相済みの同一周波数binを取り出す。
                 snapshots = snapshots_by_beam[beam_index][:, frequency_index, :]
                 ebae_snapshot_count = int(active_indices.size * active_indices.size)
                 if "t2a_ebae" in selected_method_set and snapshots.shape[0] < ebae_snapshot_count:
@@ -713,8 +749,13 @@ def design_frequency_weights(
                 selected_snapshot_count = (
                     ebae_snapshot_count if "t2a_ebae" in selected_method_set else snapshots.shape[0]
                 )
+
+                # active_snapshot shape: [selected_frame,n_active_ch]。EBAEを比較に含む場合は
+                # 宣言snapshot数L=M^2と共分散の実平均数を一致させ、方式間の条件差を作らない。
                 active_snapshot = snapshots[:selected_snapshot_count, active_indices]
-                # R=E[xx^H]。snapshot axis=0を平均し、channel×channel共分散を得る。
+
+                # covariance shape: [n_active_ch,n_active_ch]。
+                # R=E[x x^H]としてframe axisを平均し、整数整相後のchannel間共分散を得る。
                 covariance = np.einsum(
                     "fc,fd->cd", active_snapshot, active_snapshot.conj(), optimize=True
                 ) / float(active_snapshot.shape[0])
@@ -723,7 +764,8 @@ def design_frequency_weights(
                         covariance, residual_constraint, config.diagonal_loading_ratio
                     )
                 if "t2a_ebae" in selected_method_set:
-                    # D_b a(phi)により、候補bの整数遅延後座標へ全scan steeringを移す。
+                    # residual_scan shape: [n_active_ch,n_beam]。D_b a(phi)により、現在の
+                    # 候補beam bの整数遅延後座標へ全scan方位phiのsteeringを移す。
                     residual_scan = np.exp(
                         -1j
                         * 2.0
@@ -756,17 +798,25 @@ def design_frequency_weights(
                         beam_azimuth_deg[int(np.argmax(ebae_result.music_spectrum))]
                     )
                     ebae_fallback[frequency_index, beam_index] = ebae_result.used_fallback
+
+            # 方式固有の設計後に、MATLABのchannel shading gを実信号経路へ反映する。
+            # y=w^H x規約では信号へgを掛ける操作を重み側のconj(g)倍として表す。
             for method_id, unshaded in unshaded_by_method.items():
-                # 実信号経路でgを掛ける意味をw^H x規約の重みへ移すため、重み側はconj(g)倍する。
                 shaded = channel_shading.conj() * unshaded
                 denominator = np.vdot(shaded, residual_constraint)
                 if abs(denominator) <= np.finfo(np.float64).eps:
                     # shading後に無歪正規化できない場合は、不完全な適応値でなくCBFを採用する。
                     shaded = fixed_active
                     denominator = np.vdot(shaded, residual_constraint)
+
+                # d=shaded^H a_resに対してw=shaded/conj(d)とすると、
+                # w^H a_res=d/d=1となる。active位置だけへ格納し、inactive位置は0を保つ。
                 weights[method_id][frequency_index, beam_index, active_indices] = (
                     shaded / denominator.conjugate()
                 )
+
+    # ここで返すweightsは全frequency・beamの設計が完了した不変snapshotであり、
+    # streaming実行中に部分更新しない。EBAE診断量も同じ軸で対応付けて返す。
     return FrequencyWeightDesign(
         weights=weights,
         causal_delays_samples=np.asarray(causal_delays, dtype=np.int64),
@@ -788,21 +838,45 @@ def realize_residual_fir(weights: ComplexArray, tap_count: int) -> tuple[Complex
         `(coefficients, energy_containment)`。係数shapeは`[n_beam,n_ch,n_tap]`、
         energy比shapeは`[n_beam]`。
     """
+    # rFFT bin数Kは偶数長実FFTのN/2+1に対応するため、元の時間長はN=2(K-1)。
+    # weightsのaxis順は[frequency,beam,ch]であり、各beamの全channelを同じN点系でFIR化する。
     n_fft = 2 * (weights.shape[0] - 1)
     n_beam, n_ch = weights.shape[1:]
+
+    # coefficients[beam,ch,tap]はstreaming FIRへ渡す因果tap、energy_ratio[beam]は
+    # 元のN点周期インパルス応答energyのうち、選択した共通tap区間に残る割合である。
     coefficients = np.empty((n_beam, n_ch, tap_count), dtype=np.complex128)
     energy_ratio = np.empty(n_beam, dtype=np.float64)
     for beam_index in range(n_beam):
-        # FIR適用応答Hはy=sum_ch H_ch X_ch=sum_ch conj(w_ch)X_chなのでH=conj(w)。
+        # weights[:,beam,:] shape: [frequency,ch]。設計規約y=w^H xに対し、実際に
+        # 信号へ畳み込む伝達関数はH=conj(w)なので、共役後にirFFTしてh[n,ch]を得る。
+        # impulse shape: [n_fft,ch]。axis=0が周期時間index、axis=1がchannelである。
         impulse = np.fft.irfft(weights[:, beam_index, :].conj(), n=n_fft, axis=0)
-        energy = np.sum(impulse**2, axis=1)
-        extended = np.concatenate((energy, energy[: tap_count - 1]))
-        window_energy = np.convolve(extended, np.ones(tap_count), mode="valid")[:n_fft]
+
+        # 全channelで同じtap開始位置を選ばないと、channelごとに異なる時間shiftが加わり、
+        # 設計済みの相対位相が崩れる。そこで各時間indexのchannel合計energyを評価する。
+        tap_energy_by_time = np.sum(impulse**2, axis=1)
+
+        # irFFT応答はN点周期列なので、末尾から先頭へ跨ぐtap窓も候補に含める。
+        # 先頭tap_count-1点を連結し、長さtap_countの全N個の循環区間energyを計算する。
+        extended_energy = np.concatenate(
+            (tap_energy_by_time, tap_energy_by_time[: tap_count - 1])
+        )
+        window_energy = np.convolve(
+            extended_energy, np.ones(tap_count), mode="valid"
+        )[:n_fft]
+
+        # 最大energy区間を全channel共通で選び、循環順序を保ったままtap index 0..tap_count-1
+        # へ並べ直す。この並べ替えによりVersionedCausalFIRへ渡せる因果係数となる。
         start = int(np.argmax(window_energy))
         indices = (start + np.arange(tap_count)) % n_fft
         coefficients[beam_index] = np.asarray(impulse[indices].T, dtype=np.complex128)
+
+        # energy_ratioはFIR打切りによる応答欠落をbeam単位で診断する値。
+        # 無信号重みでも0除算しないよう、分母にfloat最小正規化値を適用する。
         energy_ratio[beam_index] = float(
-            window_energy[start] / max(float(np.sum(energy)), np.finfo(float).tiny)
+            window_energy[start]
+            / max(float(np.sum(tap_energy_by_time)), np.finfo(float).tiny)
         )
     return coefficients, energy_ratio
 
