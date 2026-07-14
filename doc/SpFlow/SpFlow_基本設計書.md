@@ -520,6 +520,23 @@ def process_frame(x, env):
     return outputs
 ```
 
+### 7.9 examplesでの実装パターン
+
+exampleへFlowを機械的に導入せず、値の個数変化と依存関係から書き方を選ぶ。
+
+| example | 示す契約 | 実装方法 |
+|---|---|---|
+| `streaming/basic_pipeline.py` | FrameBufferの0/1/複数frameをFFT、powerへ直線接続 | 一つの線形Flow |
+| `streaming/none_cycle.py` | 入力`None`は1周期、callbackの`None`は0出力 | 一つの線形Flow |
+| `streaming/step_scheduler_completion.py` | 最新完成値と新規完成通知の違い | `StepResult`を直接確認し、独立通知だけFlowへ接続 |
+| `beamforming/streaming_cbf.py` | frame化と固定係数適用に状態依存がない | 一つの線形Flow |
+| `beamforming/streaming_mvdr_weights.py` | 係数完成状態が同じframeの適用係数を決める | FFT後に通常のPythonループへ戻る |
+
+streamingという名前だけを理由にFlowへ変換しない。解析・合成のtupleを同時に扱う処理、artifactを
+蓄積する評価、parameter sweep、明示的な終端処理は通常のPythonループの方が責務と順序を読みやすい。
+また、評価・sweep・artifact生成はFlow利用の有無とは別に、`examples/`ではなくevaluation支援、
+`evaluations/`、`tools/`のどこへ置くべきかを判断する。
+
 ---
 
 ## 8. FrameBuffer の設計
@@ -648,6 +665,10 @@ Flow.from_value(x)
 
 全 item を1回で処理したい場合は `StepScheduler.map()` を使う。
 
+`StepScheduler.map(...)`は状態を持たないstaticな一括計算であり、`Flow.map(...)`とは別のAPIである。
+前者はitem列をその場で全件処理してreducerへ渡し、複数呼び出しへの時間分割や0/1/複数値の伝播を
+行わない。時間分割には`StepScheduler(...).process()`または`process_result()`を使う。
+
 ```python
 W = StepScheduler.map(
     items=range(n_bin),
@@ -752,45 +773,52 @@ steeringは`MVDRWeightSnapshot`生成時にcopyして読み取り専用にし、
 
 ### 9.5 Flowとの接続
 
-最新の完成値を毎周期使う場合は、従来どおり`process()`を直接接続する。
+`StepScheduler`の結果は、用途を二つに分ける。
 
-```python
-coefficients = Flow.from_value(snapshot).map(scheduler.process).to_list()
+```text
+毎周期の実処理へ使う値:
+    process()またはprocess_result().valueが返す、安全側の最新完成値
+
+新しい完成を通知する値:
+    process_result().updatedがTrueになった周期だけの更新値
 ```
 
-未完成周期にも、前回完成値または安全側の初期値が1個流れる。信号を毎周期処理する
-適応ビームフォーマでは、この経路を使う。
-
-新しい完成値が生成された周期だけを後段へ流す場合は、`process_result()`の固定結果型と
-`updated_value()`を使う。
+後段が状態に依存しない一本の線形Flowで、最新完成値を毎周期使う場合は`process()`を
+そのまま接続できる。
 
 ```python
-updated_coefficients = (
-    Flow.from_value(snapshot)
-    .map(scheduler.process_result)
-    .map(lambda result: result.updated_value())
+active_value_flow = Flow.from_value(snapshot).map(scheduler.process)
+```
+
+未完成周期にも、前回完成値または安全側の初期値が1個流れる。一方、新しい完成値を保存・通知する
+独立後段だけを呼ぶ場合は、`process_result()`の固定結果型と`updated_value()`を使う。
+
+```python
+result = scheduler.process_result(snapshot)
+completed_update_flow = (
+    Flow.from_value(result)
+    .map(select_newly_completed_value)
     .to_list()
 )
 ```
 
-未完成周期の`updated_value()`は`None`であり、`Flow`が0出力として扱う。これにより、
-`Flow`は処理レートを決めず、`StepScheduler`の完成状態だけを0個・1個の値へ変換できる。
+`updated_value()`は未完成周期に`None`を返し、Flowが0出力として扱う。この接続は、完成通知の
+有無と無関係に同じ周期の信号を処理する経路へは使わない。
 
-適応ビームフォーマ全体では、完成したFFT frameごとに同じ`frame_fft_flow`から係数設計経路と
-信号適用経路を分ける。係数設計経路は完成した係数を現在係数へ置き換え、信号適用経路は
-その現在係数とFFT信号のchannel内積を計算する。
+適応ビームフォーマでは、係数設計の完成状態が同じFFT frameへ適用する係数を決める。このため、
+Scheduler結果と信号適用を別Flowへ見かけ上分岐させず、frameごとの通常のPython処理として
+依存関係を明示する。
 
-```text
-入力信号 → frame化 → FFT ┬→ 共分散計算 → 設計用snapshot一時保持
-                         │                  → 適応係数算出 → 現在係数置換 ┐
-                         └───────────────────────────────────────────────┼→ h^T x → 出力
-                                                現在の完成係数 ─────────┘
+```python
+result = scheduler.process_result(snapshot)
+active_coefficients = result.value
+beam_output = apply_beamformer(frame_fft, active_coefficients)
 ```
 
-係数設計経路を先に評価するため、1回の設計更新で全itemを設計できた場合は、完成係数を同じ
-FFT frameへ適用する。設計が複数frameにまたがる場合は、設計中snapshotを同じgenerationのまま
-保持し、完成するまでは固定CBFまたは前回完成した適応係数を信号へ適用する。`FrameBuffer`が
-1 chunkから複数frameを返す場合も、各frameについてこの2経路を順番に評価する。
+この順序により、1回の設計更新で完成すれば同じframeへ新係数を適用し、未完成なら固定CBFまたは
+前回完成した適応係数を使う。実行可能な最小接続は
+`examples/streaming/step_scheduler_completion.py`、ABFでの接続は
+`examples/beamforming/streaming_mvdr_weights.py`に示す。
 
 ---
 

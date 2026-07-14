@@ -198,6 +198,10 @@ class StepScheduler(Generic[InputT, ItemT, OutputT]):
     ) -> MapOutputT:
         """項目列を1回で処理し、結果を集約する。
 
+        このstatic methodは`Flow.map()`とは別物であり、遅延評価、値の0/1/複数伝播、
+        複数呼び出しへの時間分割を行わない。時間分割にはinstanceの`process()`または
+        `process_result()`を使用する。
+
         Args:
             items: 処理対象のitem列。
             func: itemと共通inputsから1 item分の結果を作る関数。

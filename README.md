@@ -169,6 +169,16 @@ python -m examples.streaming.none_cycle
 この例では、状態を持つ処理を4周期すべてで更新しつつ、2周期ごとの完成値だけを
 後段へ渡す。`Flow`は周期を決めず、各段の0個・1個・複数個の出力だけを接続する。
 
+`StepScheduler`の最新完成値を毎周期使う経路と、新しい完成値だけをFlowで通知する経路の
+違いは、次の最小例で確認できる。
+
+```bash
+python -m examples.streaming.step_scheduler_completion
+```
+
+同じ周期の処理がSchedulerの完成状態に依存する場合は`StepResult`を通常のPythonで確認し、
+独立した完成通知だけを`updated_value()`からFlowへ接続する。
+
 `Flow.map()`は遅延DAGを構築せず、呼び出すたびに保持中の全項目へ即時適用する。
 同じFlowへ複数回`map()`しても項目単位の分岐にはならない。分岐間に状態や実行順序の
 依存関係がある場合は、`to_list()`で通常のPythonへ戻し、項目ごとのループで明示する。

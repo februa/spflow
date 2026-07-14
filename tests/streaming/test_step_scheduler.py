@@ -5,7 +5,12 @@
 
 from typing import TypedDict
 
-from spflow import StepScheduler
+from examples.streaming.step_scheduler_completion import (
+    IncrementalSumCallback,
+    SumSnapshot,
+    select_newly_completed_value,
+)
+from spflow import Flow, StepScheduler
 
 
 def test_step_scheduler_map_reduces_results():
@@ -152,3 +157,19 @@ def test_step_scheduler_keeps_starting_snapshot_for_same_generation():
     assert first_result.updated is False
     assert completed_result.updated is True
     assert completed_result.value == (10, 10)
+
+
+def test_step_scheduler_example_separates_active_value_from_completion_event():
+    """毎周期使う完成値と、新規完成時だけ流す通知を混同しないことを確認する。"""
+    scheduler = StepScheduler(IncrementalSumCallback(), items_per_cycle=1)
+    snapshot = SumSnapshot(values=(2, 4, 6), generation=0)
+
+    results = [scheduler.process_result(snapshot) for _ in range(3)]
+    completion_events = [
+        Flow.from_value(result).map(select_newly_completed_value).to_list()
+        for result in results
+    ]
+
+    # 最初の2回は未完成なので安全側の0を維持し、3回目だけ完成値12へ一括更新する。
+    assert [result.value for result in results] == [0, 0, 12]
+    assert completion_events == [[], [], [12]]
