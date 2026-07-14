@@ -328,16 +328,29 @@ class StreamingBeamBranch:
         """
         if block.data.ndim != 2 or block.data.shape[0] != self._n_ch:
             raise ValueError("runtime block must have shape [n_ch, n_block_sample].")
-        # 全beamが同じ物理入力を受けるため、beam軸を追加して[beam,ch,time]を作る。
-        expanded = np.broadcast_to(
+        # block.data shape: [ch,time]。同じセンサ入力を全待受beamへ分岐し、
+        # beamごとに異なる整相遅延を適用できる[beam,ch,time]を作る。
+        beam_channel_input = np.broadcast_to(
             block.data[np.newaxis, :, :],
             (self._n_beam, self._n_ch, block.data.shape[1]),
         ).reshape(self._n_beam * self._n_ch, block.data.shape[1])
-        delayed = self._delay.process(np.asarray(expanded, dtype=np.float64))
+
+        # delayed.data shape: [beam*ch,time]。各系列へ候補方位別の因果整数遅延を与え、
+        # 到来時刻をbeam内で揃える。valid_mask=Falseは初回の遅延履歴不足sampleを表す。
+        delayed = self._delay.process(np.asarray(beam_channel_input, dtype=np.float64))
+
+        # filtered.data shape: [beam*ch,time]。整数遅延後の各channelへ、周波数重み
+        # w[f,beam,ch]に対応する残差FIR応答H=conj(w)を適用する。入力valid_maskを
+        # FIR履歴の完成条件と合わせ、未完成sampleが後段へ完成値として出ないようにする。
         filtered = self._fir.process(SignalBlock(delayed.data, delayed.valid_mask))
+
+        # 平坦化していたseries軸を[beam,ch]へ戻す。filtered_dataは各channelの複素寄与、
+        # filtered_validはその寄与が整数遅延とFIRの両方で完成済みかを示す。
         filtered_data = filtered.data.reshape(self._n_beam, self._n_ch, block.data.shape[1])
         filtered_valid = filtered.valid_mask.reshape(self._n_beam, self._n_ch, block.data.shape[1])
-        # 完成weightの各channel寄与を加算し、全channel完成時だけbeam sampleを公開する。
+
+        # y[beam,time]=sum_ch H[beam,ch]*x[ch]としてchannel寄与を加算する。
+        # 一つでも履歴不足のchannelがあれば、そのbeam sampleは未完成として公開しない。
         return BeamBlock(
             self.method_id,
             block.start_sample,
