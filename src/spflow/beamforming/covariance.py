@@ -9,7 +9,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 
-def estimate_covariance(X: NDArray[Any]) -> NDArray[np.complexfloating[Any, Any]]:
+def estimate_covariance(X: NDArray[Any]) -> NDArray[np.complex64]:
     """サブバンド観測から空間共分散行列を推定する。
 
     Args:
@@ -18,30 +18,21 @@ def estimate_covariance(X: NDArray[Any]) -> NDArray[np.complexfloating[Any, Any]
 
     Returns:
         空間共分散行列 `Rxx = XX^H / n_frame`。shape は `[n_ch, n_ch]`。
-        float32/complex64入力はcomplex64、それ以外の数値入力はcomplex128で返す。
+        入力dtypeにかかわらず、32bit運用型`complex64`で返す。
 
     Raises:
         ValueError: 入力 shape が `[n_ch, n_frame]` でない場合。
         ValueError: フレーム数が 0 以下の場合。
     """
-    observations = np.asarray(X)
-    if observations.ndim != 2:
+    snapshots = np.asarray(X, dtype=np.complex64)
+    if snapshots.ndim != 2:
         raise ValueError("X must have shape (n_ch, n_frame).")
-    if observations.shape[0] <= 0 or observations.shape[1] <= 0:
+    if snapshots.shape[0] <= 0 or snapshots.shape[1] <= 0:
         raise ValueError("X must contain at least one frame.")
-
-    # simulation precisionを暗黙に32 bitへ落とさない。float32/complex64だけを
-    # complex64として維持し、float64/complex128とその他の数値入力はcomplex128へ揃える。
-    output_dtype = (
-        np.complex64
-        if observations.dtype in (np.dtype(np.float32), np.dtype(np.complex64))
-        else np.complex128
-    )
-    snapshots = np.asarray(observations, dtype=output_dtype)
 
     # Rxx[ch_i, ch_j] = (1 / n_frame) Σ_t x[ch_i, t] conj(x[ch_j, t])。
     # 行列積 X X^H を使うことで、全フレーム平均の空間共分散を一度に計算する。
-    return np.asarray(snapshots @ snapshots.conj().T / snapshots.shape[1], dtype=output_dtype)
+    return np.asarray(snapshots @ snapshots.conj().T / snapshots.shape[1], dtype=np.complex64)
 
 
 def estimate_covariance_snapshots(snapshots: np.ndarray, *, normalization: float = 1.0) -> np.ndarray:

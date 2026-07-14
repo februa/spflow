@@ -683,7 +683,8 @@ evaluations/ -> spflow.simulation -> spflow.beamforming
 ### 13.1 数値精度
 
 `SimulationPrecision.SINGLE`は`float32/complex64`、`DOUBLE`は
-`float64/complex128`を対として選ぶ。既定は評価誤差を抑える`DOUBLE`である。
+`float64/complex128`を対として選ぶ。既定は運用データ型と一致する`SINGLE`である。
+`DOUBLE`はオフライン係数設計や評価誤差の確認で明示的に選ぶ。
 
 変更可能なprocess-global dtypeは持たない。NumPyと同様、生成元のconfigで選んだdtypeを重み・
 FIR係数へ伝播させ、逐次遅延は入力dtype、因果FIRは係数dtypeを維持する。履歴を保持している途中で

@@ -59,15 +59,16 @@ def test_estimate_covariance_matches_manual_result():
     np.testing.assert_allclose(out, expected)
 
 
-def test_estimate_covariance_preserves_declared_simulation_precision() -> None:
-    """方位整列snapshotを汎用共分散へ渡しても32/64 bit精度を暗黙に変更しない。"""
-    # 同じ物理値を両精度で作り、dtype契約とR=XX^H/Lの双方を固定する。
+def test_estimate_covariance_normalizes_to_operational_single_precision() -> None:
+    """方位整列snapshotを汎用共分散へ渡す境界でcomplex64へ正規化する。"""
+    # 外部入力が64bitでも運用状態へ倍精度を伝播させないことと、R=XX^H/Lを固定する。
     for dtype in (np.complex64, np.complex128):
         snapshots = np.asarray([[1.0 + 1.0j, 2.0 - 1.0j]], dtype=dtype)
         covariance = estimate_covariance(snapshots)
 
-        assert covariance.dtype == np.dtype(dtype)
-        np.testing.assert_allclose(covariance, snapshots @ snapshots.conj().T / 2.0)
+        assert covariance.dtype == np.dtype(np.complex64)
+        expected = snapshots @ snapshots.conj().T / 2.0
+        np.testing.assert_allclose(covariance, expected, rtol=2.0e-7)
 
 
 def test_integration_blocks_from_integration_time_matches_ceiling_rule():

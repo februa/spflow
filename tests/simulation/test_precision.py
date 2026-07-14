@@ -33,6 +33,26 @@ def test_responsibility_modules_and_convenience_exports_are_identical() -> None:
     assert VersionedCausalFIR is DirectVersionedFIR
 
 
+def test_alignment_simulation_defaults_to_operational_single_precision() -> None:
+    """精度を省略した通常利用では入力をfloat32へ正規化する。"""
+    config = AlignmentSimulationConfig(
+        fs_hz=16.0,
+        fft_size=16,
+        sound_speed_m_per_s=1500.0,
+        sensor_positions_m=np.asarray([-1.0, 0.0, 1.0], dtype=np.float64),
+        beam_azimuth_deg=np.asarray([0.0, 90.0, 180.0], dtype=np.float64),
+        target_azimuth_deg=90.0,
+        target_band_hz=(2.0, 2.0),
+        analysis_width_hz=0.0,
+        source_band_rms_power=0.0,
+        noise_power_per_bin_re_input_rms2=0.01,
+    )
+
+    assert config.precision is SimulationPrecision.SINGLE
+    assert config.sensor_positions_m.dtype == np.dtype(np.float32)
+    assert config.beam_azimuth_deg.dtype == np.dtype(np.float32)
+
+
 @pytest.mark.parametrize(
     ("precision", "real_dtype", "complex_dtype"),
     (

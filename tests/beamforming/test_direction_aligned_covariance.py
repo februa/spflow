@@ -29,20 +29,20 @@ def test_calculate_snapshot_time_axis_restoration_phase_uses_channel_mean_refere
         / 8.0
     )
     assert phase.shape == (2, 5, 2)
-    np.testing.assert_allclose(phase, expected, atol=1.0e-15)
+    assert phase.dtype == np.dtype(np.complex64)
+    np.testing.assert_allclose(phase, expected, atol=2.0e-7)
     # DCは切り出し時刻に依存しないため、全channel・全方位で位相1となる。
     np.testing.assert_allclose(phase[:, 0, :], 1.0)
 
 
 @pytest.mark.parametrize(
-    ("real_dtype", "expected_complex_dtype"),
-    [(np.float32, np.complex64), (np.float64, np.complex128)],
+    "real_dtype",
+    [np.float32, np.float64],
 )
 def test_extract_direction_aligned_rfft_snapshots_restores_common_time_axis(
     real_dtype: type[np.float32] | type[np.float64],
-    expected_complex_dtype: type[np.complex64] | type[np.complex128],
 ) -> None:
-    """異なる開始時刻から切り出した同一toneを同じrFFT位相へ復元する。"""
+    """入力精度によらず32bit化し、異なる開始時刻のtoneを同じ位相へ復元する。"""
     # FFT bin 1のtoneを両channelへ同相で与える。delay=[0,2]では生の切り出しFFTに
     # 2 sample分の位相差が出るため、復元符号が正しい場合だけchannel spectrumが一致する。
     sample_index = np.arange(18, dtype=np.float64)
@@ -57,14 +57,14 @@ def test_extract_direction_aligned_rfft_snapshots_restores_common_time_axis(
     )
 
     assert snapshots.shape == (2, 5, 2)
-    assert snapshots.dtype == np.dtype(expected_complex_dtype)
+    assert snapshots.dtype == np.dtype(np.complex64)
     np.testing.assert_allclose(snapshots[:, :, 0], snapshots[:, :, 1], atol=2.0e-6)
     # NumPy非正規化rFFTではpeak振幅N/2=4となり、位相復元は振幅校正を変えない。
     np.testing.assert_allclose(np.abs(snapshots[:, 1, :]), 4.0, atol=2.0e-6)
 
 
 def test_extract_direction_aligned_rfft_snapshots_accepts_real_array_like() -> None:
-    """NumPyと同様に実数array-likeをfloat64へ正規化して処理する。"""
+    """実数array-likeを32bit運用型へ正規化して処理する。"""
     snapshots = extract_direction_aligned_rfft_snapshots(
         [[1, 1, 1, 1], [1, 1, 1, 1]],
         np.zeros(2, dtype=np.int64),
@@ -72,7 +72,7 @@ def test_extract_direction_aligned_rfft_snapshots_accepts_real_array_like() -> N
         hop_size=4,
     )
 
-    assert snapshots.dtype == np.dtype(np.complex128)
+    assert snapshots.dtype == np.dtype(np.complex64)
     np.testing.assert_allclose(snapshots[0, 0], np.asarray([4.0, 4.0]))
     np.testing.assert_allclose(snapshots[0, 1:], 0.0)
 

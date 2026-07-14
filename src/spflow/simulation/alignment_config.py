@@ -34,7 +34,7 @@ class AlignmentSimulationConfig:
     noise_power_per_bin_re_input_rms2: float
     ebae_diagonal_loading: float = 1.0
     mvdr_diagonal_loading_ratio: float = 1.0e-3
-    precision: SimulationPrecision = SimulationPrecision.DOUBLE
+    precision: SimulationPrecision = SimulationPrecision.SINGLE
 
     def __post_init__(self) -> None:
         """shape、単位上の範囲、DFT鏡映条件を構築時に検証する。

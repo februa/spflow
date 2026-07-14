@@ -2,19 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
-
-ComplexArray = NDArray[np.complexfloating[Any, Any]]
 
 
 def calculate_snapshot_time_axis_restoration_phase(
     snapshot_center_samples: ArrayLike,
     *,
     fft_size: int,
-) -> NDArray[np.complex128]:
+) -> NDArray[np.complex64]:
     """channel別snapshot時刻をchannel平均の共通時刻へ戻すrFFT位相を返す。
 
     Args:
@@ -34,7 +30,7 @@ def calculate_snapshot_time_axis_restoration_phase(
         この位相はchannelごとに異なる区間をFFTしたことで生じる時刻基準差だけを除く。
         T1からT2aへの整数遅延座標変換や、残留小数遅延steeringは責務に含めない。
     """
-    centers = np.asarray(snapshot_center_samples, dtype=np.float64)
+    centers = np.asarray(snapshot_center_samples, dtype=np.float32)
     if centers.ndim != 2 or centers.shape[0] == 0 or centers.shape[1] == 0:
         raise ValueError("snapshot_center_samples must have shape [n_ch, n_direction].")
     if fft_size <= 0:
@@ -44,19 +40,18 @@ def calculate_snapshot_time_axis_restoration_phase(
     # R=XX^Hで相殺されるため、位相量を小さく保てるchannel平均を採用する。
     reference_center = np.mean(centers, axis=0, keepdims=True)
     relative_center_samples = centers - reference_center
-    frequency_bin = np.arange(fft_size // 2 + 1, dtype=np.float64)
+    frequency_bin = np.arange(fft_size // 2 + 1, dtype=np.float32)
 
     # 位相shapeは[ch,frequency,direction]。異なる開始時刻Delta nを持つDFTへ
     # exp(-j 2π k Delta n/N)を掛け、全channelを同じ絶対時間基準へ復元する。
-    phase = np.exp(
-        -1j
-        * 2.0
-        * np.pi
+    phase_angle_rad = (
+        np.float32(-2.0 * np.pi)
         * relative_center_samples[:, np.newaxis, :]
         * frequency_bin[np.newaxis, :, np.newaxis]
-        / float(fft_size)
+        / np.float32(fft_size)
     )
-    return np.asarray(phase, dtype=np.complex128)
+    phase = np.exp(np.asarray(1j * phase_angle_rad, dtype=np.complex64))
+    return np.asarray(phase, dtype=np.complex64)
 
 
 def extract_direction_aligned_rfft_snapshots(
@@ -65,7 +60,7 @@ def extract_direction_aligned_rfft_snapshots(
     *,
     fft_size: int,
     hop_size: int,
-) -> ComplexArray:
+) -> NDArray[np.complex64]:
     """候補方位の同一波面区間を切り出し、共通時間軸のrFFT snapshotを作る。
 
     Args:
@@ -80,7 +75,7 @@ def extract_direction_aligned_rfft_snapshots(
         方位整列済みrFFT snapshot。shapeは`[n_frame,n_frequency,n_ch]`。
         axis=0は時間snapshot、axis=1はone-sided rFFT周波数bin、axis=2はchannel。
         channel別切り出し時刻の位相はchannel平均時刻へ復元済みで、FFTは非正規化。
-        float32入力はcomplex64、それ以外の実数入力はcomplex128で返す。
+        入力dtypeにかかわらず、運用型`complex64`で返す。
 
     Raises:
         TypeError: signalが複素数の場合、または遅延が整数でない場合。
@@ -96,12 +91,8 @@ def extract_direction_aligned_rfft_snapshots(
         raise TypeError("signal must be real-valued.")
     if raw_signal.ndim != 2 or raw_signal.shape[0] == 0:
         raise ValueError("signal must have shape [n_ch, n_sample] with n_ch > 0.")
-    # NumPyと同様に実数array-likeを受け、明示されたfloat32だけ低精度を維持する。
-    samples = (
-        np.asarray(raw_signal, dtype=np.float32)
-        if raw_signal.dtype == np.dtype(np.float32)
-        else np.asarray(raw_signal, dtype=np.float64)
-    )
+    # 外部入力は公開処理の入口で32bit運用型へ正規化する。
+    samples = np.asarray(raw_signal, dtype=np.float32)
 
     raw_delays = np.asarray(causal_delays_samples)
     if not np.issubdtype(raw_delays.dtype, np.integer):
@@ -137,14 +128,20 @@ def extract_direction_aligned_rfft_snapshots(
 
     # raw_spectra shape: [n_frame,n_frequency,n_ch]。切り出し中心の共通項
     # start+N/2は全channel同じなので、相対中心-d[c]だけで復元位相を計算できる。
-    raw_spectra = np.moveaxis(np.fft.rfft(frames, axis=2), 2, 1)
+    # NumPy FFTはfloat32入力もcomplex128へ昇格するため、FFT直後に運用型へ戻す。
+    raw_spectra = np.asarray(
+        np.moveaxis(np.fft.rfft(frames, axis=2), 2, 1),
+        dtype=np.complex64,
+    )
     phase_ch_frequency = calculate_snapshot_time_axis_restoration_phase(
         -delays[:, np.newaxis],
         fft_size=fft_size,
     )[:, :, 0]
-    output_dtype = np.complex64 if samples.dtype == np.dtype(np.float32) else np.complex128
     # phase.T shapeは[n_frequency,n_ch]で、frame軸へbroadcastする。
-    return np.asarray(raw_spectra * phase_ch_frequency.T[np.newaxis, :, :], dtype=output_dtype)
+    return np.asarray(
+        raw_spectra * phase_ch_frequency.T[np.newaxis, :, :],
+        dtype=np.complex64,
+    )
 
 
 __all__ = [

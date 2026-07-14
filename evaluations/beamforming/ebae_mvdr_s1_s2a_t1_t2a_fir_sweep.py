@@ -16,6 +16,7 @@ from spflow.simulation import (
     AlignmentSimulationConfig,
     AlignmentWeightDesign,
     FrequencyWeightFirApproximation,
+    SimulationPrecision,
     approximate_frequency_weights_with_fir,
     calculate_source_beam_level_db,
     design_alignment_weights,
@@ -65,6 +66,9 @@ DEFAULT_ALIGNMENT_CONFIG = AlignmentSimulationConfig(
     noise_power_per_bin_re_input_rms2=NOISE_POWER_PER_BIN_RE_INPUT_RMS2,
     ebae_diagonal_loading=EBAE_DIAGONAL_LOADING,
     mvdr_diagonal_loading_ratio=MVDR_DIAGONAL_LOADING_RATIO,
+    # 1e-10以下のunitary同値誤差を測るオフライン評価なので、運用既定SINGLEから
+    # 明示的にDOUBLEへ切り替える。生成した重みを運用状態として公開する用途ではない。
+    precision=SimulationPrecision.DOUBLE,
 )
 
 if ALGORITHM_IDS != ALIGNMENT_ALGORITHM_IDS or METHOD_IDS != ALIGNMENT_METHOD_IDS:

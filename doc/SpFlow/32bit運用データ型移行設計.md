@@ -14,6 +14,10 @@ Python の設定値や shape は Python `int` / `float` のまま扱う。これ
 
 外部入力は各公開処理の入口で上記の運用型へ正規化する。FFT、STFT、FIR、Delay-and-Sum、MVDR、LCMV、GSC、SLC の公開出力も、特に明記しない限り `float32` または `complex64` とする。
 
+`SimulationPrecision`を持つ公開configの既定値は`SINGLE`とする。`DOUBLE`は互換性と
+オフライン検証のため残すが、利用者が明示した場合だけ選択する。入力配列が偶然64bitである
+ことを、運用経路全体を64bitへ昇格させる指定として扱わない。
+
 配列添字は保存時に `int32` とする。一方、NumPy の shape、slice、`range`、単一要素アクセスへ渡す直前では Python `int` へ変換する。
 
 ## 3. 64bit を許可する境界
