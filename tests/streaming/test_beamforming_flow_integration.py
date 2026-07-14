@@ -7,6 +7,11 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
+from examples.beamforming.streaming_mvdr_weights import (
+    calculate_frame_fft,
+    make_environment,
+    process_cycle,
+)
 from spflow import Flow, FrameBuffer, StepScheduler
 from spflow.beamforming import (
     CBFBeamformer,
@@ -152,3 +157,58 @@ def test_flow_scheduler_mvdr_uses_safe_fallback_then_publishes_completed_update(
     np.testing.assert_allclose(completed_output, np.ones((1, 2)), atol=1e-6)
     assert first_updates == []
     assert len(completed_updates) == 1
+
+
+def test_streaming_mvdr_flow_applies_one_cycle_design_to_same_frame() -> None:
+    """1周期で設計完了する場合、同じFFT frameへ新しい適応係数を適用することを確認する。"""
+    env = make_environment(fft_length=2, items_per_cycle=None)
+    signal_chunk = np.array([[1.0, 0.0], [1.0, 0.0]], dtype=np.float32)
+
+    outputs = process_cycle(signal_chunk, env)
+
+    assert env.active_coefficient_generation == 0
+    assert env.coefficient_replacement_count == 1
+    assert len(outputs) == 1
+    frame_fft = calculate_frame_fft(signal_chunk, fft_length=2)
+    np.testing.assert_allclose(
+        outputs[0],
+        apply_beamformer_bands(frame_fft, env.active_beamformer_coefficients),
+    )
+    for band_index in range(env.steering.shape[2]):
+        response = (
+            env.active_beamformer_coefficients[:, :, band_index].T @ env.steering[:, :, band_index]
+        )
+        np.testing.assert_allclose(response, np.ones((1, 1)), atol=1e-6)
+
+
+def test_streaming_mvdr_flow_keeps_previous_coefficients_until_multicycle_design_finishes() -> None:
+    """複数周期設計中は固定CBFを使い、完成周期のFFT frameから適応係数へ切り替える。"""
+    env = make_environment(fft_length=2, items_per_cycle=1)
+    initial_coefficients = env.active_beamformer_coefficients.copy()
+    first_chunk = np.array([[1.0, 0.0], [1.0, 0.0]], dtype=np.float32)
+    second_chunk = np.array([[0.0, 1.0], [0.0, 1.0]], dtype=np.float32)
+
+    first_outputs = process_cycle(first_chunk, env)
+    assert env.active_coefficient_generation is None
+    assert env.coefficient_replacement_count == 0
+    np.testing.assert_allclose(
+        first_outputs[0],
+        apply_beamformer_bands(
+            calculate_frame_fft(first_chunk, fft_length=2),
+            initial_coefficients,
+        ),
+    )
+
+    second_outputs = process_cycle(second_chunk, env)
+    assert env.active_coefficient_generation == 0
+    assert env.coefficient_replacement_count == 1
+    np.testing.assert_allclose(
+        second_outputs[0],
+        apply_beamformer_bands(
+            calculate_frame_fft(second_chunk, fft_length=2),
+            env.active_beamformer_coefficients,
+        ),
+    )
+    # generation 0の設計中に到着したgeneration 1は、次の設計候補として最新1件だけ保持する。
+    assert env.waiting_snapshot is not None
+    assert env.waiting_snapshot.generation == 1

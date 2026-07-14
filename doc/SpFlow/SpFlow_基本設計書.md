@@ -709,6 +709,21 @@ updated_coefficients = (
 未完成周期の`updated_value()`は`None`であり、`Flow`が0出力として扱う。これにより、
 `Flow`は処理レートを決めず、`StepScheduler`の完成状態だけを0個・1個の値へ変換できる。
 
+適応ビームフォーマ全体では、FFT後の同じ`frame_fft_flow`から係数設計経路と信号適用経路を
+分ける。係数設計経路は完成した係数を現在係数へ置き換え、信号適用経路はその現在係数と
+FFT信号のchannel内積を計算する。
+
+```text
+入力信号 → frame化 → FFT ┬→ 共分散計算 → 設計用snapshot一時保持
+                         │                  → 適応係数算出 → 現在係数置換 ┐
+                         └───────────────────────────────────────────────┼→ h^T x → 出力
+                                                現在の完成係数 ─────────┘
+```
+
+係数設計経路を先に評価するため、1周期で全itemを設計できた場合は、完成係数を同じFFT frameへ
+適用する。設計が複数周期にまたがる場合は、設計中snapshotを同じgenerationのまま保持し、
+完成するまでは固定CBFまたは前回完成した適応係数を信号へ適用する。
+
 ---
 
 ## 10. DoubleBufferCallback の設計
@@ -857,31 +872,55 @@ H = StepScheduler.map(
 
 ### 11.3 複数周期分割処理の例
 
-帯域ごとのMVDR数式を利用者側へ複製せず、公開済みの`MVDRWeightCallback`と
-`MVDRWeightSnapshot`を組み合わせる。
+帯域ごとのMVDR数式を利用者側へ複製せず、FFT後の`Flow`を2経路へ分ける。
+関数名は、係数設計経路の状態遷移を外側から読めるようにする。
 
 ```python
-env.mvdr_scheduler = StepScheduler(
-    callback=MVDRWeightCallback(diag_load=opt.mvdr.get("diag_load", 1e-3)),
-    items_per_cycle=4,
-)
-
-
-def beamforming_process(X, covariance, generation, env):
-    snapshot = MVDRWeightSnapshot(
-        covariance=covariance,
-        steering=env.steering,
-        generation=generation,
+def process_cycle(signal_chunk, env):
+    frame_fft_flow = (
+        Flow.from_value(signal_chunk)
+        .map(env.frame_buffer.process)
+        .map(apply_analysis_window, env.analysis_window)
+        .map(calculate_frame_fft, env.analysis_window.size)
     )
-    coefficients = env.mvdr_scheduler.process(snapshot)
-    Y = apply_beamformer_bands(X, coefficients)
 
-    return Y
+    # 係数設計経路:
+    # 共分散計算 → 設計用snapshotの一時保持 → 適応係数算出 → 現在係数の一括置換。
+    (
+        frame_fft_flow
+        .map(calculate_covariance_snapshot, env)
+        .map(hold_covariance_snapshot_for_adaptive_design, env)
+        .map(calculate_adaptive_beamformer_coefficients, env)
+        .map(replace_active_beamformer_coefficients, env)
+    )
+
+    # 信号適用経路は同じFFT信号と現在の完成係数をh^T xで合流させる。
+    return frame_fft_flow.map(apply_active_beamformer, env)
 ```
 
-初回に`items_per_cycle=4`で未完了の場合、`coefficients`は同じsteeringから設計した
-固定CBF実適用係数である。これは`h^T a=1`を満たすため、適応係数が未完成でも目標方向の
-信号を消失させない。全帯域が完了した周期に限り、完成したMVDR実適用係数へ切り替える。
+各関数の責務は以下である。
+
+```text
+calculate_covariance_snapshot:
+    frame_fft[ch, band]からR[band, ch, ch]を計算し、generationを付ける
+
+hold_covariance_snapshot_for_adaptive_design:
+    設計中snapshotを完了まで固定し、新着は最新1件だけ待機させる
+
+calculate_adaptive_beamformer_coefficients:
+    StepSchedulerを1周期進め、全帯域完成時だけ係数を返す
+
+replace_active_beamformer_coefficients:
+    完成した全帯域係数を信号経路の現在係数へ一括置換する
+
+apply_active_beamformer:
+    Y[beam, band] = Σ_ch H_active[ch, beam, band] X[ch, band]を計算する
+```
+
+1周期設計では`replace_active_beamformer_coefficients()`が同じ呼び出し中に実行されるため、
+同じFFT frameへ新係数を適用する。複数周期設計では`calculate_adaptive_beamformer_coefficients()`
+が`None`を返し、`Flow`が後段の置換処理を呼ばない。したがって信号経路は、全帯域が完成するまで
+固定CBFまたは前回完成係数を使い続ける。
 
 ---
 
