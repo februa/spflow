@@ -52,8 +52,8 @@ from evaluations.beamforming.scene_renderer_t2a_waveform_reporting import (  # n
     select_diagnostic_zoom_bounds,
 )
 from spflow import StepScheduler  # noqa: E402
+from spflow.beamforming.covariance import estimate_covariance  # noqa: E402
 from spflow.beamforming.direction_aligned_covariance import (  # noqa: E402
-    estimate_direction_aligned_frequency_covariance,
     extract_direction_aligned_rfft_snapshots,
 )
 from spflow.beamforming.ebae import EbaeConfig, design_ebae_weights_band  # noqa: E402
@@ -750,9 +750,8 @@ def design_frequency_weights(
     if needs_covariance:
         for beam_index in range(n_beam):
             snapshots = extract_direction_aligned_rfft_snapshots(
-                training_signal,
+                training_signal[:, :training_sample_count],
                 causal_delays[beam_index],
-                analysis_sample_count=training_sample_count,
                 fft_size=config.analysis_fft_size,
                 hop_size=config.analysis_hop_size,
             )
@@ -819,15 +818,29 @@ def design_frequency_weights(
                     ebae_snapshot_count if "t2a_ebae" in selected_method_set else snapshots.shape[0]
                 )
 
-                # covariance shape: [n_active_ch,n_active_ch]。方位別時間切り出しと
-                # R=(1/L)Σxx^Hの責務は公開部品へ分離し、ここでは方式条件だけを選ぶ。
+                # active_snapshots shape: [L,n_active_ch]。方式側がL、周波数、active channelを
+                # 通常のNumPy slicingで選び、汎用共分散部品の[ch,snapshot]契約へ転置する。
+                active_snapshots = snapshots[
+                    :selected_snapshot_count,
+                    frequency_index,
+                    active_indices,
+                ]
+                # direction-aligned部品の出力は切り出し時刻差を除いたT1元入力座標である。
+                # 実信号経路y_c[n]=x_c[n-d_c]に合わせ、D=exp(-j2πfd/fs)を掛けて
+                # T2a整数遅延後座標へ移す。beam内の全channel共通位相は共分散で相殺される。
+                integer_delay_phase = np.exp(
+                    -1j
+                    * 2.0
+                    * np.pi
+                    * frequency
+                    * causal_delays[beam_index, active_indices]
+                    / config.fs_hz
+                )
+                t2a_active_snapshots = active_snapshots * integer_delay_phase[np.newaxis, :]
+                # covariance shape: [n_active_ch,n_active_ch]。
+                # 方位固有部品が時間・位相を整合し、汎用部品がR=(1/L)XX^Hだけを担う。
                 covariance = np.asarray(
-                    estimate_direction_aligned_frequency_covariance(
-                        snapshots,
-                        frequency_index=frequency_index,
-                        active_channel_indices=active_indices,
-                        snapshot_count=selected_snapshot_count,
-                    ),
+                    estimate_covariance(t2a_active_snapshots.T),
                     dtype=np.complex128,
                 )
                 if "t2a_mvdr" in selected_method_set:

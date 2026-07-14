@@ -1,4 +1,4 @@
-"""候補方位別snapshot抽出と周波数共分散の契約を検証する。"""
+"""候補方位別の時間切り出しと共通時間軸位相復元を検証する。"""
 
 from __future__ import annotations
 
@@ -6,145 +6,97 @@ import numpy as np
 import pytest
 
 from spflow.beamforming import (
-    estimate_direction_aligned_frequency_covariance,
+    calculate_snapshot_time_axis_restoration_phase,
     extract_direction_aligned_rfft_snapshots,
 )
+
+
+def test_calculate_snapshot_time_axis_restoration_phase_uses_channel_mean_reference() -> None:
+    """channel別中心と平均中心の差に対する`exp(-j2πkΔn/N)`を返す。"""
+    # 2方位で相対中心の符号を反転させ、channel軸とdirection軸の取り違えも検出する。
+    centers = np.asarray([[0.0, 1.0], [2.0, -1.0]], dtype=np.float64)
+
+    phase = calculate_snapshot_time_axis_restoration_phase(centers, fft_size=8)
+
+    relative_centers = centers - np.mean(centers, axis=0, keepdims=True)
+    frequency_bin = np.arange(5, dtype=np.float64)
+    expected = np.exp(
+        -1j
+        * 2.0
+        * np.pi
+        * relative_centers[:, np.newaxis, :]
+        * frequency_bin[np.newaxis, :, np.newaxis]
+        / 8.0
+    )
+    assert phase.shape == (2, 5, 2)
+    np.testing.assert_allclose(phase, expected, atol=1.0e-15)
+    # DCは切り出し時刻に依存しないため、全channel・全方位で位相1となる。
+    np.testing.assert_allclose(phase[:, 0, :], 1.0)
 
 
 @pytest.mark.parametrize(
     ("real_dtype", "expected_complex_dtype"),
     [(np.float32, np.complex64), (np.float64, np.complex128)],
 )
-def test_extract_direction_aligned_rfft_snapshots_aligns_wavefront_and_precision(
+def test_extract_direction_aligned_rfft_snapshots_restores_common_time_axis(
     real_dtype: type[np.float32] | type[np.float64],
     expected_complex_dtype: type[np.complex64] | type[np.complex128],
 ) -> None:
-    """channel別遅延を引いた同一波面区間と32/64 bit精度を維持する。"""
-    # ch1をch0より2 sample遅らせる条件にし、整列後の各frameがどの入力区間を
-    # 参照すべきかを整数列から直接判別できるようにする。
-    signal = np.asarray(
-        [np.arange(12), 100 + np.arange(12)],
-        dtype=real_dtype,
-    )
-    delays = np.asarray([0, 2], dtype=np.int64)
+    """異なる開始時刻から切り出した同一toneを同じrFFT位相へ復元する。"""
+    # FFT bin 1のtoneを両channelへ同相で与える。delay=[0,2]では生の切り出しFFTに
+    # 2 sample分の位相差が出るため、復元符号が正しい場合だけchannel spectrumが一致する。
+    sample_index = np.arange(18, dtype=np.float64)
+    tone = np.cos(2.0 * np.pi * sample_index / 8.0).astype(real_dtype)
+    signal = np.stack((tone, tone), axis=0)
 
     snapshots = extract_direction_aligned_rfft_snapshots(
         signal,
-        delays,
-        analysis_sample_count=10,
-        fft_size=4,
-        hop_size=2,
+        np.asarray([0, 2], dtype=np.int64),
+        fft_size=8,
+        hop_size=8,
     )
 
-    # start=[2,4,6]に対し、ch0は[start:start+4]、ch1は[start-2:start+2]を使う。
-    expected_frames = np.asarray(
-        [
-            [[2, 3, 4, 5], [100, 101, 102, 103]],
-            [[4, 5, 6, 7], [102, 103, 104, 105]],
-            [[6, 7, 8, 9], [104, 105, 106, 107]],
-        ],
-        dtype=real_dtype,
-    )
-    expected = np.moveaxis(np.fft.rfft(expected_frames, axis=2), 2, 1).astype(
-        expected_complex_dtype
-    )
-
-    assert snapshots.shape == (3, 3, 2)
+    assert snapshots.shape == (2, 5, 2)
     assert snapshots.dtype == np.dtype(expected_complex_dtype)
-    np.testing.assert_allclose(snapshots, expected)
+    np.testing.assert_allclose(snapshots[:, :, 0], snapshots[:, :, 1], atol=2.0e-6)
+    # NumPy非正規化rFFTではpeak振幅N/2=4となり、位相復元は振幅校正を変えない。
+    np.testing.assert_allclose(np.abs(snapshots[:, 1, :]), 4.0, atol=2.0e-6)
 
 
-def test_extract_direction_aligned_rfft_snapshots_keeps_unnormalized_fft_contract() -> None:
-    """矩形窓のDC係数がFFT長となり、暗黙のFFT正規化を加えないことを確認する。"""
-    # 定数1の4点非正規化FFTではDC振幅が4になるため、規約を最短の入力で固定できる。
-    signal = np.ones((2, 4), dtype=np.float64)
+def test_extract_direction_aligned_rfft_snapshots_accepts_real_array_like() -> None:
+    """NumPyと同様に実数array-likeをfloat64へ正規化して処理する。"""
     snapshots = extract_direction_aligned_rfft_snapshots(
-        signal,
+        [[1, 1, 1, 1], [1, 1, 1, 1]],
         np.zeros(2, dtype=np.int64),
-        analysis_sample_count=4,
         fft_size=4,
         hop_size=4,
     )
 
+    assert snapshots.dtype == np.dtype(np.complex128)
     np.testing.assert_allclose(snapshots[0, 0], np.asarray([4.0, 4.0]))
     np.testing.assert_allclose(snapshots[0, 1:], 0.0)
 
 
-def test_estimate_direction_aligned_frequency_covariance_selects_declared_axes() -> None:
-    """指定bin・active channel・先頭L snapshotだけでR=XX^H/Lを作る。"""
-    snapshots = np.zeros((3, 2, 3), dtype=np.complex128)
-    snapshots[:, 1, :] = np.asarray(
-        [
-            [1.0 + 1.0j, 10.0 + 0.0j, 2.0 - 1.0j],
-            [2.0 + 0.0j, 20.0 + 0.0j, -1.0 + 2.0j],
-            [99.0 + 0.0j, 99.0 + 0.0j, 99.0 + 0.0j],
-        ]
-    )
-    active_indices = np.asarray([2, 0], dtype=np.int64)
-
-    covariance = estimate_direction_aligned_frequency_covariance(
-        snapshots,
-        frequency_index=1,
-        active_channel_indices=active_indices,
-        snapshot_count=2,
-    )
-
-    # active orderを[2,0]に固定し、3枚目を平均へ含めない期待値を直接構成する。
-    active = snapshots[:2, 1, :][:, active_indices]
-    expected = active.T @ active.conj() / 2.0
-    np.testing.assert_allclose(covariance, expected)
-    np.testing.assert_allclose(covariance, covariance.conj().T)
-
-
 @pytest.mark.parametrize(
-    ("delays", "analysis_sample_count", "fft_size", "expected_exception"),
+    ("signal", "delays", "fft_size", "expected_exception"),
     [
-        (np.asarray([0, -1], dtype=np.int64), 8, 4, ValueError),
-        (np.asarray([0.0, 1.0]), 8, 4, TypeError),
-        (np.asarray([0, 1], dtype=np.int64), 9, 4, ValueError),
-        (np.asarray([0, 7], dtype=np.int64), 8, 4, ValueError),
+        (np.zeros((2, 8), dtype=np.complex128), np.asarray([0, 1]), 4, TypeError),
+        (np.zeros((2, 8)), np.asarray([0.0, 1.0]), 4, TypeError),
+        (np.zeros((2, 8)), np.asarray([0, -1]), 4, ValueError),
+        (np.zeros((2, 8)), np.asarray([0, 7]), 4, ValueError),
     ],
 )
-def test_extract_direction_aligned_rfft_snapshots_rejects_invalid_boundaries(
+def test_extract_direction_aligned_rfft_snapshots_rejects_invalid_physical_boundaries(
+    signal: np.ndarray,
     delays: np.ndarray,
-    analysis_sample_count: int,
     fft_size: int,
     expected_exception: type[Exception],
 ) -> None:
-    """負遅延、非整数遅延、範囲外sample数、frame不足を早期エラーにする。"""
-    signal = np.zeros((2, 8), dtype=np.float64)
-
+    """複素入力、非整数・負遅延、完全frame不足という物理境界だけを拒否する。"""
     with pytest.raises(expected_exception):
         extract_direction_aligned_rfft_snapshots(
             signal,
             delays,
-            analysis_sample_count=analysis_sample_count,
             fft_size=fft_size,
             hop_size=2,
-        )
-
-
-@pytest.mark.parametrize(
-    ("frequency_index", "active_indices", "snapshot_count"),
-    [
-        (2, np.asarray([0], dtype=np.int64), 1),
-        (0, np.asarray([0, 0], dtype=np.int64), 1),
-        (0, np.asarray([2], dtype=np.int64), 1),
-        (0, np.asarray([0], dtype=np.int64), 3),
-    ],
-)
-def test_estimate_direction_aligned_frequency_covariance_rejects_invalid_selection(
-    frequency_index: int,
-    active_indices: np.ndarray,
-    snapshot_count: int,
-) -> None:
-    """周波数・channel・snapshot選択が入力軸の契約を外れた場合に拒否する。"""
-    snapshots = np.ones((2, 2, 2), dtype=np.complex64)
-
-    with pytest.raises(ValueError):
-        estimate_direction_aligned_frequency_covariance(
-            snapshots,
-            frequency_index=frequency_index,
-            active_channel_indices=active_indices,
-            snapshot_count=snapshot_count,
         )

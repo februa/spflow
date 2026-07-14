@@ -9,12 +9,14 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .._validation import require, require_positive_float, require_positive_int
+from .direction_aligned_covariance import (
+    calculate_snapshot_time_axis_restoration_phase,
+)
 from .geometry import relative_arrival_delay
 from .steering_power_weighting import (
     SteeringPowerChannelWeighting,
     prepare_steering_power_channel_weighting,
 )
-
 
 FloatArray = NDArray[np.floating[Any]]
 IntArray = NDArray[np.integer[Any]]
@@ -171,24 +173,11 @@ class CovarianceSnapshotCenterSchedule:
 
         segment_index = int(azimuth_segment_index)
         require(segment_index in (0, 1), "azimuth_segment_index must be 0 or 1.")
-        centers_sample = np.asarray(
+        # 中心表shape [n_ch,n_beam]を固有部品へ渡し、切り出し時刻差だけを
+        # 共通時間軸へ戻す。fsを介したHz表現とk/N表現は厳密に同じ位相となる。
+        phase = calculate_snapshot_time_axis_restoration_phase(
             self.channel_center_samples[segment_index],
-            dtype=np.float64,
-        )
-        # reference_center shapeは`[1,n_beam]`。channel平均により全chを同一beam時刻へ揃える。
-        reference_center_sample = np.mean(centers_sample, axis=0, keepdims=True)
-        relative_center_time_s = (centers_sample - reference_center_sample) / float(self.fs_hz)
-        frequency_hz = np.fft.rfftfreq(
-            self.snapshot_length_samples,
-            d=1.0 / float(self.fs_hz),
-        )
-        # phase shapeはbroadcastにより`[n_ch,n_bin,n_beam]`となる。
-        phase = np.exp(
-            -1j
-            * 2.0
-            * np.pi
-            * relative_center_time_s[:, np.newaxis, :]
-            * frequency_hz[np.newaxis, :, np.newaxis]
+            fft_size=self.snapshot_length_samples,
         )
         return np.asarray(phase, dtype=np.complex64)
 
