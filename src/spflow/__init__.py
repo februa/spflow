@@ -35,6 +35,7 @@ if TYPE_CHECKING:
         MVDROverlapSaveBeamformer,
         MVDRWeightCallback,
         MVDRWeightDesigner,
+        MVDRWeightSnapshot,
         NoiseOnlyBlMetrics,
         OperationalArrayFractionalDelayPerformanceConfig,
         OperationalFixedBeamShadingDesignConfig,
@@ -178,7 +179,7 @@ from .level_conversion import (
     level_20log10_twosided_asd,
 )
 from .option import Option
-from .scheduler import StepScheduler
+from .scheduler import StepResult, StepScheduler
 from .spectral_level import (
     integrate_one_sided_band_rms_power,
     level_db_to_rms_amplitude,
@@ -218,6 +219,7 @@ _BEAMFORMING_EXPORTS = {
     "MVDROverlapSaveBeamformer",
     "MVDRWeightCallback",
     "MVDRWeightDesigner",
+    "MVDRWeightSnapshot",
     "NoiseOnlyBlMetrics",
     "OperationalArrayFractionalDelayPerformanceConfig",
     "OperationalFixedBeamShadingDesignConfig",
@@ -404,6 +406,7 @@ __all__ = [
     "level_10log10_onesided_psd",
     "level_10log10_twosided_psd",
     "StepScheduler",
+    "StepResult",
     "DoubleBufferCallback",
     "PlaneWaveTone",
     "tone_rms_level_db_to_peak_amplitude",
@@ -550,6 +553,7 @@ __all__ = [
     "design_mvdr_overlap_save_filters",
     "MVDRWeightDesigner",
     "MVDRWeightCallback",
+    "MVDRWeightSnapshot",
     "beam_response_rms_db",
     "apply_beamformer",
     "apply_beamformer_bands",

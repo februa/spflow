@@ -629,20 +629,21 @@ env:
     Processor, Buffer, Scheduler, Probe などを置く
 
 inputs:
-    その処理呼び出しだけで使う局所入力データ
-    X, A, diag_load などを置く
+    一つの時間分割周期で固定する局所入力snapshot
+    共分散、steering、generationなどを置く
 ```
 
 例：
 
 ```python
-def beamforming_process(X, env):
-    inputs = {
-        "X": X,
-        "A": env.steering,
-    }
+def beamforming_process(X, covariance, generation, env):
+    snapshot = MVDRWeightSnapshot(
+        covariance=covariance,
+        steering=env.steering,
+        generation=generation,
+    )
 
-    H = env.mvdr_scheduler.process(inputs)
+    H = env.mvdr_scheduler.process(snapshot)
     Y = apply_beamformer(X, H)
 
     return Y
@@ -654,11 +655,11 @@ def beamforming_process(X, env):
 
 ```python
 scheduler = StepScheduler(
-    callback=MVDRWeightCallback(opt),
+    callback=MVDRWeightCallback(diag_load=1e-3),
     items_per_cycle=4,
 )
 
-W = scheduler.process(inputs)
+W = scheduler.process(snapshot)
 ```
 
 `items_per_cycle` の意味は以下である。
@@ -675,6 +676,38 @@ N:
 ```
 
 デフォルトは `None` とする。通常の関数的な使い方では、1回呼んだら完成結果が返る方が直感的だからである。
+
+同じgenerationの処理中は、最初に受け取ったsnapshotだけを全itemへ渡す。後続周期に
+同じgenerationの別objectが渡されても混在させない。また、適応ビームフォーマの共分散と
+steeringは`MVDRWeightSnapshot`生成時にcopyして読み取り専用にし、元配列のin-place更新が
+進行中計算へ影響しないようにする。新しいgenerationが到着した場合は、旧generationの
+未完成作業を破棄する。
+
+### 9.5 Flowとの接続
+
+最新の完成値を毎周期使う場合は、従来どおり`process()`を直接接続する。
+
+```python
+coefficients = Flow.from_value(snapshot).map(scheduler.process).to_list()
+```
+
+未完成周期にも、前回完成値または安全側の初期値が1個流れる。信号を毎周期処理する
+適応ビームフォーマでは、この経路を使う。
+
+新しい完成値が生成された周期だけを後段へ流す場合は、`process_result()`の固定結果型と
+`updated_value()`を使う。
+
+```python
+updated_coefficients = (
+    Flow.from_value(snapshot)
+    .map(scheduler.process_result)
+    .map(lambda result: result.updated_value())
+    .to_list()
+)
+```
+
+未完成周期の`updated_value()`は`None`であり、`Flow`が0出力として扱う。これにより、
+`Flow`は処理レートを決めず、`StepScheduler`の完成状態だけを0個・1個の値へ変換できる。
 
 ---
 
@@ -698,7 +731,7 @@ work:
 
 ```text
 初回:
-    prev をゼロ初期化する
+    prev を安全側の完成値で初期化する
 
 処理中:
     work を少しずつ更新する
@@ -710,11 +743,13 @@ work:
 ```
 
 この方式により、Nビンずつ処理する場合でも、後段へ未完成の重みや途中結果を流さずに済む。
+初期値の意味はcallback固有であり、適応ビームフォーマでは無音となるゼロ係数ではなく、
+目標方向を無歪で通す固定ビームフォーマ係数を使う。
 
 ### 10.3 ユーザが実装するメソッド
 
 ```python
-class XxxCallback(DoubleBufferCallback):
+class XxxCallback(DoubleBufferCallback[InputSnapshot, int, OutputArray]):
     def make_initial_output(self, inputs):
         ...
 
@@ -822,66 +857,31 @@ H = StepScheduler.map(
 
 ### 11.3 複数周期分割処理の例
 
-```python
-class MVDRWeightCallback(DoubleBufferCallback):
-    def __init__(self, opt):
-        self.diag_load = opt.mvdr.get("diag_load", 1e-3)
-        super().__init__()
-
-    def make_initial_output(self, inputs):
-        A = inputs["A"]
-        n_ch, n_beam, n_bin = A.shape
-        return np.zeros((n_ch, n_beam, n_bin), dtype=np.complex64)
-
-    def make_work_buffer(self, inputs):
-        return np.zeros_like(self.prev)
-
-    def make_items(self, inputs):
-        X = inputs["X"]
-        return range(X.shape[1])
-
-    def update_item(self, bin_idx, inputs):
-        X = inputs["X"]
-        A = inputs["A"]
-
-        Xf = X[:, bin_idx, :]
-        Af = A[:, :, bin_idx]
-
-        R = Xf @ Xf.conj().T / Xf.shape[1]
-
-        load = self.diag_load * np.trace(R).real / R.shape[0]
-        R = R + load * np.eye(R.shape[0])
-
-        Z = np.linalg.solve(R, Af)
-        denom = np.sum(Af.conj() * Z, axis=0)
-
-        theoretical_weights = Z / denom[np.newaxis, :]
-        self.work[:, :, bin_idx] = np.conj(theoretical_weights)
-```
-
-利用例：
+帯域ごとのMVDR数式を利用者側へ複製せず、公開済みの`MVDRWeightCallback`と
+`MVDRWeightSnapshot`を組み合わせる。
 
 ```python
 env.mvdr_scheduler = StepScheduler(
-    callback=MVDRWeightCallback(opt),
+    callback=MVDRWeightCallback(diag_load=opt.mvdr.get("diag_load", 1e-3)),
     items_per_cycle=4,
 )
 
 
-def beamforming_process(X, env):
-    inputs = {
-        "X": X,
-        "A": env.steering,
-    }
-
-    H = env.mvdr_scheduler.process(inputs)
-    Y = apply_beamformer(X, H)
+def beamforming_process(X, covariance, generation, env):
+    snapshot = MVDRWeightSnapshot(
+        covariance=covariance,
+        steering=env.steering,
+        generation=generation,
+    )
+    coefficients = env.mvdr_scheduler.process(snapshot)
+    Y = apply_beamformer_bands(X, coefficients)
 
     return Y
 ```
 
-初回に`items_per_cycle=4`で未完了の場合、`H`はゼロ配列である。全ビンの更新が
-完了した周期から、完成したMVDR実適用係数が返る。
+初回に`items_per_cycle=4`で未完了の場合、`coefficients`は同じsteeringから設計した
+固定CBF実適用係数である。これは`h^T a=1`を満たすため、適応係数が未完成でも目標方向の
+信号を消失させない。全帯域が完了した周期に限り、完成したMVDR実適用係数へ切り替える。
 
 ---
 
@@ -914,7 +914,7 @@ def make_env(opt):
     )
 
     env.mvdr_scheduler = StepScheduler(
-        callback=MVDRWeightCallback(opt),
+        callback=MVDRWeightCallback(diag_load=opt.mvdr.get("diag_load", 1e-3)),
         items_per_cycle=opt.mvdr.get("items_per_cycle", None),
     )
 

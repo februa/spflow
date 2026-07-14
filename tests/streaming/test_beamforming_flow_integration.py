@@ -7,8 +7,14 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from spflow import Flow, FrameBuffer
-from spflow.beamforming import CBFBeamformer, CBFOverlapSaveBeamformer
+from spflow import Flow, FrameBuffer, StepScheduler
+from spflow.beamforming import (
+    CBFBeamformer,
+    CBFOverlapSaveBeamformer,
+    MVDRWeightCallback,
+    MVDRWeightSnapshot,
+    apply_beamformer_bands,
+)
 
 
 def _make_identical_channel_chunk(values: list[float]) -> NDArray[np.float32]:
@@ -108,3 +114,41 @@ def test_flow_preserves_overlap_save_band_record_as_one_semantic_value() -> None
     assert pending == []
     assert [band_index for band_index, _ in records] == [0, 1]
     assert all(valid_block.shape == (1, 2) for _, valid_block in records)
+
+
+def test_flow_scheduler_mvdr_uses_safe_fallback_then_publishes_completed_update() -> None:
+    """Flow接続時も未完成MVDRを公開せず、固定CBFから完成係数へ切り替えることを確認する。"""
+    # steering shape: [n_ch=2, n_beam=1, n_band=2]。
+    # source_snapshotは各bandでsteeringどおり到来する単位振幅sourceを表す。
+    steering = np.array(
+        [
+            [[1.0 + 0.0j, 1.0 + 0.0j]],
+            [[1.0 + 0.0j, 0.0 + 1.0j]],
+        ],
+        dtype=np.complex64,
+    )
+    covariance = np.repeat(np.eye(2, dtype=np.complex64)[None, :, :], 2, axis=0)
+    snapshot = MVDRWeightSnapshot(
+        covariance=covariance,
+        steering=steering,
+        generation="covariance-0",
+    )
+    scheduler = StepScheduler(MVDRWeightCallback(diag_load=0.0), items_per_cycle=1)
+
+    first_result = Flow.from_value(snapshot).map(scheduler.process_result).to_list()[0]
+    first_output = apply_beamformer_bands(steering[:, 0, :], first_result.value)
+    first_updates = (
+        Flow.from_value(first_result).map(lambda result: result.updated_value()).to_list()
+    )
+
+    completed_result = Flow.from_value(snapshot).map(scheduler.process_result).to_list()[0]
+    completed_output = apply_beamformer_bands(steering[:, 0, :], completed_result.value)
+    completed_updates = (
+        Flow.from_value(completed_result).map(lambda result: result.updated_value()).to_list()
+    )
+
+    # 初回CBFと完成MVDRのどちらもh^T a=1であり、入力source振幅を保存する。
+    np.testing.assert_allclose(first_output, np.ones((1, 2)), atol=1e-6)
+    np.testing.assert_allclose(completed_output, np.ones((1, 2)), atol=1e-6)
+    assert first_updates == []
+    assert len(completed_updates) == 1

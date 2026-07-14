@@ -169,6 +169,16 @@ python -m examples.streaming.none_cycle
 この例では、状態を持つ処理を4周期すべてで更新しつつ、2周期ごとの完成値だけを
 後段へ渡す。`Flow`は周期を決めず、各段の0個・1個・複数個の出力だけを接続する。
 
+帯域別MVDR係数を`StepScheduler`で時間分割し、固定CBF fallbackと完成更新を
+`Flow`へ接続する例もある。
+
+```bash
+python -m examples.beamforming.streaming_mvdr_weights
+```
+
+`process()`は毎周期の信号適用に使う最新完成値を返す。`process_result()`と
+`updated_value()`を組み合わせると、新しい係数が完成した周期だけを後段へ渡せる。
+
 外部のscene rendererを使わない、決定論的なdelay-and-sumの例も用意している。
 
 ```bash

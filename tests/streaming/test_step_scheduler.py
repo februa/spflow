@@ -3,6 +3,8 @@
 # 分割実行部品は境界条件の取り扱いが不具合源になりやすいため、
 # バッファ残量やスケジューリング順序が崩れないことを小さな入力で固定する。
 
+from typing import TypedDict
+
 from spflow import StepScheduler
 
 
@@ -20,6 +22,7 @@ def test_step_scheduler_map_reduces_results():
 
 class RecorderCallback:
     """試験用の callback 実装を表す。"""
+
     def __init__(self):
         """`__init__` を実行する。"""
         self.events = []
@@ -106,3 +109,46 @@ def test_step_scheduler_resets_on_callback_error():
         ("step", "boom"),
         ("reset", None),
     ]
+
+
+class SnapshotInput(TypedDict):
+    """snapshot固定試験で使う入力型。"""
+
+    generation: str
+    value: int
+
+
+class SnapshotRecorderCallback:
+    """周期開始時の入力snapshotだけが使われることを記録するcallback。"""
+
+    def __init__(self) -> None:
+        self.values: list[int] = []
+
+    def signature(self, inputs: SnapshotInput) -> str:
+        """明示されたgenerationを返す。"""
+        return str(inputs["generation"])
+
+    def on_start(self, inputs: SnapshotInput) -> list[int]:
+        """2周期に分割するitem列を返す。"""
+        return [0, 1]
+
+    def on_step(self, item: int, inputs: SnapshotInput) -> None:
+        """実際に参照したsnapshot値を記録する。"""
+        self.values.append(int(inputs["value"]))
+
+    def on_finish(self, inputs: SnapshotInput, done: bool) -> tuple[int, ...]:
+        """記録済み値を固定型で返す。"""
+        return tuple(self.values)
+
+
+def test_step_scheduler_keeps_starting_snapshot_for_same_generation():
+    """同じgenerationの後続objectを混ぜず、開始時snapshotだけで完了することを確認する。"""
+    callback = SnapshotRecorderCallback()
+    scheduler = StepScheduler(callback, items_per_cycle=1)
+
+    first_result = scheduler.process_result({"generation": "a", "value": 10})
+    completed_result = scheduler.process_result({"generation": "a", "value": 999})
+
+    assert first_result.updated is False
+    assert completed_result.updated is True
+    assert completed_result.value == (10, 10)

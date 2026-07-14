@@ -11,6 +11,7 @@ from spflow import (
     MVDROverlapSaveBeamformer,
     MVDRWeightCallback,
     MVDRWeightDesigner,
+    MVDRWeightSnapshot,
     StepScheduler,
     apply_beamformer,
     design_mvdr_coefficients,
@@ -26,7 +27,9 @@ from spflow.beamforming.covariance import estimate_covariance_snapshots
 from spflow.beamforming.mvdr_weight_designer import design_mvdr_coefficients_bands
 
 
-def _collect_overlap_save_output(records: list[tuple[int, np.ndarray]], n_beam: int, n_band: int) -> np.ndarray:
+def _collect_overlap_save_output(
+    records: list[tuple[int, np.ndarray]], n_beam: int, n_band: int
+) -> np.ndarray:
     """`_collect_overlap_save_output` を実行する。"""
     per_band: list[list[np.ndarray]] = [[] for _ in range(n_band)]
     for band_idx, valid in records:
@@ -110,6 +113,7 @@ def test_covariance_estimator_process_snapshot_matches_matlab_style_outer_produc
     np.testing.assert_allclose(r1, c1)
     np.testing.assert_allclose(r2, 0.75 * c1 + 0.25 * c2)
 
+
 def test_estimate_covariance_snapshots_matches_per_snapshot_outer_products():
     """snapshot 群の共分散推定がsnapshot ごとの外積和と一致することを確認する。"""
     snapshots = np.array(
@@ -145,8 +149,20 @@ def test_covariance_estimator_process_snapshots_matches_separate_estimators():
     out1 = estimator.process_snapshots(snapshots[0], normalization=2.0)
     out2 = estimator.process_snapshots(snapshots[1], normalization=2.0)
 
-    expected1 = np.stack([sep.process_snapshot(snapshots[0, idx], normalization=2.0) for idx, sep in enumerate(separate)], axis=0)
-    expected2 = np.stack([sep.process_snapshot(snapshots[1, idx], normalization=2.0) for idx, sep in enumerate(separate)], axis=0)
+    expected1 = np.stack(
+        [
+            sep.process_snapshot(snapshots[0, idx], normalization=2.0)
+            for idx, sep in enumerate(separate)
+        ],
+        axis=0,
+    )
+    expected2 = np.stack(
+        [
+            sep.process_snapshot(snapshots[1, idx], normalization=2.0)
+            for idx, sep in enumerate(separate)
+        ],
+        axis=0,
+    )
 
     np.testing.assert_allclose(out1, expected1)
     np.testing.assert_allclose(out2, expected2)
@@ -181,7 +197,9 @@ def test_covariance_estimator_can_be_configured_from_integration_time():
     r2 = estimator.process(x2)
 
     np.testing.assert_allclose(r1, np.array([[0.5 + 0.0j]]))
-    np.testing.assert_allclose(r2, (1.0 - alpha) * np.array([[0.5 + 0.0j]]) + alpha * np.array([[2.0 + 0.0j]]))
+    np.testing.assert_allclose(
+        r2, (1.0 - alpha) * np.array([[0.5 + 0.0j]]) + alpha * np.array([[2.0 + 0.0j]])
+    )
 
 
 def test_design_mvdr_coefficients_is_distortionless():
@@ -201,7 +219,7 @@ def test_design_mvdr_coefficients_is_distortionless():
 
 
 def test_design_mvdr_overlap_save_filters_embed_conjugation_in_filter_fft():
-    """対象機能について `design_mvdr_overlap_save_filters` が複素共役を filter FFT に埋め込む を確認する。"""
+    """overlap-save用filter FFTへ設計上必要な複素共役を埋め込むことを確認する。"""
     weights = np.array([[[1.0 + 0.0j], [1.0j]]]).transpose(0, 2, 1)
     filters = design_mvdr_overlap_save_filters(weights, frame_size=8)
 
@@ -286,6 +304,7 @@ def test_mvdr_weight_designer_handles_bandwise_input():
         response = weights[:, :, band_idx].T @ steering[:, :, band_idx]
         np.testing.assert_allclose(response, np.ones((1, 1)), atol=1e-6)
 
+
 def test_design_mvdr_coefficients_bands_matches_per_band_design():
     """帯域別 MVDR 重み設計が帯域ごとの個別設計結果と一致することを確認する。"""
     steering = np.stack(
@@ -307,7 +326,10 @@ def test_design_mvdr_coefficients_bands_matches_per_band_design():
 
     out = design_mvdr_coefficients_bands(rxx, steering, diag_load=1e-3)
     expected = np.stack(
-        [design_mvdr_coefficients(rxx[idx], steering[:, :, idx], diag_load=1e-3) for idx in range(rxx.shape[0])],
+        [
+            design_mvdr_coefficients(rxx[idx], steering[:, :, idx], diag_load=1e-3)
+            for idx in range(rxx.shape[0])
+        ],
         axis=-1,
     )
 
@@ -346,7 +368,7 @@ def test_mvdr_filter_uses_stored_weights():
 
 
 def test_mvdr_overlap_save_beamformer_matches_pointwise_projection_for_length1_filters():
-    """MVDR overlap-save ビームフォーマについて 長さ 1 フィルタでは点ごとの射影結果と一致する を確認する。"""
+    """長さ1のMVDR filterでは、overlap-save出力が点ごとの射影と一致することを確認する。"""
     weights = np.array([[1.0 + 0.0j], [1.0j]])[:, :, np.newaxis]
     X = np.array(
         [
@@ -369,7 +391,7 @@ def test_mvdr_overlap_save_beamformer_matches_pointwise_projection_for_length1_f
 
 
 def test_mvdr_weight_callback_publishes_only_completed_weights():
-    """MVDR weight callbackについて 完了した重みだけを publish する を確認する。"""
+    """MVDR係数完成までは固定CBFを使い、完成後だけ適応係数へ切り替わることを確認する。"""
     steering = np.stack(
         [
             np.array([[1.0 + 0.0j], [1.0 + 0.0j]]),
@@ -385,15 +407,46 @@ def test_mvdr_weight_callback_publishes_only_completed_weights():
         axis=0,
     )
     scheduler = StepScheduler(MVDRWeightCallback(diag_load=0.0), items_per_cycle=1)
+    snapshot = MVDRWeightSnapshot(covariance=Rxx, steering=steering, generation="frame-1")
 
-    out1 = scheduler.process({"Rxx": Rxx, "steering": steering, "signature": "frame-1"})
-    out2 = scheduler.process({"Rxx": Rxx, "steering": steering, "signature": "frame-1"})
+    first_result = scheduler.process_result(snapshot)
+    completed_result = scheduler.process_result(snapshot)
 
-    np.testing.assert_allclose(out1, np.zeros_like(steering))
-    assert out2.shape == steering.shape
-    for band_idx in range(out2.shape[-1]):
-        response = out2[:, :, band_idx].T @ steering[:, :, band_idx]
+    assert first_result.updated is False
+    assert first_result.generation == "frame-1"
+    # 初回fallbackもh^T a=1を満たし、適応係数が未完成という理由で信号を消失させない。
+    for band_idx in range(first_result.value.shape[-1]):
+        fallback_response = first_result.value[:, :, band_idx].T @ steering[:, :, band_idx]
+        np.testing.assert_allclose(fallback_response, np.ones((1, 1)), atol=1e-6)
+
+    assert completed_result.updated is True
+    assert completed_result.value.shape == steering.shape
+    for band_idx in range(completed_result.value.shape[-1]):
+        response = completed_result.value[:, :, band_idx].T @ steering[:, :, band_idx]
         np.testing.assert_allclose(response, np.ones((1, 1)), atol=1e-6)
+
+
+def test_mvdr_weight_snapshot_owns_immutable_arrays():
+    """入力元を変更しても、時間分割中のMVDR snapshotが変化しないことを確認する。"""
+    steering = np.ones((2, 1, 2), dtype=np.complex64)
+    covariance = np.repeat(np.eye(2, dtype=np.complex64)[None, :, :], 2, axis=0)
+    snapshot = MVDRWeightSnapshot(
+        covariance=covariance,
+        steering=steering,
+        generation=1,
+    )
+
+    # 呼び出し元の配列は次周期用に再利用され得るため、snapshotが所有copyを持つことを固定する。
+    covariance[:] = 0.0
+    steering[:] = 0.0
+
+    np.testing.assert_array_equal(
+        snapshot.covariance,
+        np.repeat(np.eye(2, dtype=np.complex64)[None, :, :], 2, axis=0),
+    )
+    np.testing.assert_array_equal(snapshot.steering, np.ones((2, 1, 2), dtype=np.complex64))
+    assert snapshot.covariance.flags.writeable is False
+    assert snapshot.steering.flags.writeable is False
 
 
 def test_design_mvdr_coefficients_handles_zero_trace_covariance_with_diag_load():

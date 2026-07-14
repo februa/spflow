@@ -157,6 +157,7 @@ if TYPE_CHECKING:
     from .mvdr_weight_designer import (
         MVDRWeightCallback,
         MVDRWeightDesigner,
+        MVDRWeightSnapshot,
         design_mvdr_coefficients,
         design_mvdr_coefficients_bands,
         design_mvdr_coefficients_with_channel_window,
@@ -379,6 +380,7 @@ _EXPORT_MODULES: dict[str, str] = {
     "design_mvdr_overlap_save_filters": "mvdr_filter",
     "MVDRWeightCallback": "mvdr_weight_designer",
     "MVDRWeightDesigner": "mvdr_weight_designer",
+    "MVDRWeightSnapshot": "mvdr_weight_designer",
     "design_mvdr_coefficients": "mvdr_weight_designer",
     "design_mvdr_coefficients_bands": "mvdr_weight_designer",
     "design_mvdr_coefficients_with_channel_window": "mvdr_weight_designer",
@@ -689,6 +691,7 @@ __all__ = [
     "design_mvdr_overlap_save_filters",
     "MVDRWeightDesigner",
     "MVDRWeightCallback",
+    "MVDRWeightSnapshot",
     "judge_abf_like_non_source_metrics",
     "beam_response_rms_db",
     "apply_beamformer",
