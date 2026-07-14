@@ -6,7 +6,10 @@ import argparse
 import json
 from pathlib import Path
 
-from spflow.beamforming import OperationalFixedBeamShadingDesignConfig, run_operational_fixed_beam_shading_design
+from spflow.array_design import (
+    OperationalFixedBeamShadingDesignConfig,
+    run_operational_fixed_beam_shading_design,
+)
 
 
 def main() -> None:

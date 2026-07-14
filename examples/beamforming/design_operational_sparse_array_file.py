@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-from spflow.beamforming.operational_sparse_array import (
+from spflow.array_design import (  # noqa: E402
     OperationalSparseArrayDesignConfig,
     save_operational_sparse_array,
 )

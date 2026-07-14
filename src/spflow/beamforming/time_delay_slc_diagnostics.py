@@ -7,26 +7,26 @@ from pathlib import Path
 
 import numpy as np
 
+from ..beamforming_evaluation.diagnostic_plotting import (
+    plot_bl_comparison,
+    plot_btr_heatmap,
+    plot_fraz_heatmap,
+    require_matplotlib,
+)
 from ..beamforming_evaluation.scan_grid import build_beam_scan_grid
 from ..beamforming_evaluation.signal_levels import (
     calculate_block_rms_levels_db20,
     calculate_one_sided_rms_spectrum_db20,
     calculate_tone_projection_rms_level_db20,
 )
-from ..simulation.numerics import SimulationPrecision
-from ..simulation.tone_scene import synthesize_tone_scene
-from .diagnostic_plotting import (
-    plot_bl_comparison,
-    plot_btr_heatmap,
-    plot_fraz_heatmap,
-    require_matplotlib,
-)
-from .slc import (
+from ..sidelobe_cancellation import (
     BeamGuardSelector,
     BlockLeastSquaresSlcSolver,
     SlcConfig,
     SlcReferenceCapacityChecker,
 )
+from ..simulation.numerics import SimulationPrecision
+from ..simulation.tone_scene import synthesize_tone_scene
 from .time_delay import IntegerDelayAndSumBeamformer
 from .time_delay_diagnostics import (
     TimeDelayDiagnosticConfig,
@@ -308,7 +308,7 @@ def _evaluate_stage_source_metrics(
             bl_output_path = output_dir / f"{stage_prefix}_bl_{source_index:02d}_{_sanitize_label_for_filename(label)}.png"
 
         if save_bl:
-            from .diagnostic_plotting import plot_bl_response
+            from ..beamforming_evaluation.diagnostic_plotting import plot_bl_response
 
             plot_bl_response(
                 axis_az_deg=axis_az_deg,

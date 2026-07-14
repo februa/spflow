@@ -1,7 +1,8 @@
 """src/spflow/beamforming パッケージの公開 API をまとめるモジュール。"""
 
-# ビームフォーミング利用者は配列設計・重み設計・実適用をまとめて import することが多いため、
-# 個別実装のファイル構成を意識しなくても使える公開入口をここで固定する。
+# 重み・filter設計と信号適用をbeamformingの中心公開APIとする。
+# array設計、評価、SLCの再公開は既存利用者向け互換facadeであり、新規コードは
+# spflow.array_design、spflow.beamforming_evaluation、spflow.sidelobe_cancellationを使う。
 from .abf_like_metrics import (
     AbfLikeMetricDecision,
     AbfLikeNonSourceMetrics,
@@ -11,6 +12,13 @@ from .abf_like_metrics import (
     calculate_abf_like_non_source_metrics,
     detect_source_beam_indices_from_level_peaks,
     judge_abf_like_non_source_metrics,
+)
+from .application import (
+    apply_beamformer,
+    apply_beamformer_bands,
+    apply_beamformer_filter_fft,
+    apply_time_domain_fir_beamformer,
+    build_time_tapped_snapshot_matrix,
 )
 from .array_design import BandwiseArrayDesign
 from .bl_component_metrics import (
@@ -62,13 +70,22 @@ from .diagnostic_plotting import (
     plot_fraz_heatmap,
     write_beam_diagnostic_plot_usage_notes,
 )
-from .directions import make_directions
 from .direction_covariance_selector import (
     CovarianceFallbackReason,
     CovarianceFallbackSource,
     DirectionCovarianceSelectionConfig,
     DirectionCovarianceSelectionResult,
     DirectionMatchedCovarianceSelector,
+)
+from .directions import make_directions
+from .ebae import (
+    EbaeBandResult,
+    EbaeConfig,
+    EbaeResult,
+    calculate_music_spectrum,
+    design_ebae_weights,
+    design_ebae_weights_band,
+    estimate_signal_count_ne_aic,
 )
 from .evaluation_arrays import (
     BeamLevelDisplayArrays,
@@ -84,15 +101,6 @@ from .evaluation_criteria import (
     list_beamforming_evaluation_criteria,
     list_beamforming_evaluation_patterns,
     write_beamforming_evaluation_criteria_markdown,
-)
-from .ebae import (
-    EbaeBandResult,
-    EbaeConfig,
-    EbaeResult,
-    calculate_music_spectrum,
-    design_ebae_weights,
-    design_ebae_weights_band,
-    estimate_signal_count_ne_aic,
 )
 from .fixed_delay_diff_mvdr import (
     STANDARD_FRACTIONAL_DELAY_PATTERN_COUNT,
@@ -132,9 +140,6 @@ from .geometry import (
 from .mvdr_filter import (
     MVDRFilter,
     MVDROverlapSaveBeamformer,
-    apply_beamformer,
-    apply_beamformer_bands,
-    apply_beamformer_filter_fft,
     beam_response_rms_db,
     design_mvdr_overlap_save_filters,
 )
@@ -175,6 +180,10 @@ from .operational_time_domain_slc_diagnostics import (
     OperationalTimeDomainSlcDiagnosticConfig,
     run_operational_time_domain_slc_leakage_diagnostics,
 )
+from .selected_frequency_direction_covariance import (
+    SelectedFrequencyDirectionCovarianceAccumulator,
+    SelectedFrequencyDirectionCovarianceResult,
+)
 from .slc import (
     BeamDomainSLC,
     BeamGuardSelector,
@@ -195,9 +204,11 @@ from .source_mask_slc import (
     SourceMaskSlcHealth,
     SourceMaskSlcResult,
 )
-from .selected_frequency_direction_covariance import (
-    SelectedFrequencyDirectionCovarianceAccumulator,
-    SelectedFrequencyDirectionCovarianceResult,
+from .sparse_single_side_array_design import (
+    SparseSingleSideArrayDesignConfig,
+    SparseSingleSideArrayDesignResult,
+    build_sparse_single_side_array_design,
+    run_sparse_single_side_array_design,
 )
 from .spatial_correlation_statistics import (
     BinnedSpatialCorrelationStatistics,
@@ -210,12 +221,6 @@ from .spatial_correlation_statistics import (
 from .steering_power_weighting import (
     SteeringPowerChannelWeighting,
     prepare_steering_power_channel_weighting,
-)
-from .sparse_single_side_array_design import (
-    SparseSingleSideArrayDesignConfig,
-    SparseSingleSideArrayDesignResult,
-    build_sparse_single_side_array_design,
-    run_sparse_single_side_array_design,
 )
 from .synthetic_signal import PlaneWaveTone, synthesize_plane_wave_tone
 from .time_delay import (
@@ -236,11 +241,9 @@ from .time_delay_guard_design import TimeDelayGuardDesignConfig, run_integer_del
 from .time_delay_slc_diagnostics import run_integer_delay_slc_diagnostics
 from .time_domain_adaptive import (
     TimeDomainAdaptiveWeightDiagnostics,
-    apply_time_domain_fir_beamformer,
     build_gsc_blocking_matrix,
     build_real_tone_constraint_matrix,
     build_time_domain_tone_constraint_vector,
-    build_time_tapped_snapshot_matrix,
     design_time_domain_gsc_weights,
     design_time_domain_lcmv_weights,
     design_time_domain_mvdr_weights,

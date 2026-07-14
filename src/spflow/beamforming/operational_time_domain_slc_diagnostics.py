@@ -12,6 +12,8 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .._validation import require, require_positive_float, require_positive_int
+from ..array_design import load_operational_sparse_array
+from ..beamforming_evaluation.diagnostic_plotting import require_matplotlib
 from ..beamforming_evaluation.fractional_response import (
     calculate_fractional_beam_response_matrix,
 )
@@ -20,10 +22,13 @@ from ..beamforming_evaluation.level_metrics import (
     calculate_rms_level_db20,
 )
 from ..level_conversion import LevelConverter, level_20log10_rms
-from .diagnostic_plotting import require_matplotlib
+from ..sidelobe_cancellation import (
+    BeamDomainSLC,
+    SlcConfig,
+    SlcProcessResult,
+    build_time_tapped_reference_matrix,
+)
 from .fractional_delay_slc_diagnostics import _run_fractional_delay_diagnostics
-from .operational_sparse_array import load_operational_sparse_array
-from .slc import BeamDomainSLC, SlcConfig, SlcProcessResult, build_time_tapped_reference_matrix
 from .time_delay import FractionalDelayAndSumBeamformer
 from .time_delay_diagnostics import TimeDelayDiagnosticConfig, TimeDelayDiagnosticSource
 

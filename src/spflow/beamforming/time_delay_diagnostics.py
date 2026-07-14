@@ -15,6 +15,14 @@ from .._validation import (
     require_positive_float,
     require_positive_int,
 )
+from ..beamforming_evaluation.diagnostic_plotting import (
+    build_beam_diagnostic_plot_usage_notes,
+    plot_bl_response,
+    plot_btr_heatmap,
+    plot_fraz_heatmap,
+    require_matplotlib,
+    write_beam_diagnostic_plot_usage_notes,
+)
 from ..beamforming_evaluation.scan_grid import build_beam_scan_grid
 from ..beamforming_evaluation.signal_levels import (
     calculate_block_rms_levels_db20,
@@ -23,14 +31,6 @@ from ..beamforming_evaluation.signal_levels import (
 )
 from ..simulation.numerics import SimulationPrecision
 from ..simulation.tone_scene import ToneSceneSource, synthesize_tone_scene
-from .diagnostic_plotting import (
-    build_beam_diagnostic_plot_usage_notes,
-    plot_bl_response,
-    plot_btr_heatmap,
-    plot_fraz_heatmap,
-    require_matplotlib,
-    write_beam_diagnostic_plot_usage_notes,
-)
 from .time_delay import IntegerDelayAndSumBeamformer
 
 

@@ -12,17 +12,19 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .._validation import require, require_positive_float, require_positive_int
-from .diagnostic_plotting import plot_bl_comparison, require_matplotlib
+from ..array_design import OperationalShadingDefinition, OperationalSparseArrayDefinition
+from ..beamforming_evaluation.diagnostic_plotting import plot_bl_comparison, require_matplotlib
 from .directions import make_directions
 from .fractional_delay_performance import (
     _beam_response_db20,
     _measure_local_peak_margin_db,
     _plot_margin_summary,
 )
-from .operational_shading import OperationalShadingDefinition
-from .operational_sparse_array import OperationalSparseArrayDefinition
-from .time_delay import FractionalDelayAndSumBeamformer, FractionalDelayFilterBank, IntegerDelayAndSumBeamformer
-
+from .time_delay import (
+    FractionalDelayAndSumBeamformer,
+    FractionalDelayFilterBank,
+    IntegerDelayAndSumBeamformer,
+)
 
 FloatArray = NDArray[np.floating[Any]]
 IntArray = NDArray[np.integer[Any]]

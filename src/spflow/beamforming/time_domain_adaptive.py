@@ -8,7 +8,18 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from .._validation import require, require_non_negative_float, require_positive_float, require_positive_int
+from .._validation import (
+    require,
+    require_non_negative_float,
+    require_positive_float,
+    require_positive_int,
+)
+from .application import (
+    apply_time_domain_fir_beamformer as apply_time_domain_fir_beamformer,
+)
+from .application import (
+    build_time_tapped_snapshot_matrix as build_time_tapped_snapshot_matrix,
+)
 
 
 @dataclass(frozen=True)
@@ -43,46 +54,6 @@ class TimeDomainAdaptiveWeightDiagnostics:
             "diagonal_loading": float(self.diagonal_loading),
             "loaded_condition_number": float(self.loaded_condition_number),
         }
-
-
-def build_time_tapped_snapshot_matrix(channel_signals: NDArray[Any], tap_len: int) -> NDArray[np.complex128]:
-    """channel 信号を channel×tap の snapshot 行列へ展開する。
-
-    Args:
-        channel_signals: 入力信号。shape は `[n_ch, n_sample]`。
-            axis=0 が sensor channel、axis=1 が時間 sample である。
-        tap_len: FIR tap 数 `L`。単位は sample。
-
-    Returns:
-        時間タップ付き snapshot。shape は `[n_ch * L, n_sample - L + 1]`。
-        row は `lag=0, 1, ..., L-1` の順に channel 軸を積む。
-
-    Raises:
-        ValueError: 入力が 2 次元でない、tap_len が正でない、または full tap を作れない場合。
-
-    境界条件:
-        先頭 `L-1` sample は過去 sample が不足するため、この行列には含めない。
-        出力波形へ戻す関数では、その区間を 0 で埋めて「重み未適用」と明示する。
-    """
-    signals = np.asarray(channel_signals, dtype=np.complex128)
-    require(signals.ndim == 2, "channel_signals must have shape (n_ch, n_sample).")
-    require_positive_int("tap_len", int(tap_len))
-    require(signals.shape[1] >= int(tap_len), "channel_signals must contain at least tap_len samples.")
-
-    n_ch = int(signals.shape[0])
-    n_sample = int(signals.shape[1])
-    n_valid_sample = n_sample - int(tap_len) + 1
-    tapped = np.zeros((n_ch * int(tap_len), n_valid_sample), dtype=np.complex128)
-    for lag_index in range(int(tap_len)):
-        row_start = lag_index * n_ch
-        row_stop = row_start + n_ch
-        sample_start = int(tap_len) - 1 - lag_index
-        sample_stop = sample_start + n_valid_sample
-
-        # X_tap[lag, ch, n] = x[ch, n + L - 1 - lag]。
-        # lag=0 は現在 sample、lag>0 は過去 sample であり、FIR 重み w[lag, ch] と対応する。
-        tapped[row_start:row_stop, :] = signals[:, sample_start:sample_stop]
-    return tapped
 
 
 def estimate_time_domain_covariance(tapped_snapshots: NDArray[Any]) -> NDArray[np.complex128]:
@@ -366,42 +337,6 @@ def design_time_domain_gsc_weights(
     blocked_cross = blocking_matrix.conj().T @ loaded @ quiescent_weights
     adaptive_weights = np.linalg.solve(blocked_covariance, blocked_cross)
     return np.asarray(quiescent_weights - blocking_matrix @ adaptive_weights, dtype=np.complex128)
-
-
-def apply_time_domain_fir_beamformer(
-    channel_signals: NDArray[Any],
-    weights: NDArray[Any],
-    *,
-    tap_len: int,
-) -> NDArray[np.complex128]:
-    """channel×tap FIR ビームフォーマ重みを時間波形へ適用する。
-
-    Args:
-        channel_signals: 入力信号。shape は `[n_ch, n_sample]`。
-        weights: FIR 重み。shape は `[n_ch * tap_len]` または `[n_ch * tap_len, n_output]`。
-        tap_len: FIR tap 数 `L`。単位は sample。
-
-    Returns:
-        出力信号。shape は `[n_output, n_sample]`。
-        先頭 `L-1` sample は full tap が揃わないため 0 とする。
-
-    Raises:
-        ValueError: 入力 shape が整合しない場合。
-    """
-    tapped_snapshots = build_time_tapped_snapshot_matrix(channel_signals, tap_len=int(tap_len))
-    beam_weights = np.asarray(weights, dtype=np.complex128)
-    if beam_weights.ndim == 1:
-        beam_weights = beam_weights[:, np.newaxis]
-    require(beam_weights.ndim == 2, "weights must have shape (n_dof,) or (n_dof, n_output).")
-    require(beam_weights.shape[0] == tapped_snapshots.shape[0], "weights and channel_signals must agree on n_ch * tap_len.")
-
-    n_sample = int(np.asarray(channel_signals).shape[1])
-    output = np.zeros((beam_weights.shape[1], n_sample), dtype=np.complex128)
-    # y[out, n] = Σ_dof conj(w[dof, out]) X_tap[dof, n]。
-    # LCMV / MVDR の制約 `w^H c = f` と同じ内積向きで時間波形へ適用する。
-    valid_output = beam_weights.conj().T @ tapped_snapshots
-    output[:, int(tap_len) - 1 :] = valid_output
-    return output
 
 
 def evaluate_constraint_response(weights: NDArray[Any], constraint_matrix: NDArray[Any]) -> NDArray[np.complex128]:

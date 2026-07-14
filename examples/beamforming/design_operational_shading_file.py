@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from spflow.beamforming import OperationalShadingDesignConfig, run_operational_shading_design
+from spflow.array_design import OperationalShadingDesignConfig, run_operational_shading_design
 
 
 def main() -> None:

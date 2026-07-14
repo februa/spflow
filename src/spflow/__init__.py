@@ -1,7 +1,8 @@
 """src/spflow パッケージの公開 API をまとめるモジュール。"""
 
-# 上位パッケージから `spflow.*` として参照する利用者向け導線を固定するため、
-# サブパッケージ内部の実装詳細ではなく公開契約として残す型と関数だけを再公開する。
+# 上位パッケージのflat APIは互換性のため維持する。新規コードでは責務を明示できる
+# spflow.beamforming、spflow.array_design、spflow.beamforming_evaluation、
+# spflow.sidelobe_cancellationからのimportを優先する。
 from .beamforming import (
     BandwiseArrayDesign,
     BeamDiagnosticPlotUsageNotes,

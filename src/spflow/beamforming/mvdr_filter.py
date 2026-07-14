@@ -6,6 +6,7 @@ import numpy as np
 
 from ..frequency import OverlapSaveBuffer, ValidRegionExtractor, make_filter_fft
 from ..level_conversion import LevelConverter, level_20log10_rms
+from .application import apply_beamformer, apply_beamformer_bands, apply_beamformer_filter_fft
 
 _UNITY_RESPONSE_LEVEL_CONVERTER = LevelConverter.for_definition(
     level_20log10_rms(reference_rms=1.0, reference_label="unit response")
@@ -33,82 +34,6 @@ def beam_response_rms_db(response: np.ndarray | complex) -> float:
     return _UNITY_RESPONSE_LEVEL_CONVERTER.output_rms_to_level(
         float(np.abs(response_scalar.reshape(-1)[0]))
     )
-
-
-def apply_beamformer(X: np.ndarray, weights: np.ndarray) -> np.ndarray:
-    """単一帯域のビームフォーマ重みを観測へ適用する。
-
-    Args:
-        X: 観測スナップショット。shape は `[n_ch, n_frame]`。
-        weights: ビーム重み。shape は `[n_ch]` または `[n_ch, n_beam]`。
-
-    Returns:
-        ビーム出力。shape は `[n_beam, n_frame]`。
-    """
-    snapshots = np.asarray(X, dtype=np.complex64)
-    beam_weights = np.asarray(weights, dtype=np.complex64)
-
-    if snapshots.ndim != 2:
-        raise ValueError("X must have shape (n_ch, n_frame).")
-    if beam_weights.ndim == 1:
-        beam_weights = beam_weights[:, np.newaxis]
-    if beam_weights.ndim != 2:
-        raise ValueError("weights must have shape (n_ch, n_beam).")
-    if snapshots.shape[0] != beam_weights.shape[0]:
-        raise ValueError("X and weights must agree on n_ch.")
-
-    # X shape: [n_ch, n_frame]
-    # W shape: [n_ch, n_beam]
-    # einsum("cf,cb->bf") は各ビームについて y[b, f] = Σ_ch conj(w[ch, b]) x[ch, f] を計算する。
-    return np.einsum("cf,cb->bf", snapshots, beam_weights.conj(), optimize=True)
-
-
-def apply_beamformer_bands(X: np.ndarray, weights: np.ndarray) -> np.ndarray:
-    """帯域ごとのビーム重みを観測へ一括適用する。"""
-    snapshots = np.asarray(X, dtype=np.complex64)
-    beam_weights = np.asarray(weights, dtype=np.complex64)
-
-    if beam_weights.ndim != 3:
-        raise ValueError("weights must have shape (n_ch, n_beam, n_band).")
-
-    if snapshots.ndim == 2:
-        if snapshots.shape[0] != beam_weights.shape[0] or snapshots.shape[1] != beam_weights.shape[2]:
-            raise ValueError("X and weights must agree on n_ch and n_band.")
-        # X shape: [n_ch, n_band]
-        # W shape: [n_ch, n_beam, n_band]
-        # 帯域軸 b を保ったまま ch 軸だけを内積する。
-        return np.einsum("cb,cdb->db", snapshots, beam_weights.conj(), optimize=True)
-
-    if snapshots.ndim == 3:
-        if snapshots.shape[0] != beam_weights.shape[0] or snapshots.shape[1] != beam_weights.shape[2]:
-            raise ValueError("X and weights must agree on n_ch and n_band.")
-        # X shape: [n_ch, n_band, n_frame]
-        # 出力 shape: [n_beam, n_band, n_frame]。
-        return np.einsum("cbf,cdb->dbf", snapshots, beam_weights.conj(), optimize=True)
-
-    raise ValueError("X must have shape (n_ch, n_band) or (n_ch, n_band, n_frame).")
-
-
-def apply_beamformer_filter_fft(X_fft: np.ndarray, filter_fft: np.ndarray) -> np.ndarray:
-    """overlap-save 用フィルタ FFT をマルチチャネルフレームへ適用する。
-
-    `filter_fft` 側へあらかじめ重みの複素共役を焼き込んでいるため、
-    実行時は単純な積和だけで `w^H x` と等価な投影を行える。
-    """
-    spectra = np.asarray(X_fft, dtype=np.complex64)
-    filters = np.asarray(filter_fft, dtype=np.complex64)
-
-    if spectra.ndim != 2:
-        raise ValueError("X_fft must have shape (n_ch, n_freq).")
-    if filters.ndim != 3:
-        raise ValueError("filter_fft must have shape (n_ch, n_beam, n_freq).")
-    if spectra.shape[0] != filters.shape[0] or spectra.shape[1] != filters.shape[2]:
-        raise ValueError("X_fft and filter_fft must agree on n_ch and n_freq.")
-
-    # X_fft shape: [n_ch, n_freq]
-    # H shape: [n_ch, n_beam, n_freq]
-    # 周波数ビンごとに Σ_ch X[ch, k] H[ch, beam, k] を計算する。
-    return np.einsum("cf,cbf->bf", spectra, filters, optimize=True)
 
 
 def design_mvdr_overlap_save_filters(weights: np.ndarray, frame_size: int) -> np.ndarray:

@@ -10,9 +10,9 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .._validation import require, require_positive_float, require_positive_int
+from ..array_design import load_operational_sparse_array
 from ..beamforming_evaluation.signal_levels import calculate_tone_projection_rms_level_db20
 from .fractional_delay_slc_diagnostics import _run_fractional_delay_diagnostics
-from .operational_sparse_array import load_operational_sparse_array
 from .time_delay_diagnostics import TimeDelayDiagnosticConfig, TimeDelayDiagnosticSource
 
 

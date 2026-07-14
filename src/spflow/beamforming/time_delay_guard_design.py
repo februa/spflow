@@ -16,11 +16,11 @@ from .._validation import (
     require_positive_float,
     require_positive_int,
 )
+from ..beamforming_evaluation.diagnostic_plotting import plot_bl_response, require_matplotlib
 from ..beamforming_evaluation.scan_grid import build_beam_scan_grid
 from ..beamforming_evaluation.signal_levels import calculate_tone_projection_rms_level_db20
 from ..simulation.numerics import SimulationPrecision
 from ..simulation.tone_scene import synthesize_tone_scene
-from .diagnostic_plotting import plot_bl_response, require_matplotlib
 from .time_delay import IntegerDelayAndSumBeamformer
 from .time_delay_diagnostics import (
     TimeDelayDiagnosticConfig,

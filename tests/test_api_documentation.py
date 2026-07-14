@@ -29,8 +29,9 @@ def test_implemented_feature_catalog_is_current() -> None:
 def test_implemented_feature_catalog_contains_each_responsibility_group() -> None:
     """主要な責務分類と公開部品が機能一覧から検索できることを確認する。
 
-    基本部品、周波数処理、フィルタバンク、ビームフォーミング、シミュレーション支援を
-    代表する module を一つずつ選ぶ。単に空の一覧と同期した状態を成功としないための境界条件である。
+    基本部品、周波数処理、フィルタバンク、beamforming、array事前設計、評価、SLC、
+    シミュレーション支援を代表するmoduleを一つずつ選ぶ。単に空の一覧と同期した状態を
+    成功としないための境界条件である。
     """
 
     catalog = (REPOSITORY_ROOT / "doc" / "SpFlow" / "実装済み機能一覧.md").read_text(
@@ -41,5 +42,9 @@ def test_implemented_feature_catalog_contains_each_responsibility_group() -> Non
     assert "### `spflow.frequency.overlap_save`" in catalog
     assert "### `spflow.filterbank.polyphase`" in catalog
     assert "### `spflow.beamforming.cbf`" in catalog
+    assert "### `spflow.beamforming.application`" in catalog
+    assert "### `spflow.array_design.operational_array`" in catalog
+    assert "### `spflow.beamforming_evaluation.evaluation_arrays`" in catalog
+    assert "### `spflow.sidelobe_cancellation.beam_domain`" in catalog
     assert "### `spflow.simulation.numerics`" in catalog
     assert "`SimulationPrecision`" in catalog

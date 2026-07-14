@@ -1,6 +1,6 @@
-"""互換性のためsidelobe cancellation APIを独立packageから再公開する。"""
+"""ビームフォーミング後に適用するsidelobe cancellation部品を公開する。"""
 
-from ..sidelobe_cancellation.beam_domain import (
+from .beam_domain import (
     BeamDomainSLC,
     BeamGuardSelector,
     BlockLeastSquaresSlcSolver,
@@ -15,6 +15,12 @@ from ..sidelobe_cancellation.beam_domain import (
     build_time_tapped_reference_matrix,
     evaluate_slc_output_safety,
 )
+from .source_mask import (
+    SourceMaskNonSourceLeakageSubtractor,
+    SourceMaskSlcConfig,
+    SourceMaskSlcHealth,
+    SourceMaskSlcResult,
+)
 
 __all__ = [
     "BeamDomainSLC",
@@ -27,6 +33,10 @@ __all__ = [
     "SlcProcessResult",
     "SlcReferenceCapacityChecker",
     "SlcReferenceCapacityDecision",
+    "SourceMaskNonSourceLeakageSubtractor",
+    "SourceMaskSlcConfig",
+    "SourceMaskSlcHealth",
+    "SourceMaskSlcResult",
     "build_reference_blocking_matrix",
     "build_time_tapped_reference_matrix",
     "evaluate_slc_output_safety",

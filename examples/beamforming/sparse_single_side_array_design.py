@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-from spflow.beamforming.sparse_single_side_array_design import (
+from spflow.array_design import (  # noqa: E402
     SparseSingleSideArrayDesignConfig,
     run_sparse_single_side_array_design,
 )
@@ -28,8 +28,33 @@ def main() -> None:
             sound_speed_m_s=1500.0,
             dense_spacing_m=0.05,
             dense_center_positive_sensor_count=20,
-            outer_positive_sensor_indices=(22, 24, 27, 31, 36, 42, 49, 57, 66, 76, 87, 99, 112, 126),
-            design_frequency_grid_hz=(0.0, 512.0, 1024.0, 2048.0, 3072.0, 4096.0, 6144.0, 8192.0, 10000.0),
+            outer_positive_sensor_indices=(
+                22,
+                24,
+                27,
+                31,
+                36,
+                42,
+                49,
+                57,
+                66,
+                76,
+                87,
+                99,
+                112,
+                126,
+            ),
+            design_frequency_grid_hz=(
+                0.0,
+                512.0,
+                1024.0,
+                2048.0,
+                3072.0,
+                4096.0,
+                6144.0,
+                8192.0,
+                10000.0,
+            ),
             required_peak_margin_db=13.0,
             exact_delay_evaluation_azimuths_deg=(60.0, 90.0, 120.0),
             integer_delay_evaluation_azimuths_deg=(60.0, 90.0, 120.0),

@@ -9,6 +9,15 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
+from ..beamforming_evaluation.diagnostic_plotting import (
+    build_beam_diagnostic_plot_usage_notes,
+    plot_bl_comparison,
+    plot_bl_response,
+    plot_btr_heatmap,
+    plot_fraz_heatmap,
+    require_matplotlib,
+    write_beam_diagnostic_plot_usage_notes,
+)
 from ..beamforming_evaluation.fractional_response import (
     calculate_fractional_beam_response_matrix,
     normalize_evaluation_channel_weights,
@@ -19,18 +28,9 @@ from ..beamforming_evaluation.signal_levels import (
     calculate_one_sided_rms_spectrum_db20,
     calculate_tone_projection_rms_level_db20,
 )
+from ..sidelobe_cancellation import SlcConfig
 from ..simulation.numerics import SimulationPrecision
 from ..simulation.tone_scene import synthesize_tone_scene
-from .diagnostic_plotting import (
-    build_beam_diagnostic_plot_usage_notes,
-    plot_bl_comparison,
-    plot_bl_response,
-    plot_btr_heatmap,
-    plot_fraz_heatmap,
-    require_matplotlib,
-    write_beam_diagnostic_plot_usage_notes,
-)
-from .slc import SlcConfig
 from .time_delay import FractionalDelayAndSumBeamformer
 from .time_delay_diagnostics import (
     TimeDelayDiagnosticConfig,

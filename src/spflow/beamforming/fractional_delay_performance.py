@@ -12,8 +12,8 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .._validation import require, require_positive_float, require_positive_int
+from ..beamforming_evaluation.diagnostic_plotting import plot_bl_comparison, require_matplotlib
 from ..level_conversion import LevelConverter, level_20log10_rms
-from .diagnostic_plotting import plot_bl_comparison, require_matplotlib
 from .directions import make_directions
 from .time_delay import (
     FractionalDelayAndSumBeamformer,

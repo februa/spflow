@@ -8,13 +8,18 @@ from collections.abc import Mapping
 import numpy as np
 
 from .._validation import require, require_non_negative_float, require_positive_float
-from ..beamforming.array_design import BandwiseArrayDesign
+from ..array_design import BandwiseArrayDesign
 from .causal_analytic_frontend import CausalAnalyticFrontend
+from .design.complex_halfband_stage import make_daubechies_qmf_candidate
 from .formal_complex_pr_stage import FormalBandPacket, FormalComplexPRHalfbandStage
 from .formal_nonuniform_tree import FormalNonuniformAnalysisResult, FormalNonuniformTreeFilterBank
-from .nonuniform_leaf import BeamformerMode, LeafOutputPathMode, NonuniformLeafProcessor, NonuniformLeafProcessorConfig
-from .design.complex_halfband_stage import make_daubechies_qmf_candidate
 from .halfband_stage_candidates import get_known_qmf_candidate
+from .nonuniform_leaf import (
+    BeamformerMode,
+    LeafOutputPathMode,
+    NonuniformLeafProcessor,
+    NonuniformLeafProcessorConfig,
+)
 
 
 def make_reference_dense_sparse_array_design() -> BandwiseArrayDesign:

@@ -5,8 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..frequency import OverlapSaveBuffer, ValidRegionExtractor, make_filter_fft
-
-from .mvdr_filter import apply_beamformer, apply_beamformer_bands, apply_beamformer_filter_fft
+from .application import apply_beamformer, apply_beamformer_bands, apply_beamformer_filter_fft
 
 
 def _as_steering_matrix(steering: np.ndarray) -> np.ndarray:
