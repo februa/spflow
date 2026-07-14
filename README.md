@@ -1,37 +1,37 @@
 # spflow
 
-`spflow` is a lightweight utility package for writing sequential signal processing code in plain Python.
+`spflow`は、逐次信号処理を通常のPythonコードとして記述するための軽量な部品集である。
 
-It provides five focused building blocks:
+責務を限定した次の5部品を提供する。
 
-- `Option`: dot-access wrapper around nested dictionaries
-- `Flow`: lightweight container for zero, one, or many values
-- `FrameBuffer`: frame slicing utility with overlap support
-- `StepScheduler`: scheduler for iterative item processing
-- `DoubleBufferCallback`: callback base that publishes only completed values
+- `Option`: ネストした辞書の値をdot accessで参照する
+- `Flow`: 0個・1個・複数個の値を同じinterfaceで次段へ運ぶ
+- `FrameBuffer`: overlapを含む固定長frameの切り出しを行う
+- `StepScheduler`: 反復item処理を複数stepへ分割する
+- `DoubleBufferCallback`: 完成した値だけを外部へ公開する
 
-## Install From GitHub
+## GitHubからのインストール
 
-Clone the repository:
+リポジトリをcloneする。
 
 ```bash
 git clone https://github.com/februa/spflow.git
 cd spflow
 ```
 
-Install it into your current Python environment:
+現在のPython環境へインストールする。
 
 ```bash
 pip install .
 ```
 
-If you want to modify `spflow` while developing another project, use editable install instead:
+別のprojectを開発しながら`spflow`も変更する場合は、editable installを使用する。
 
 ```bash
 pip install -e .
 ```
 
-## API Documentation
+## APIドキュメント
 
 実装済み機能は、リポジトリ内の
 [`doc/SpFlow/実装済み機能一覧.md`](doc/SpFlow/実装済み機能一覧.md) から責務と import パスを検索できる。
@@ -65,11 +65,11 @@ Beamforming関連の責務境界は次のとおりである。
 
 詳細は[`doc/SpFlow/beamforming責務分割設計.md`](doc/SpFlow/beamforming責務分割設計.md)を参照する。
 
-## Beamforming Evaluation Environment
+## Beamforming評価環境
 
-Beamforming evaluations that render figures or use the vendored scene renderer need the optional development tools and vendor package.
+図を生成するBeamforming評価や、同梱したscene rendererを使う評価には、追加の開発toolとvendor packageが必要になる。
 
-For a full local checkout with the vendored `scene_renderer` submodule:
+`scene_renderer` submoduleを含む一式をlocalへ取得した場合は、次のようにインストールする。
 
 ```bash
 git submodule update --init --recursive
@@ -77,36 +77,37 @@ pip install -e ".[dev,beamforming-eval]"
 pip install -e vendor/scene_renderer
 ```
 
-If you do not use the vendored submodule and want pip to install `scene_renderer` from GitHub instead:
+同梱したsubmoduleを使わず、pipでGitHubから`scene_renderer`をインストールする場合は、次を実行する。
 
 ```bash
 pip install -e ".[dev,beamforming-eval,vendor]"
 ```
 
-The streaming diff-MVDR covariance comparison accepts a JSON parameter file:
+逐次diff-MVDRの共分散比較では、JSON parameter fileを指定できる。
 
 ```bash
 python evaluations/beamforming/evaluate_streaming_diff_mvdr_covariance_compare.py \
   --config evaluations/beamforming/streaming_diff_mvdr_covariance_compare_config.json
 ```
 
-To regenerate the default 3 second evaluation config:
+既定の3秒評価用configを再生成する場合は、次を実行する。
 
 ```bash
 python evaluations/beamforming/evaluate_streaming_diff_mvdr_covariance_compare.py \
   --write-default-config evaluations/beamforming/streaming_diff_mvdr_covariance_compare_config.json
 ```
 
-The config controls sampling rate, channel count, FFT length, integration duration, beam axis, output directory, and source scenarios.
-## Use From Another Project
+configでは、sampling rate、channel数、FFT長、積分時間、beam軸、出力directory、source scenarioを指定する。
 
-After installation, you can import `spflow` from any other project in the same environment.
+## 他のprojectから使う
+
+インストール後は、同じPython環境の他のprojectから`spflow`をimportできる。
 
 ```python
 from spflow import Flow, FrameBuffer, Option
 ```
 
-Example project layout:
+project構成例を次に示す。
 
 ```text
 my_project/
@@ -114,7 +115,7 @@ my_project/
 └── venv/  # optional
 ```
 
-Example `main.py`:
+`main.py`の例を次に示す。
 
 ```python
 import numpy as np
@@ -143,21 +144,21 @@ print(len(frames))
 print(frames[0])
 ```
 
-## Example
+## 実行例
 
-A runnable example is included in [examples/streaming/basic_pipeline.py](examples/streaming/basic_pipeline.py).
+実行可能な最小例は[examples/streaming/basic_pipeline.py](examples/streaming/basic_pipeline.py)にある。
 
-Run it after installation:
+インストール後に次を実行する。
 
 ```bash
 python -m examples.streaming.basic_pipeline
 ```
 
-It demonstrates:
+この例では、次の部品の組み合わせを確認できる。
 
-- `Option` for nested configuration
-- `FrameBuffer` for overlapped framing
-- `Flow` for propagating zero, one, or many outputs
+- `Option`によるネストした設定値の参照
+- `FrameBuffer`によるoverlap付きframeの切り出し
+- `Flow`による0個・1個・複数個の出力の伝播
 
 `None`を入力のない周期として現在段へ通知し、完成出力がない周期では後段を呼ばない例もある。
 
@@ -168,17 +169,16 @@ python -m examples.streaming.none_cycle
 この例では、状態を持つ処理を4周期すべてで更新しつつ、2周期ごとの完成値だけを
 後段へ渡す。`Flow`は周期を決めず、各段の0個・1個・複数個の出力だけを接続する。
 
-A deterministic delay-and-sum example without an external scene renderer is also available:
+外部のscene rendererを使わない、決定論的なdelay-and-sumの例も用意している。
 
 ```bash
 python -m examples.beamforming.delay_and_sum
 ```
 
-This example first verifies synthetic plane-wave tone generation: requested RMS level,
-per-channel arrival phase, and the level after delay-and-sum. It intentionally does not
-generate BL metrics or make an adoption decision.
+この例では、合成平面波toneの指定RMS level、channelごとの到来位相、
+delay-and-sum後のlevelを確認する。BL指標の生成や方式の採否判定は扱わない。
 
-Core example:
+中心となる処理は次のとおりである。
 
 ```python
 from types import SimpleNamespace
