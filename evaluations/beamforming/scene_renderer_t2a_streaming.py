@@ -51,6 +51,7 @@ from evaluations.beamforming.scene_renderer_t2a_waveform_reporting import (  # n
     calculate_target_waveform_integrity,
     select_diagnostic_zoom_bounds,
 )
+from spflow import StepScheduler  # noqa: E402
 from spflow.beamforming.ebae import EbaeConfig, design_ebae_weights_band  # noqa: E402
 from spflow.simulation import SignalBlock, StatefulIntegerDelay, VersionedCausalFIR  # noqa: E402
 
@@ -98,6 +99,7 @@ class T2aScenarioConfig:
     duration_s: float = 6.0
     training_duration_s: float = 4.5
     adaptive_weight_update_interval_s: float = 1.0
+    adaptive_weight_design_items_per_cycle: int | None = None
     target_azimuth_deg: float = 55.0
     target_frequency_hz: float = 512.0
     target_level_db_re_input_rms: float = 0.0
@@ -128,6 +130,11 @@ class T2aScenarioConfig:
             raise ValueError("adaptive_weight_update_interval_s must be positive.")
         if int(round(self.adaptive_weight_update_interval_s * self.fs_hz)) < 1:
             raise ValueError("adaptive weight update interval must cover at least one sample.")
+        if (
+            self.adaptive_weight_design_items_per_cycle is not None
+            and self.adaptive_weight_design_items_per_cycle <= 0
+        ):
+            raise ValueError("adaptive_weight_design_items_per_cycle must be positive or None.")
         if not 0.0 < self.noise_band_hz[0] < self.noise_band_hz[1] < self.fs_hz / 2.0:
             raise ValueError("noise_band_hz must lie inside the positive Nyquist band.")
         if self.analysis_fft_size < 8 or self.analysis_hop_size <= 0:
@@ -266,8 +273,8 @@ class CompletedWeightUpdate:
     """保持した同一入力周期へ適用できる完成係数更新を保持する。
 
     `effective_start_sample`と`cycle_stop_sample`は新係数で処理する入力周期
-    `[start,stop)`、`version`は単調増加する完成版番号である。`coefficients`の各値は
-    shape `[n_beam,n_ch,n_tap]`、
+    `[start,stop)`、`source_snapshot_stop_sample`は設計入力の観測終端、`version`は単調増加する
+    完成版番号である。`coefficients`の各値はshape `[n_beam,n_ch,n_tap]`、
     `energy_containment`の各値はshape `[n_beam]`である。
 
     本結果型は完成係数と設計診断を運ぶだけで、共分散計算、FIR状態、信号適用を担わない。
@@ -275,10 +282,25 @@ class CompletedWeightUpdate:
 
     effective_start_sample: int
     cycle_stop_sample: int
+    source_snapshot_stop_sample: int
     version: int
     coefficients: dict[str, ComplexArray]
     energy_containment: dict[str, FloatArray]
     weight_design: FrequencyWeightDesign
+
+
+@dataclass(frozen=True)
+class WeightUpdateCycleResult:
+    """一つの適応処理周期の区間と完成係数の有無を表す。
+
+    `[cycle_start_sample,cycle_stop_sample)`は今回信号経路へ渡す入力周期である。
+    `completed_update`は`StepScheduler`が今回全itemを完了した場合だけ存在し、未完成時は
+    `None`として前回完成FIRを維持する。本結果型は周期境界を運ぶだけで信号処理を担わない。
+    """
+
+    cycle_start_sample: int
+    cycle_stop_sample: int
+    completed_update: CompletedWeightUpdate | None
 
 
 class MatlabArrayGeometry(ArrayGeometry):
@@ -982,6 +1004,125 @@ def realize_residual_fir(weights: ComplexArray, tap_count: int) -> tuple[Complex
     return coefficients, energy_ratio
 
 
+@dataclass(frozen=True)
+class _WeightDesignSnapshot:
+    """時間分割中に変更されないrolling信号snapshotと世代を保持する。"""
+
+    training_signal: FloatArray
+    generation: int
+    observed_through_sample: int
+
+    def __post_init__(self) -> None:
+        """shapeと有限性を検証し、所有する読み取り専用copyへ固定する。"""
+        signal = np.asarray(self.training_signal, dtype=np.float64)
+        if signal.ndim != 2 or signal.shape[0] == 0 or signal.shape[1] == 0:
+            raise ValueError("training_signal must have shape [n_ch, n_sample].")
+        if not bool(np.all(np.isfinite(signal))):
+            raise ValueError("training_signal must contain only finite values.")
+        if self.generation < 0:
+            raise ValueError("generation must be non-negative.")
+        if self.observed_through_sample <= 0:
+            raise ValueError("observed_through_sample must be positive.")
+        owned_signal = signal.copy()
+        owned_signal.flags.writeable = False
+        object.__setattr__(self, "training_signal", owned_signal)
+
+
+@dataclass(frozen=True)
+class _ScheduledWeightDesign:
+    """StepSchedulerが全item完了後だけ公開する重み・FIR完成値を保持する。"""
+
+    weight_design: FrequencyWeightDesign
+    coefficients: dict[str, ComplexArray]
+    energy_containment: dict[str, FloatArray]
+    source_generation: int
+    source_snapshot_stop_sample: int
+
+
+class _OnlineWeightDesignCallback:
+    """重み設計と方式別FIR化をStepSchedulerのitemへ分けるcallbackである。
+
+    最初のitemで一つのrolling snapshotから全方式の周波数重みを設計し、後続itemで
+    方式ごとの残差FIRを生成する。全item完了時だけ`_ScheduledWeightDesign`を公開し、
+    途中の周波数重みや一部方式だけのFIRを信号経路へ渡さない。
+    """
+
+    def __init__(
+        self,
+        coefficients: MatlabArrayCoefficients,
+        beam_azimuth_deg: FloatArray,
+        config: T2aScenarioConfig,
+        method_ids: tuple[str, ...],
+    ) -> None:
+        """固定設計条件と空の作業領域を保持する。"""
+        self._coefficients = coefficients
+        self._beam_azimuth_deg = np.asarray(beam_azimuth_deg, dtype=np.float64).copy()
+        self._config = config
+        self._method_ids = method_ids
+        self._work_design: FrequencyWeightDesign | None = None
+        self._work_coefficients: dict[str, ComplexArray] = {}
+        self._work_energy: dict[str, FloatArray] = {}
+        self._previous: _ScheduledWeightDesign | None = None
+
+    def signature(self, inputs: _WeightDesignSnapshot) -> int:
+        """異なるrolling snapshotの部分結果を混ぜないためgenerationを返す。"""
+        return inputs.generation
+
+    def on_start(self, inputs: _WeightDesignSnapshot) -> tuple[str | None, ...]:
+        """重み設計itemと方式別FIR化itemを順序付きで生成する。"""
+        del inputs
+        self.reset_cycle()
+        # Noneは全方式共通の周波数重み設計、後続文字列は方式別FIR化を表す。
+        return (None, *self._method_ids)
+
+    def on_step(self, item: str | None, inputs: _WeightDesignSnapshot) -> None:
+        """一つの設計itemを処理し、未完成作業領域へだけ保存する。"""
+        if item is None:
+            self._work_design = design_frequency_weights(
+                inputs.training_signal,
+                self._coefficients,
+                self._beam_azimuth_deg,
+                self._config,
+                method_ids=self._method_ids,
+            )
+            return
+        design = self._work_design
+        if design is None:
+            raise RuntimeError("frequency weights must complete before FIR realization.")
+        fir_coefficients, energy_ratio = realize_residual_fir(
+            design.weights[item],
+            self._config.residual_fir_tap_count,
+        )
+        self._work_coefficients[item] = fir_coefficients
+        self._work_energy[item] = energy_ratio
+
+    def on_finish(
+        self,
+        inputs: _WeightDesignSnapshot,
+        done: bool,
+    ) -> _ScheduledWeightDesign | None:
+        """全item完了時だけ一つの完成値へ昇格し、未完成時は前回完成値を返す。"""
+        if done:
+            design = self._work_design
+            if design is None or set(self._work_coefficients) != set(self._method_ids):
+                raise RuntimeError("all weight-design items must complete before publication.")
+            # 方式別FIRがすべて揃った後に参照を一度で置換し、部分世代を公開しない。
+            self._previous = _ScheduledWeightDesign(
+                weight_design=design,
+                coefficients=dict(self._work_coefficients),
+                energy_containment=dict(self._work_energy),
+                source_generation=inputs.generation,
+                source_snapshot_stop_sample=inputs.observed_through_sample,
+            )
+        return self._previous
+
+    def reset_cycle(self) -> None:
+        """進行中snapshotの作業値だけを破棄し、前回完成値を保持する。"""
+        self._work_design = None
+        self._work_coefficients = {}
+        self._work_energy = {}
+
+
 class OnlineT2aWeightUpdater:
     """mixed入力の移動training窓から運用中の完成T2a係数を生成する。
 
@@ -989,9 +1130,9 @@ class OnlineT2aWeightUpdater:
     `CompletedWeightUpdate | None`である。最新`training_duration_s`秒を保持し、最初の
     warm-up完了後は`adaptive_weight_update_interval_s`秒ごとに重みと残差FIRを再設計する。
 
-    本クラスは共分散窓、更新時刻、完成版の生成を担う。信号へのFIR適用、方式branchの
-    履歴、計算量の複数処理周期への分割は責務に含めない。現在の設計関数は一更新周期内で
-    完成し、完成後だけ`VersionedCausalFIR`へ渡される。
+    本クラスは共分散窓、更新時刻、`StepScheduler`による計算時間分割、完成版の生成を担う。
+    信号へのFIR適用と方式branchの履歴は責務に含めない。設計が複数周期へまたがる間は
+    前回完成FIRを維持し、全item完成後だけ`VersionedCausalFIR`へ渡す。
     """
 
     def __init__(
@@ -1018,10 +1159,7 @@ class OnlineT2aWeightUpdater:
         )
         if len(adaptive_method_ids) == 0:
             raise ValueError("online updater requires at least one adaptive method.")
-        self._coefficients = coefficients
         self._beam_azimuth_deg = np.asarray(beam_azimuth_deg, dtype=np.float64).copy()
-        self._config = config
-        self._method_ids = selected_method_ids
         self._adaptive_method_ids = adaptive_method_ids
         self._training_sample_count = int(round(config.training_duration_s * config.fs_hz))
         self._update_interval_samples = int(
@@ -1039,6 +1177,18 @@ class OnlineT2aWeightUpdater:
         self._next_version = 1
         self._completed_updates: list[CompletedWeightUpdate] = []
         self._latest_weight_design: FrequencyWeightDesign | None = None
+        self._weight_scheduler = StepScheduler(
+            _OnlineWeightDesignCallback(
+                coefficients,
+                self._beam_azimuth_deg,
+                config,
+                selected_method_ids,
+            ),
+            items_per_cycle=config.adaptive_weight_design_items_per_cycle,
+        )
+        self._designing_snapshot: _WeightDesignSnapshot | None = None
+        self._waiting_snapshot: _WeightDesignSnapshot | None = None
+        self._next_snapshot_generation = 0
 
     @property
     def next_update_sample(self) -> int:
@@ -1055,14 +1205,15 @@ class OnlineT2aWeightUpdater:
         """最後に全周波数・全beamが完成した設計を返す。未更新時は`None`。"""
         return self._latest_weight_design
 
-    def process(self, block: RuntimeBlock) -> CompletedWeightUpdate | None:
-        """mixed入力blockをrolling窓へ加え、更新境界なら完成係数を返す。
+    def process(self, block: RuntimeBlock) -> WeightUpdateCycleResult | None:
+        """mixed入力blockをrolling窓へ加え、更新境界で設計を一段進める。
 
         Args:
             block: mixed channel入力。shape `[n_ch,n_block_sample]`、単位input RMS。
 
         Returns:
-            block終端が更新境界なら完成更新、それ以外は`None`。
+            block終端が更新境界なら周期区間と完成更新の有無を持つ固定型結果、
+            境界以外は`None`。
 
         Raises:
             ValueError: channel shape、時系列連続性、更新境界を跨ぐblockが不正な場合。
@@ -1091,41 +1242,55 @@ class OnlineT2aWeightUpdater:
         if self._rolling_signal.shape[1] != self._training_sample_count:
             raise RuntimeError("complete update boundary must contain one full training window.")
 
-        # この時点までに観測済みのmixed信号だけを使うため、未来sampleを係数へ混ぜない。
-        # design_frequency_weightsは全frequency・beamを完成させてから一つのsnapshotを返す。
-        weight_design = design_frequency_weights(
+        # snapshotは所有copyを持つため、次のrolling更新で時間分割中の入力が変化しない。
+        newest_snapshot = _WeightDesignSnapshot(
             self._rolling_signal,
-            self._coefficients,
-            self._beam_azimuth_deg,
-            self._config,
-            method_ids=self._method_ids,
+            self._next_snapshot_generation,
+            stop_sample,
         )
-        completed_coefficients: dict[str, ComplexArray] = {}
-        energy_containment: dict[str, FloatArray] = {}
-        for method_id, weights in weight_design.weights.items():
-            fir_coefficients, energy_ratio = realize_residual_fir(
-                weights,
-                self._config.residual_fir_tap_count,
-            )
-            energy_containment[method_id] = energy_ratio
-            if method_id in self._adaptive_method_ids:
-                # fixed_baselineは初期から不変であり、版更新の対象にしない。
-                completed_coefficients[method_id] = fir_coefficients
+        self._next_snapshot_generation += 1
+        if self._designing_snapshot is None:
+            self._designing_snapshot = newest_snapshot
+        else:
+            # 設計中世代は完了まで固定し、新着snapshotは最新1件だけ待機させる。
+            self._waiting_snapshot = newest_snapshot
 
-        completed = CompletedWeightUpdate(
-            effective_start_sample=self._current_cycle_start_sample,
+        designing_snapshot = self._designing_snapshot
+        if designing_snapshot is None:
+            raise RuntimeError("designing snapshot must exist at an update boundary.")
+        scheduler_result = self._weight_scheduler.process_result(designing_snapshot)
+        completed: CompletedWeightUpdate | None = None
+        if scheduler_result.updated:
+            scheduled_design = scheduler_result.value
+            if scheduled_design is None:
+                raise RuntimeError("completed scheduler cycle must publish a weight design.")
+            completed_coefficients = {
+                method_id: scheduled_design.coefficients[method_id]
+                for method_id in self._adaptive_method_ids
+            }
+            completed = CompletedWeightUpdate(
+                effective_start_sample=self._current_cycle_start_sample,
+                cycle_stop_sample=stop_sample,
+                source_snapshot_stop_sample=scheduled_design.source_snapshot_stop_sample,
+                version=self._next_version,
+                coefficients=completed_coefficients,
+                energy_containment=scheduled_design.energy_containment,
+                weight_design=scheduled_design.weight_design,
+            )
+            self._completed_updates.append(completed)
+            self._latest_weight_design = scheduled_design.weight_design
+            self._next_version += 1
+            self._designing_snapshot = self._waiting_snapshot
+            self._waiting_snapshot = None
+
+        cycle_result = WeightUpdateCycleResult(
+            cycle_start_sample=self._current_cycle_start_sample,
             cycle_stop_sample=stop_sample,
-            version=self._next_version,
-            coefficients=completed_coefficients,
-            energy_containment=energy_containment,
-            weight_design=weight_design,
+            completed_update=completed,
         )
-        self._completed_updates.append(completed)
-        self._latest_weight_design = weight_design
         self._current_cycle_start_sample = stop_sample
-        self._next_version += 1
         self._next_update_sample += self._update_interval_samples
-        return completed
+        return cycle_result
 
 
 def run_streaming_beam_branches(
@@ -1155,7 +1320,8 @@ def run_streaming_beam_branches(
     信号処理上の位置づけ:
         fixed、T2a-MVDR、T2a-EBAEを並列な方式経路として適用する。
         mixed実行では更新周期の入力を保持し、係数経路を先に完了してから同一周期を信号経路へ
-        渡す。成分分離実行ではmixedから得た更新列を同じsample区間へ再適用する。
+        渡す。StepSchedulerが未完成の周期は前回完成係数を使う。成分分離実行ではmixedから
+        得た更新列を同じsample区間へ再適用する。
         本処理では各branchが常に一つの完成`BeamBlock`を返し、処理レート差もないため、
         `Flow`による0/1/many伝播は使わない。block分割、方式分岐、時刻位置への収集を
         通常のPython制御構文で明示する。
@@ -1184,10 +1350,10 @@ def run_streaming_beam_branches(
     ):
         raise ValueError("coefficient update cycles must be non-empty and lie inside the signal.")
     if any(
-        current.cycle_stop_sample != following.effective_start_sample
+        current.cycle_stop_sample > following.effective_start_sample
         for current, following in zip(coefficient_updates, coefficient_updates[1:], strict=False)
     ):
-        raise ValueError("coefficient update cycles must be contiguous and chronological.")
+        raise ValueError("coefficient update cycles must not overlap and must be chronological.")
     branch_by_method = {branch.method_id: branch for branch in branches}
     if any(
         method_id not in branch_by_method
@@ -1206,43 +1372,46 @@ def run_streaming_beam_branches(
     start = 0
     update_input_start = 0
     replay_update_index = 0
-    pending_online_update: CompletedWeightUpdate | None = None
+    pending_online_cycle: WeightUpdateCycleResult | None = None
     while start < signal.shape[1]:
         segment_stop = signal.shape[1]
         if coefficient_updater is not None:
             # 係数経路は更新周期のmixed入力を先に保持する。周期終端で重みとFIRが完成してから、
             # 同じ[start,stop)入力周期を下の信号経路へ渡すため、出力遅延は最大1更新周期となる。
-            while update_input_start < signal.shape[1] and pending_online_update is None:
+            while update_input_start < signal.shape[1] and pending_online_cycle is None:
                 update_input_stop = min(
                     update_input_start + block_size,
                     signal.shape[1],
                     coefficient_updater.next_update_sample,
                 )
-                pending_online_update = coefficient_updater.process(
+                pending_online_cycle = coefficient_updater.process(
                     RuntimeBlock(
                         update_input_start,
                         signal[:, update_input_start:update_input_stop],
                     )
                 )
                 update_input_start = update_input_stop
-            if pending_online_update is not None:
-                if pending_online_update.effective_start_sample < start:
+            if pending_online_cycle is not None:
+                if pending_online_cycle.cycle_start_sample < start:
                     raise RuntimeError(
-                        "completed update must not precede the pending signal cycle."
+                        "weight-update cycle must not precede the pending signal cycle."
                     )
-                if pending_online_update.effective_start_sample > start:
+                if pending_online_cycle.cycle_start_sample > start:
                     # 初回training窓の先頭側にはまだ適応完成版がないため、固定整相で公開する。
-                    segment_stop = pending_online_update.effective_start_sample
+                    segment_stop = pending_online_cycle.cycle_start_sample
                 else:
-                    for method_id, updated_coefficients in (
-                        pending_online_update.coefficients.items()
-                    ):
-                        branch_by_method[method_id].request_coefficient_update(
-                            updated_coefficients,
-                            version=pending_online_update.version,
-                        )
-                    segment_stop = pending_online_update.cycle_stop_sample
-                    pending_online_update = None
+                    completed_update = pending_online_cycle.completed_update
+                    if completed_update is not None:
+                        for method_id, updated_coefficients in (
+                            completed_update.coefficients.items()
+                        ):
+                            branch_by_method[method_id].request_coefficient_update(
+                                updated_coefficients,
+                                version=completed_update.version,
+                            )
+                    # scheduler未完成なら係数予約を行わず、前回完成FIRで同じ周期を処理する。
+                    segment_stop = pending_online_cycle.cycle_stop_sample
+                    pending_online_cycle = None
         elif replay_update_index < len(coefficient_updates):
             replay_update = coefficient_updates[replay_update_index]
             if replay_update.effective_start_sample == start:
@@ -1692,6 +1861,12 @@ def _parse_args() -> argparse.Namespace:
         help="適応重みの完成更新間隔[s]。既定値1.0",
     )
     parser.add_argument(
+        "--adaptive-weight-design-items-per-cycle",
+        type=int,
+        default=None,
+        help="1更新周期にStepSchedulerで処理する設計item数。省略時は全item",
+    )
+    parser.add_argument(
         "--write-example-coefficients",
         action="store_true",
         help="実行前に疎通確認用rawを指定2ファイルへ生成する",
@@ -1703,7 +1878,8 @@ def main() -> None:
     """CLIから統合T2a評価を実行する。"""
     args = _parse_args()
     config = T2aScenarioConfig(
-        adaptive_weight_update_interval_s=float(args.adaptive_weight_update_interval_s)
+        adaptive_weight_update_interval_s=float(args.adaptive_weight_update_interval_s),
+        adaptive_weight_design_items_per_cycle=args.adaptive_weight_design_items_per_cycle,
     )
     if bool(args.write_example_coefficients):
         write_example_matlab_coefficients(args.positions_raw, args.shading_raw, config)

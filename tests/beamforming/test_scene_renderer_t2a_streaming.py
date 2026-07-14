@@ -247,6 +247,7 @@ def test_completed_weight_update_is_applied_at_exact_sample_boundary() -> None:
     update = CompletedWeightUpdate(
         effective_start_sample=3,
         cycle_stop_sample=8,
+        source_snapshot_stop_sample=3,
         version=1,
         coefficients={"t2a_mvdr": updated_coefficients},
         energy_containment={"t2a_mvdr": np.ones(1, dtype=np.float64)},
@@ -264,17 +265,36 @@ def test_completed_weight_update_is_applied_at_exact_sample_boundary() -> None:
     np.testing.assert_array_equal(valid, np.ones((1, 8), dtype=np.bool_))
 
 
-def test_online_weight_updater_uses_seconds_and_replays_completed_versions() -> None:
-    """warm-up後0.5秒ごとにmixed入力から完成版を生成し、同じ時刻列を再適用する。
+@pytest.mark.parametrize(
+    ("items_per_cycle", "expected_starts", "expected_stops", "expected_source_stops"),
+    [
+        (
+            None,
+            [16, 32, 48, 64, 80],
+            [32, 48, 64, 80, 96],
+            [32, 48, 64, 80, 96],
+        ),
+        (1, [32, 64], [48, 80], [32, 48]),
+    ],
+)
+def test_online_weight_updater_uses_seconds_and_replays_completed_versions(
+    items_per_cycle: int | None,
+    expected_starts: list[int],
+    expected_stops: list[int],
+    expected_source_stops: list[int],
+) -> None:
+    """更新周期とStepScheduler時間分割を守り、完成版だけを同時刻へ再適用する。
 
     fs=32 Hzなので更新間隔0.5秒は16 sampleである。training 1秒に4個の非重複FFT
-    snapshotを含め、2 channel MVDRの共分散条件を満たしたうえで更新時刻を検証する。
+    snapshotを含め、2 channel MVDRの共分散条件を満たす。全item処理では同一周期へ適用し、
+    1 item制限では重み設計とFIR化が揃うまで前回完成FIRを維持する。
     """
     config = T2aScenarioConfig(
         fs_hz=32.0,
         duration_s=3.0,
         training_duration_s=1.0,
         adaptive_weight_update_interval_s=0.5,
+        adaptive_weight_design_items_per_cycle=items_per_cycle,
         target_frequency_hz=4.0,
         interferer_frequency_hz=8.0,
         noise_band_hz=(1.0, 12.0),
@@ -318,21 +338,16 @@ def test_online_weight_updater_uses_seconds_and_replays_completed_versions() -> 
         coefficient_updater=updater,
     )["t2a_mvdr"]
 
-    assert [update.effective_start_sample for update in updater.completed_updates] == [
-        16,
-        32,
-        48,
-        64,
-        80,
-    ]
-    assert [update.cycle_stop_sample for update in updater.completed_updates] == [
-        32,
-        48,
-        64,
-        80,
-        96,
-    ]
-    assert [update.version for update in updater.completed_updates] == [1, 2, 3, 4, 5]
+    assert [
+        update.effective_start_sample for update in updater.completed_updates
+    ] == expected_starts
+    assert [update.cycle_stop_sample for update in updater.completed_updates] == expected_stops
+    assert [
+        update.source_snapshot_stop_sample for update in updater.completed_updates
+    ] == expected_source_stops
+    assert [update.version for update in updater.completed_updates] == list(
+        range(1, len(expected_starts) + 1)
+    )
 
     replay_branches, _ = t2a_streaming._make_branches(
         initial_design.weights,

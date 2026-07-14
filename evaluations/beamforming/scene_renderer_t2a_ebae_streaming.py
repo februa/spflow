@@ -46,6 +46,12 @@ def _parse_args() -> argparse.Namespace:
         help="適応重みの完成更新間隔[s]。既定値1.0",
     )
     parser.add_argument(
+        "--adaptive-weight-design-items-per-cycle",
+        type=int,
+        default=None,
+        help="1更新周期にStepSchedulerで処理する設計item数。省略時は全item",
+    )
+    parser.add_argument(
         "--write-example-coefficients",
         action="store_true",
         help="実行前に疎通確認用rawを指定2ファイルへ生成する",
@@ -69,7 +75,8 @@ def main() -> None:
     """
     args = _parse_args()
     config = T2aScenarioConfig(
-        adaptive_weight_update_interval_s=float(args.adaptive_weight_update_interval_s)
+        adaptive_weight_update_interval_s=float(args.adaptive_weight_update_interval_s),
+        adaptive_weight_design_items_per_cycle=args.adaptive_weight_design_items_per_cycle,
     )
     if bool(args.write_example_coefficients):
         write_example_matlab_coefficients(args.positions_raw, args.shading_raw, config)
