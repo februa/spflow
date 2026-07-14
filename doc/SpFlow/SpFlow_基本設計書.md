@@ -709,9 +709,9 @@ updated_coefficients = (
 未完成周期の`updated_value()`は`None`であり、`Flow`が0出力として扱う。これにより、
 `Flow`は処理レートを決めず、`StepScheduler`の完成状態だけを0個・1個の値へ変換できる。
 
-適応ビームフォーマ全体では、FFT後の同じ`frame_fft_flow`から係数設計経路と信号適用経路を
-分ける。係数設計経路は完成した係数を現在係数へ置き換え、信号適用経路はその現在係数と
-FFT信号のchannel内積を計算する。
+適応ビームフォーマ全体では、完成したFFT frameごとに同じ`frame_fft_flow`から係数設計経路と
+信号適用経路を分ける。係数設計経路は完成した係数を現在係数へ置き換え、信号適用経路は
+その現在係数とFFT信号のchannel内積を計算する。
 
 ```text
 入力信号 → frame化 → FFT ┬→ 共分散計算 → 設計用snapshot一時保持
@@ -720,9 +720,10 @@ FFT信号のchannel内積を計算する。
                                                 現在の完成係数 ─────────┘
 ```
 
-係数設計経路を先に評価するため、1周期で全itemを設計できた場合は、完成係数を同じFFT frameへ
-適用する。設計が複数周期にまたがる場合は、設計中snapshotを同じgenerationのまま保持し、
-完成するまでは固定CBFまたは前回完成した適応係数を信号へ適用する。
+係数設計経路を先に評価するため、1回の設計更新で全itemを設計できた場合は、完成係数を同じ
+FFT frameへ適用する。設計が複数frameにまたがる場合は、設計中snapshotを同じgenerationのまま
+保持し、完成するまでは固定CBFまたは前回完成した適応係数を信号へ適用する。`FrameBuffer`が
+1 chunkから複数frameを返す場合も、各frameについてこの2経路を順番に評価する。
 
 ---
 
@@ -877,12 +878,18 @@ H = StepScheduler.map(
 
 ```python
 def process_cycle(signal_chunk, env):
-    frame_fft_flow = (
+    return (
         Flow.from_value(signal_chunk)
         .map(env.frame_buffer.process)
         .map(apply_analysis_window, env.analysis_window)
         .map(calculate_frame_fft, env.analysis_window.size)
+        .map(process_completed_frame_fft, env)
     )
+
+
+def process_completed_frame_fft(frame_fft, env):
+    # 分岐単位を1個の完成frameに限定し、複数frameでも更新と適用の時系列を保つ。
+    frame_fft_flow = Flow.from_value(frame_fft)
 
     # 係数設計経路:
     # 共分散計算 → 設計用snapshotの一時保持 → 適応係数算出 → 現在係数の一括置換。
@@ -917,10 +924,15 @@ apply_active_beamformer:
     Y[beam, band] = Σ_ch H_active[ch, beam, band] X[ch, band]を計算する
 ```
 
-1周期設計では`replace_active_beamformer_coefficients()`が同じ呼び出し中に実行されるため、
-同じFFT frameへ新係数を適用する。複数周期設計では`calculate_adaptive_beamformer_coefficients()`
-が`None`を返し、`Flow`が後段の置換処理を呼ばない。したがって信号経路は、全帯域が完成するまで
-固定CBFまたは前回完成係数を使い続ける。
+1回の設計更新で完成する場合は`replace_active_beamformer_coefficients()`が同じframeの処理中に
+実行されるため、同じFFT frameへ新係数を適用する。複数frameにまたがる設計では
+`calculate_adaptive_beamformer_coefficients()`が完成まで`None`を返し、`Flow`が後段の置換処理を
+呼ばない。したがって信号経路は、全帯域が完成するまで固定CBFまたは前回完成係数を使い続ける。
+
+`FrameBuffer.process()`は0個・1個・複数個の完成frameを返してよい。外側の`Flow.map()`が各frameへ
+`process_completed_frame_fft()`を時系列順に適用するため、1 chunkに複数frameが含まれても、後の
+frameから設計した係数を先のframeへ遡って適用しない。これはFrameBufferの出力レート差を制限せず、
+分岐後の状態更新順序を利用者コード側で明示する構造である。
 
 ---
 

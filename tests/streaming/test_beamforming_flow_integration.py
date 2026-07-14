@@ -212,3 +212,34 @@ def test_streaming_mvdr_flow_keeps_previous_coefficients_until_multicycle_design
     # generation 0の設計中に到着したgeneration 1は、次の設計候補として最新1件だけ保持する。
     assert env.waiting_snapshot is not None
     assert env.waiting_snapshot.generation == 1
+
+
+def test_streaming_mvdr_flow_processes_multiple_completed_frames_in_temporal_order() -> None:
+    """1 chunkの複数frameを、frameごとの係数更新と信号適用の順序を保って処理する。"""
+    env = make_environment(fft_length=2, items_per_cycle=1)
+    initial_coefficients = env.active_beamformer_coefficients.copy()
+    signal_chunk = np.array(
+        [[1.0, 0.0, 0.0, 1.0], [0.5, 0.0, 0.0, 0.25]],
+        dtype=np.float32,
+    )
+
+    outputs = process_cycle(signal_chunk, env)
+
+    # frame 0では2 band中1 bandしか設計されないため、初期CBFを適用する。
+    # frame 1でgeneration 0が完成し、同じframeから完成MVDRへ切り替える。
+    assert len(outputs) == 2
+    assert env.active_coefficient_generation == 0
+    assert env.coefficient_replacement_count == 1
+    first_frame_fft = calculate_frame_fft(signal_chunk[:, :2], fft_length=2)
+    second_frame_fft = calculate_frame_fft(signal_chunk[:, 2:], fft_length=2)
+    np.testing.assert_allclose(
+        outputs[0],
+        apply_beamformer_bands(first_frame_fft, initial_coefficients),
+    )
+    np.testing.assert_allclose(
+        outputs[1],
+        apply_beamformer_bands(second_frame_fft, env.active_beamformer_coefficients),
+    )
+    # 2番目のframeから作ったgeneration 1は、generation 0と混ぜず次回設計まで待機する。
+    assert env.waiting_snapshot is not None
+    assert env.waiting_snapshot.generation == 1
