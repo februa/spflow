@@ -97,6 +97,7 @@ class T2aScenarioConfig:
     sound_speed_m_s: float = 1500.0
     duration_s: float = 6.0
     training_duration_s: float = 4.5
+    adaptive_weight_update_interval_s: float = 1.0
     target_azimuth_deg: float = 55.0
     target_frequency_hz: float = 512.0
     target_level_db_re_input_rms: float = 0.0
@@ -123,6 +124,10 @@ class T2aScenarioConfig:
             raise ValueError("fs_hz and sound_speed_m_s must be positive.")
         if not 0.0 < self.training_duration_s < self.duration_s:
             raise ValueError("training_duration_s must lie inside duration_s.")
+        if self.adaptive_weight_update_interval_s <= 0.0:
+            raise ValueError("adaptive_weight_update_interval_s must be positive.")
+        if int(round(self.adaptive_weight_update_interval_s * self.fs_hz)) < 1:
+            raise ValueError("adaptive weight update interval must cover at least one sample.")
         if not 0.0 < self.noise_band_hz[0] < self.noise_band_hz[1] < self.fs_hz / 2.0:
             raise ValueError("noise_band_hz must lie inside the positive Nyquist band.")
         if self.analysis_fft_size < 8 or self.analysis_hop_size <= 0:
@@ -256,6 +261,26 @@ class BeamBlock:
     valid_mask: BoolArray
 
 
+@dataclass(frozen=True)
+class CompletedWeightUpdate:
+    """保持した同一入力周期へ適用できる完成係数更新を保持する。
+
+    `effective_start_sample`と`cycle_stop_sample`は新係数で処理する入力周期
+    `[start,stop)`、`version`は単調増加する完成版番号である。`coefficients`の各値は
+    shape `[n_beam,n_ch,n_tap]`、
+    `energy_containment`の各値はshape `[n_beam]`である。
+
+    本結果型は完成係数と設計診断を運ぶだけで、共分散計算、FIR状態、信号適用を担わない。
+    """
+
+    effective_start_sample: int
+    cycle_stop_sample: int
+    version: int
+    coefficients: dict[str, ComplexArray]
+    energy_containment: dict[str, FloatArray]
+    weight_design: FrequencyWeightDesign
+
+
 class MatlabArrayGeometry(ArrayGeometry):
     """MATLAB係数の任意3次元位置をscene_rendererへ公開する。
 
@@ -320,6 +345,43 @@ class StreamingBeamBranch:
     def n_beam(self) -> int:
         """このbranchが生成する待受beam数を返す。"""
         return self._n_beam
+
+    @property
+    def active_coefficient_version(self) -> int:
+        """現在信号へ適用している完成FIR係数の版番号を返す。"""
+        return self._fir.active_version
+
+    def request_coefficient_update(
+        self,
+        coefficients: ComplexArray,
+        *,
+        version: int,
+    ) -> None:
+        """完成した全beam・channel係数を次のblock先頭での置換対象にする。
+
+        Args:
+            coefficients: 新しい因果FIR。shape `[n_beam,n_ch,n_tap]`。
+            version: 現在版と予約済み版より大きい完成版番号。
+
+        Returns:
+            なし。
+
+        Raises:
+            ValueError: beam/channel/tap shape、dtype、有限性、版番号が既存FIRと異なる場合。
+
+        境界条件:
+            呼び出し時点ではactive係数を変更しない。次の`process()`先頭で全系列を
+            同時に切り替え、更新中またはblock途中の係数を外部へ公開しない。
+        """
+        taps = np.asarray(coefficients, dtype=np.complex128)
+        if taps.ndim != 3 or taps.shape[:2] != (self._n_beam, self._n_ch):
+            raise ValueError("updated coefficients must have shape [n_beam, n_ch, n_tap].")
+        # VersionedCausalFIRのseries軸はbeam-majorの[beam*ch]である。初期構築時と同じ
+        # flatten規約を使い、更新後も各beam・channelとtap列の対応を維持する。
+        self._fir.request_update(
+            taps.reshape(self._n_beam * self._n_ch, taps.shape[2]),
+            version=version,
+        )
 
     def process(self, block: RuntimeBlock) -> BeamBlock:
         """一つの入力blockを処理し、完成sampleだけをmaskで明示する。
@@ -826,6 +888,51 @@ def design_frequency_weights(
     )
 
 
+def design_initial_fixed_weights(
+    reference_signal: FloatArray,
+    coefficients: MatlabArrayCoefficients,
+    beam_azimuth_deg: FloatArray,
+    config: T2aScenarioConfig,
+    method_ids: tuple[str, ...] = SUPPORTED_METHOD_IDS,
+) -> FrequencyWeightDesign:
+    """適応係数が未完成の場合に使う固定整相重みを方式別に作る。
+
+    Args:
+        reference_signal: channel数を確定する入力。shape `[n_ch,n_sample]`、単位input RMS。
+        coefficients: 物理位置、周波数別active channel、複素shading。
+        beam_azimuth_deg: 待受方位。shape `[n_beam]`、単位deg。
+        config: sampling、FFT、遅延、shading条件。
+        method_ids: runtimeへ作る方式識別子。
+
+    Returns:
+        全方式IDへ同じ完成fixed重みを割り当てた`FrequencyWeightDesign`。
+
+    Raises:
+        ValueError: 方式、入力shape、係数または方位条件が不正な場合。
+
+    境界条件:
+        完成更新を作れない短い終端入力や設計異常では、MVDR/EBAEの部分値を公開せず、
+        無歪条件を満たす固定整相重みを安全側の完成値として使えるようにする。
+    """
+    selected_method_ids = _validate_method_ids(method_ids)
+    fixed_design = design_frequency_weights(
+        reference_signal,
+        coefficients,
+        beam_azimuth_deg,
+        config,
+        method_ids=("fixed_baseline",),
+    )
+    fixed_weights = fixed_design.weights["fixed_baseline"]
+    return FrequencyWeightDesign(
+        weights={method_id: fixed_weights.copy() for method_id in selected_method_ids},
+        causal_delays_samples=fixed_design.causal_delays_samples.copy(),
+        active_channel_count=fixed_design.active_channel_count.copy(),
+        ebae_signal_count=fixed_design.ebae_signal_count.copy(),
+        ebae_music_peak_azimuth_deg=fixed_design.ebae_music_peak_azimuth_deg.copy(),
+        ebae_fallback_mask=fixed_design.ebae_fallback_mask.copy(),
+    )
+
+
 def realize_residual_fir(weights: ComplexArray, tap_count: int) -> tuple[ComplexArray, FloatArray]:
     """残差周波数重みを共通tap窓の因果FIRへ変換する。
 
@@ -875,10 +982,159 @@ def realize_residual_fir(weights: ComplexArray, tap_count: int) -> tuple[Complex
     return coefficients, energy_ratio
 
 
+class OnlineT2aWeightUpdater:
+    """mixed入力の移動training窓から運用中の完成T2a係数を生成する。
+
+    入力は時系列順の`RuntimeBlock`、出力は更新時刻だけ生成される
+    `CompletedWeightUpdate | None`である。最新`training_duration_s`秒を保持し、最初の
+    warm-up完了後は`adaptive_weight_update_interval_s`秒ごとに重みと残差FIRを再設計する。
+
+    本クラスは共分散窓、更新時刻、完成版の生成を担う。信号へのFIR適用、方式branchの
+    履歴、計算量の複数処理周期への分割は責務に含めない。現在の設計関数は一更新周期内で
+    完成し、完成後だけ`VersionedCausalFIR`へ渡される。
+    """
+
+    def __init__(
+        self,
+        coefficients: MatlabArrayCoefficients,
+        beam_azimuth_deg: FloatArray,
+        config: T2aScenarioConfig,
+        method_ids: tuple[str, ...],
+    ) -> None:
+        """更新周期と空のrolling training窓を初期化する。
+
+        Args:
+            coefficients: 物理位置、周波数別active channel、複素shading。
+            beam_azimuth_deg: 待受方位。shape `[n_beam]`、単位deg。
+            config: sampling、training窓、更新間隔、FFT、FIR条件。
+            method_ids: 設計する方式識別子。fixed単独では更新対象がない。
+
+        Raises:
+            ValueError: 方式が不正、または適応方式を一つも含まない場合。
+        """
+        selected_method_ids = _validate_method_ids(method_ids)
+        adaptive_method_ids = tuple(
+            method_id for method_id in selected_method_ids if method_id != "fixed_baseline"
+        )
+        if len(adaptive_method_ids) == 0:
+            raise ValueError("online updater requires at least one adaptive method.")
+        self._coefficients = coefficients
+        self._beam_azimuth_deg = np.asarray(beam_azimuth_deg, dtype=np.float64).copy()
+        self._config = config
+        self._method_ids = selected_method_ids
+        self._adaptive_method_ids = adaptive_method_ids
+        self._training_sample_count = int(round(config.training_duration_s * config.fs_hz))
+        self._update_interval_samples = int(
+            round(config.adaptive_weight_update_interval_s * config.fs_hz)
+        )
+        self._next_update_sample = self._training_sample_count
+        # 初回training窓のうち、更新間隔より前の区間には完成適応係数が存在しない。
+        # 最初の完成版はtraining窓末尾の1更新周期だけへ適用し、それ以前は固定整相を使う。
+        self._current_cycle_start_sample = max(
+            0,
+            self._training_sample_count - self._update_interval_samples,
+        )
+        self._expected_start_sample = 0
+        self._rolling_signal = np.empty((coefficients.positions_m.shape[0], 0), dtype=np.float64)
+        self._next_version = 1
+        self._completed_updates: list[CompletedWeightUpdate] = []
+        self._latest_weight_design: FrequencyWeightDesign | None = None
+
+    @property
+    def next_update_sample(self) -> int:
+        """次にtraining窓を確定する元系列上のsample位置を返す。"""
+        return self._next_update_sample
+
+    @property
+    def completed_updates(self) -> tuple[CompletedWeightUpdate, ...]:
+        """時系列順に完成した係数更新の不変tupleを返す。"""
+        return tuple(self._completed_updates)
+
+    @property
+    def latest_weight_design(self) -> FrequencyWeightDesign | None:
+        """最後に全周波数・全beamが完成した設計を返す。未更新時は`None`。"""
+        return self._latest_weight_design
+
+    def process(self, block: RuntimeBlock) -> CompletedWeightUpdate | None:
+        """mixed入力blockをrolling窓へ加え、更新境界なら完成係数を返す。
+
+        Args:
+            block: mixed channel入力。shape `[n_ch,n_block_sample]`、単位input RMS。
+
+        Returns:
+            block終端が更新境界なら完成更新、それ以外は`None`。
+
+        Raises:
+            ValueError: channel shape、時系列連続性、更新境界を跨ぐblockが不正な場合。
+
+        境界条件:
+            更新境界を跨ぐblockは受け付けない。呼び出し側は更新周期の入力を保持し、
+            境界で完成した係数を保持済みの同一周期へ適用する。
+        """
+        values = np.asarray(block.data, dtype=np.float64)
+        if values.ndim != 2 or values.shape[0] != self._rolling_signal.shape[0]:
+            raise ValueError("online update block must have shape [n_ch, n_block_sample].")
+        if block.start_sample != self._expected_start_sample:
+            raise ValueError("online update blocks must be contiguous and chronological.")
+        stop_sample = block.start_sample + values.shape[1]
+        if stop_sample > self._next_update_sample:
+            raise ValueError("online update block must not cross the next update boundary.")
+
+        # rolling_signal shape: [ch,time]。運用memoryをtraining窓長へ制限し、更新ごとに
+        # 最新training_duration_s秒だけから共分散snapshotを再構成する。
+        self._rolling_signal = np.concatenate((self._rolling_signal, values), axis=1)
+        if self._rolling_signal.shape[1] > self._training_sample_count:
+            self._rolling_signal = self._rolling_signal[:, -self._training_sample_count :].copy()
+        self._expected_start_sample = stop_sample
+        if stop_sample != self._next_update_sample:
+            return None
+        if self._rolling_signal.shape[1] != self._training_sample_count:
+            raise RuntimeError("complete update boundary must contain one full training window.")
+
+        # この時点までに観測済みのmixed信号だけを使うため、未来sampleを係数へ混ぜない。
+        # design_frequency_weightsは全frequency・beamを完成させてから一つのsnapshotを返す。
+        weight_design = design_frequency_weights(
+            self._rolling_signal,
+            self._coefficients,
+            self._beam_azimuth_deg,
+            self._config,
+            method_ids=self._method_ids,
+        )
+        completed_coefficients: dict[str, ComplexArray] = {}
+        energy_containment: dict[str, FloatArray] = {}
+        for method_id, weights in weight_design.weights.items():
+            fir_coefficients, energy_ratio = realize_residual_fir(
+                weights,
+                self._config.residual_fir_tap_count,
+            )
+            energy_containment[method_id] = energy_ratio
+            if method_id in self._adaptive_method_ids:
+                # fixed_baselineは初期から不変であり、版更新の対象にしない。
+                completed_coefficients[method_id] = fir_coefficients
+
+        completed = CompletedWeightUpdate(
+            effective_start_sample=self._current_cycle_start_sample,
+            cycle_stop_sample=stop_sample,
+            version=self._next_version,
+            coefficients=completed_coefficients,
+            energy_containment=energy_containment,
+            weight_design=weight_design,
+        )
+        self._completed_updates.append(completed)
+        self._latest_weight_design = weight_design
+        self._current_cycle_start_sample = stop_sample
+        self._next_version += 1
+        self._next_update_sample += self._update_interval_samples
+        return completed
+
+
 def run_streaming_beam_branches(
     signal: FloatArray,
     branches: list[StreamingBeamBranch],
     block_size: int,
+    *,
+    coefficient_updater: OnlineT2aWeightUpdater | None = None,
+    coefficient_updates: tuple[CompletedWeightUpdate, ...] = (),
 ) -> dict[str, tuple[ComplexArray, BoolArray]]:
     """入力をblock分割し、同じblockを方式別beam branchへ適用する。
 
@@ -886,16 +1142,20 @@ def run_streaming_beam_branches(
         signal: channel入力。shape `[n_ch,n_sample]`、input RMS基準。
         branches: 方式別の状態付き整数delay・FIR処理branch。
         block_size: 入力分割長。単位sample。
+        coefficient_updater: mixed入力から更新をオンライン生成するruntime。省略時は生成しない。
+        coefficient_updates: 別実行で完成済みの更新列。同じ時刻で成分分離信号へ再適用する。
 
     Returns:
         方式ごとの`(output, valid_mask)`。双方shape `[n_beam,n_sample]`。
 
     Raises:
-        ValueError: branchが空、方式IDが重複する、beam数が一致しない、block長が不正、
-            または入力shapeが不正な場合。
+        ValueError: branchが空、方式IDが重複する、beam数が一致しない、block長、入力shape、
+            更新時刻、または更新runtimeの組合せが不正な場合。
 
     信号処理上の位置づけ:
-        係数設計済みのfixed、T2a-MVDR、T2a-EBAEを並列な方式経路として適用する。
+        fixed、T2a-MVDR、T2a-EBAEを並列な方式経路として適用する。
+        mixed実行では更新周期の入力を保持し、係数経路を先に完了してから同一周期を信号経路へ
+        渡す。成分分離実行ではmixedから得た更新列を同じsample区間へ再適用する。
         本処理では各branchが常に一つの完成`BeamBlock`を返し、処理レート差もないため、
         `Flow`による0/1/many伝播は使わない。block分割、方式分岐、時刻位置への収集を
         通常のPython制御構文で明示する。
@@ -904,12 +1164,37 @@ def run_streaming_beam_branches(
         raise ValueError("branches must contain at least one streaming branch.")
     if signal.ndim != 2 or block_size <= 0:
         raise ValueError("signal must have shape [n_ch, n_sample] and block_size must be positive.")
+    if coefficient_updater is not None and len(coefficient_updates) > 0:
+        raise ValueError("coefficient_updater and coefficient_updates are mutually exclusive.")
     method_ids = [branch.method_id for branch in branches]
     if len(set(method_ids)) != len(method_ids):
         raise ValueError("streaming branch method_id values must be unique.")
     n_beam = branches[0].n_beam
     if any(branch.n_beam != n_beam for branch in branches[1:]):
         raise ValueError("all streaming branches must have the same n_beam.")
+    update_samples = [update.effective_start_sample for update in coefficient_updates]
+    if update_samples != sorted(set(update_samples)):
+        raise ValueError("coefficient update samples must be unique and strictly increasing.")
+    if any(sample < 0 or sample >= signal.shape[1] for sample in update_samples):
+        raise ValueError("coefficient updates must lie inside the processed signal interval.")
+    if any(
+        update.cycle_stop_sample <= update.effective_start_sample
+        or update.cycle_stop_sample > signal.shape[1]
+        for update in coefficient_updates
+    ):
+        raise ValueError("coefficient update cycles must be non-empty and lie inside the signal.")
+    if any(
+        current.cycle_stop_sample != following.effective_start_sample
+        for current, following in zip(coefficient_updates, coefficient_updates[1:], strict=False)
+    ):
+        raise ValueError("coefficient update cycles must be contiguous and chronological.")
+    branch_by_method = {branch.method_id: branch for branch in branches}
+    if any(
+        method_id not in branch_by_method
+        for update in coefficient_updates
+        for method_id in update.coefficients
+    ):
+        raise ValueError("coefficient update method must have a matching streaming branch.")
     output = {
         branch.method_id: np.empty((n_beam, signal.shape[1]), dtype=np.complex128)
         for branch in branches
@@ -918,24 +1203,79 @@ def run_streaming_beam_branches(
         branch.method_id: np.empty((n_beam, signal.shape[1]), dtype=np.bool_) for branch in branches
     }
 
-    for start in range(0, signal.shape[1], block_size):
-        stop = min(start + block_size, signal.shape[1])
-        runtime_block = RuntimeBlock(start, signal[:, start:stop])
+    start = 0
+    update_input_start = 0
+    replay_update_index = 0
+    pending_online_update: CompletedWeightUpdate | None = None
+    while start < signal.shape[1]:
+        segment_stop = signal.shape[1]
+        if coefficient_updater is not None:
+            # 係数経路は更新周期のmixed入力を先に保持する。周期終端で重みとFIRが完成してから、
+            # 同じ[start,stop)入力周期を下の信号経路へ渡すため、出力遅延は最大1更新周期となる。
+            while update_input_start < signal.shape[1] and pending_online_update is None:
+                update_input_stop = min(
+                    update_input_start + block_size,
+                    signal.shape[1],
+                    coefficient_updater.next_update_sample,
+                )
+                pending_online_update = coefficient_updater.process(
+                    RuntimeBlock(
+                        update_input_start,
+                        signal[:, update_input_start:update_input_stop],
+                    )
+                )
+                update_input_start = update_input_stop
+            if pending_online_update is not None:
+                if pending_online_update.effective_start_sample < start:
+                    raise RuntimeError(
+                        "completed update must not precede the pending signal cycle."
+                    )
+                if pending_online_update.effective_start_sample > start:
+                    # 初回training窓の先頭側にはまだ適応完成版がないため、固定整相で公開する。
+                    segment_stop = pending_online_update.effective_start_sample
+                else:
+                    for method_id, updated_coefficients in (
+                        pending_online_update.coefficients.items()
+                    ):
+                        branch_by_method[method_id].request_coefficient_update(
+                            updated_coefficients,
+                            version=pending_online_update.version,
+                        )
+                    segment_stop = pending_online_update.cycle_stop_sample
+                    pending_online_update = None
+        elif replay_update_index < len(coefficient_updates):
+            replay_update = coefficient_updates[replay_update_index]
+            if replay_update.effective_start_sample == start:
+                # mixedで完成した係数を同一入力周期へ再適用する。成分別に係数を再設計せず、
+                # target+interferer+noiseの線形分解条件と版時刻を維持する。
+                for method_id, updated_coefficients in replay_update.coefficients.items():
+                    branch_by_method[method_id].request_coefficient_update(
+                        updated_coefficients,
+                        version=replay_update.version,
+                    )
+                segment_stop = replay_update.cycle_stop_sample
+                replay_update_index += 1
+            elif replay_update.effective_start_sample > start:
+                segment_stop = replay_update.effective_start_sample
 
-        # 同じ入力blockを方式別の独立した信号経路へ分岐する。各branchのdelay/FIR履歴は
-        # branch自身が保持し、方式間では共有しないため、通常のfor文が依存関係を最も直接に表す。
-        for branch in branches:
-            completed_block = branch.process(runtime_block)
+        # 完成FIRを予約した後に、対応する同一入力周期を通常のruntime blockへ分けて処理する。
+        # 各branchのdelay/FIR履歴はbranch自身が保持し、方式間では共有しない。
+        for block_start in range(start, segment_stop, block_size):
+            block_stop = min(block_start + block_size, segment_stop)
+            runtime_block = RuntimeBlock(block_start, signal[:, block_start:block_stop])
+            for branch in branches:
+                completed_block = branch.process(runtime_block)
 
-            # branch出力を元系列上の同じ時刻位置へ戻す。初回履歴不足sampleの完成状態は
-            # valid_maskをそのまま保存し、後段のBL/FRAZ/FL評価から除外できるようにする。
-            completed_stop = completed_block.start_sample + completed_block.data.shape[1]
-            output[completed_block.method_id][:, completed_block.start_sample : completed_stop] = (
-                completed_block.data
-            )
-            valid[completed_block.method_id][:, completed_block.start_sample : completed_stop] = (
-                completed_block.valid_mask
-            )
+                # branch出力を元系列上の同じ時刻位置へ戻す。初回履歴不足sampleの完成状態は
+                # valid_maskを保存し、後段のBL/FRAZ/FL評価から除外できるようにする。
+                completed_stop = completed_block.start_sample + completed_block.data.shape[1]
+                output[completed_block.method_id][
+                    :, completed_block.start_sample : completed_stop
+                ] = completed_block.data
+                valid[completed_block.method_id][
+                    :, completed_block.start_sample : completed_stop
+                ] = completed_block.valid_mask
+        start = segment_stop
     return {method: (output[method], valid[method]) for method in output}
 
 
@@ -1037,19 +1377,21 @@ def run_evaluation(
     beam_azimuth_deg = np.arange(
         0.0, 180.0 + 0.5 * scenario.beam_azimuth_step_deg, scenario.beam_azimuth_step_deg
     )
-    weight_design = design_frequency_weights(
+    # 適応係数が完成しない短い終端や異常時にも公開可能な固定整相重みを初期値にする。
+    # 通常はtraining窓を保持し、mixed入力から完成した係数を同じ入力周期へ適用する。
+    initial_weight_design = design_initial_fixed_weights(
         rendered.mixed,
         coefficients,
         beam_azimuth_deg,
         scenario,
         method_ids=selected_method_ids,
     )
-    review_data = _evaluate_streaming_scenario(
+    review_data, latest_weight_design = _evaluate_streaming_scenario(
         scenario=scenario,
         coefficients=coefficients,
         rendered=rendered,
         beam_azimuth_deg=np.asarray(beam_azimuth_deg, dtype=np.float64),
-        weight_design=weight_design,
+        weight_design=initial_weight_design,
     )
     # 評価計算が全方式分完成してからreporting境界へ渡し、途中結果を成果物へ公開しない。
     review_context = T2aReviewContext(
@@ -1063,11 +1405,11 @@ def run_evaluation(
         n_channel=coefficients.positions_m.shape[0],
         predicted_aliases_deg=predicted_aliases,
         rendered_mixed=rendered.mixed,
-        active_channel_count=weight_design.active_channel_count,
-        causal_delays_samples=weight_design.causal_delays_samples,
-        ebae_signal_count=weight_design.ebae_signal_count,
-        ebae_music_peak_azimuth_deg=weight_design.ebae_music_peak_azimuth_deg,
-        ebae_fallback_mask=weight_design.ebae_fallback_mask,
+        active_channel_count=latest_weight_design.active_channel_count,
+        causal_delays_samples=latest_weight_design.causal_delays_samples,
+        ebae_signal_count=latest_weight_design.ebae_signal_count,
+        ebae_music_peak_azimuth_deg=latest_weight_design.ebae_music_peak_azimuth_deg,
+        ebae_fallback_mask=latest_weight_design.ebae_fallback_mask,
     )
     write_t2a_review_pack(output_dir, review_context, review_data)
 
@@ -1079,7 +1421,7 @@ def _evaluate_streaming_scenario(
     rendered: RenderedComponents,
     beam_azimuth_deg: FloatArray,
     weight_design: FrequencyWeightDesign,
-) -> T2aReviewData:
+) -> tuple[T2aReviewData, FrequencyWeightDesign]:
     """完成したsceneと重みを逐次処理し、固定型の評価結果を返す。
 
     Args:
@@ -1090,18 +1432,21 @@ def _evaluate_streaming_scenario(
         weight_design: 完成周波数重みとEBAE診断量。
 
     Returns:
-        全componentのFRAZ、波形完全性、block境界、方式別指標を持つ完成評価結果。
+        `(review_data, latest_weight_design)`。前者は全componentのFRAZ、波形完全性、
+        block境界、方式別指標、後者は最後に完成したオンライン設計診断である。
         本関数はファイルを保存せず、reporting側が直列化する。
 
     Raises:
         ValueError: 完成sampleまたは波形評価の契約が不正な場合。
         RuntimeError: component間でFRAZ周波数軸が変化した場合。
     """
+    # mixedを先に実行して完成係数の更新時刻列を確定し、各分離成分へ同じ版を再適用する。
+    # target/noiseごとに適応設計をやり直すと、線形な成分分解評価が成立しない。
     component_signals = {
+        "mixed": rendered.mixed,
         "target": rendered.target,
         "interferer": rendered.interferer,
         "noise": rendered.noise,
-        "mixed": rendered.mixed,
     }
     fraz: dict[str, dict[str, FloatArray]] = {name: {} for name in component_signals}
     valid_counts: dict[str, int] = {}
@@ -1111,6 +1456,12 @@ def _evaluate_streaming_scenario(
     )
     runtime_start = time.perf_counter()
     energy: dict[str, FloatArray] = {}
+    report_energy: dict[str, FloatArray] = {}
+    coefficient_updates: tuple[CompletedWeightUpdate, ...] = ()
+    latest_weight_design = weight_design
+    adaptive_method_ids = tuple(
+        method_id for method_id in weight_design.weights if method_id != "fixed_baseline"
+    )
     # 波形完全性はmixed実入力とtarget-only無歪性を別目的で確認するため、両成分だけ保持する。
     streamed_waveforms: dict[str, dict[str, tuple[ComplexArray, BoolArray]]] = {}
     for component_id, signal in component_signals.items():
@@ -1119,7 +1470,34 @@ def _evaluate_streaming_scenario(
             weight_design.causal_delays_samples,
             scenario.residual_fir_tap_count,
         )
-        streamed = run_streaming_beam_branches(signal, branches, scenario.runtime_block_size)
+        if len(report_energy) == 0:
+            report_energy = energy
+        coefficient_updater = (
+            OnlineT2aWeightUpdater(
+                coefficients,
+                beam_azimuth_deg,
+                scenario,
+                tuple(weight_design.weights),
+            )
+            if component_id == "mixed" and len(adaptive_method_ids) > 0
+            else None
+        )
+        streamed = run_streaming_beam_branches(
+            signal,
+            branches,
+            scenario.runtime_block_size,
+            coefficient_updater=coefficient_updater,
+            coefficient_updates=coefficient_updates if component_id != "mixed" else (),
+        )
+        if coefficient_updater is not None:
+            coefficient_updates = coefficient_updater.completed_updates
+            completed_design = coefficient_updater.latest_weight_design
+            if completed_design is not None:
+                latest_weight_design = completed_design
+            if len(coefficient_updates) > 0:
+                # 表へ載せるFIR energyは最後に完成した版とする。各版の係数は
+                # component再適用用のCompletedWeightUpdate内に保持されている。
+                report_energy = coefficient_updates[-1].energy_containment
         if component_id in ("target", "mixed"):
             streamed_waveforms[component_id] = streamed
         for method_id, (method_output, method_valid) in streamed.items():
@@ -1142,7 +1520,8 @@ def _evaluate_streaming_scenario(
     target_beam = int(np.argmin(np.abs(beam_azimuth_deg - scenario.target_azimuth_deg)))
     reference_channel = int(np.argmin(np.linalg.norm(coefficients.positions_m, axis=1)))
 
-    # 同じ完成係数を一つのblockで適用し、分割境界が出力へ加えた差だけを直接観測する。
+    # 通常block境界を除き、係数更新境界だけで分割した参照を作る。更新境界まで一つの
+    # blockに含めると、block先頭latchというVersionedCausalFIRの契約を変えてしまう。
     one_block_branches, _ = _make_branches(
         weight_design.weights,
         weight_design.causal_delays_samples,
@@ -1152,6 +1531,7 @@ def _evaluate_streaming_scenario(
         rendered.mixed,
         one_block_branches,
         block_size=rendered.mixed.shape[1],
+        coefficient_updates=coefficient_updates,
     )
     waveform_integrity: dict[str, WaveformIntegrityResult] = {}
     streaming_overall_error: dict[str, float] = {}
@@ -1217,7 +1597,7 @@ def _evaluate_streaming_scenario(
                 interferer_level_at_target_beam_db_re_input_rms=float(
                     fraz["interferer"][method_id][target_beam, interferer_bin]
                 ),
-                minimum_fir_energy_containment=float(np.min(energy[method_id])),
+                minimum_fir_energy_containment=float(np.min(report_energy[method_id])),
                 target_waveform_rms_delta_db=waveform_integrity[method_id].rms_delta_db,
                 target_waveform_correlation_after_phase_alignment=(
                     waveform_integrity[method_id].correlation_after_phase_alignment
@@ -1232,17 +1612,21 @@ def _evaluate_streaming_scenario(
                 streaming_boundary_max_abs_error=streaming_boundary_error[method_id],
                 streaming_valid_mask_matches_one_block=streaming_valid_match[method_id],
                 ebae_signal_count_at_target=(
-                    int(weight_design.ebae_signal_count[target_bin, target_beam])
+                    int(latest_weight_design.ebae_signal_count[target_bin, target_beam])
                     if method_id == "t2a_ebae"
                     else -1
                 ),
                 ebae_music_peak_azimuth_deg_at_target=(
-                    float(weight_design.ebae_music_peak_azimuth_deg[target_bin, target_beam])
+                    float(
+                        latest_weight_design.ebae_music_peak_azimuth_deg[
+                            target_bin, target_beam
+                        ]
+                    )
                     if method_id == "t2a_ebae"
                     else float("nan")
                 ),
                 ebae_fallback_at_target=(
-                    bool(weight_design.ebae_fallback_mask[target_bin, target_beam])
+                    bool(latest_weight_design.ebae_fallback_mask[target_bin, target_beam])
                     if method_id == "t2a_ebae"
                     else False
                 ),
@@ -1282,7 +1666,7 @@ def _evaluate_streaming_scenario(
         interferer_frequency_index=interferer_bin,
         target_beam_index=target_beam,
         reference_channel_index=reference_channel,
-    )
+    ), latest_weight_design
 
 
 def _parse_args() -> argparse.Namespace:
@@ -1302,6 +1686,12 @@ def _parse_args() -> argparse.Namespace:
         default=Path("artifacts/beamforming/t2a_scene_renderer_streaming/review_pack"),
     )
     parser.add_argument(
+        "--adaptive-weight-update-interval-s",
+        type=float,
+        default=1.0,
+        help="適応重みの完成更新間隔[s]。既定値1.0",
+    )
+    parser.add_argument(
         "--write-example-coefficients",
         action="store_true",
         help="実行前に疎通確認用rawを指定2ファイルへ生成する",
@@ -1312,7 +1702,9 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     """CLIから統合T2a評価を実行する。"""
     args = _parse_args()
-    config = T2aScenarioConfig()
+    config = T2aScenarioConfig(
+        adaptive_weight_update_interval_s=float(args.adaptive_weight_update_interval_s)
+    )
     if bool(args.write_example_coefficients):
         write_example_matlab_coefficients(args.positions_raw, args.shading_raw, config)
     run_evaluation(

@@ -40,6 +40,12 @@ def _parse_args() -> argparse.Namespace:
         default=Path("artifacts/beamforming/t2a_ebae_scene_renderer_streaming/review_pack"),
     )
     parser.add_argument(
+        "--adaptive-weight-update-interval-s",
+        type=float,
+        default=1.0,
+        help="適応重みの完成更新間隔[s]。既定値1.0",
+    )
+    parser.add_argument(
         "--write-example-coefficients",
         action="store_true",
         help="実行前に疎通確認用rawを指定2ファイルへ生成する",
@@ -62,7 +68,9 @@ def main() -> None:
         `fixed_baseline`方式を実行することとは区別する。
     """
     args = _parse_args()
-    config = T2aScenarioConfig()
+    config = T2aScenarioConfig(
+        adaptive_weight_update_interval_s=float(args.adaptive_weight_update_interval_s)
+    )
     if bool(args.write_example_coefficients):
         write_example_matlab_coefficients(args.positions_raw, args.shading_raw, config)
     run_evaluation(

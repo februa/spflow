@@ -9,10 +9,14 @@ import pytest
 
 import evaluations.beamforming.scene_renderer_t2a_streaming as t2a_streaming
 from evaluations.beamforming.scene_renderer_t2a_streaming import (
+    CompletedWeightUpdate,
+    FrequencyWeightDesign,
     MatlabArrayCoefficients,
+    OnlineT2aWeightUpdater,
     StreamingBeamBranch,
     T2aScenarioConfig,
     design_frequency_weights,
+    design_initial_fixed_weights,
     load_matlab_array_coefficients,
     run_evaluation,
     run_streaming_beam_branches,
@@ -221,6 +225,128 @@ def test_streaming_beam_branches_reject_duplicate_method_ids() -> None:
 
     with pytest.raises(ValueError, match="method_id values must be unique"):
         run_streaming_beam_branches(np.ones((1, 4), dtype=np.float64), branches, block_size=2)
+
+
+def test_completed_weight_update_is_applied_at_exact_sample_boundary() -> None:
+    """通常block内の更新時刻で分割し、新係数を指定sampleからだけ適用する。
+
+    block長4に対して更新時刻3 sampleを選ぶ。境界をblock端へ丸める実装では期待列と
+    一致しないため、秒から換算した更新位置と次block先頭のatomic latchを同時に確認する。
+    """
+    delays = np.zeros((1, 1), dtype=np.int64)
+    initial_coefficients = np.ones((1, 1, 1), dtype=np.complex128)
+    updated_coefficients = np.full((1, 1, 1), 2.0, dtype=np.complex128)
+    dummy_weight_design = FrequencyWeightDesign(
+        weights={"t2a_mvdr": np.ones((2, 1, 1), dtype=np.complex128)},
+        causal_delays_samples=delays,
+        active_channel_count=np.ones(2, dtype=np.float64),
+        ebae_signal_count=np.zeros((2, 1), dtype=np.int64),
+        ebae_music_peak_azimuth_deg=np.full((2, 1), np.nan, dtype=np.float64),
+        ebae_fallback_mask=np.zeros((2, 1), dtype=np.bool_),
+    )
+    update = CompletedWeightUpdate(
+        effective_start_sample=3,
+        cycle_stop_sample=8,
+        version=1,
+        coefficients={"t2a_mvdr": updated_coefficients},
+        energy_containment={"t2a_mvdr": np.ones(1, dtype=np.float64)},
+        weight_design=dummy_weight_design,
+    )
+
+    output, valid = run_streaming_beam_branches(
+        np.ones((1, 8), dtype=np.float64),
+        [StreamingBeamBranch("t2a_mvdr", delays, initial_coefficients)],
+        block_size=4,
+        coefficient_updates=(update,),
+    )["t2a_mvdr"]
+
+    np.testing.assert_allclose(output[0], np.array([1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0]))
+    np.testing.assert_array_equal(valid, np.ones((1, 8), dtype=np.bool_))
+
+
+def test_online_weight_updater_uses_seconds_and_replays_completed_versions() -> None:
+    """warm-up後0.5秒ごとにmixed入力から完成版を生成し、同じ時刻列を再適用する。
+
+    fs=32 Hzなので更新間隔0.5秒は16 sampleである。training 1秒に4個の非重複FFT
+    snapshotを含め、2 channel MVDRの共分散条件を満たしたうえで更新時刻を検証する。
+    """
+    config = T2aScenarioConfig(
+        fs_hz=32.0,
+        duration_s=3.0,
+        training_duration_s=1.0,
+        adaptive_weight_update_interval_s=0.5,
+        target_frequency_hz=4.0,
+        interferer_frequency_hz=8.0,
+        noise_band_hz=(1.0, 12.0),
+        analysis_fft_size=8,
+        analysis_hop_size=8,
+        residual_fir_tap_count=4,
+        runtime_block_size=11,
+    )
+    coefficients = MatlabArrayCoefficients(
+        positions_m=np.array([[-0.1, 0.0, 0.0], [0.1, 0.0, 0.0]], dtype=np.float64),
+        frequency_hz=np.array([0.0, 16.0], dtype=np.float64),
+        shading=np.ones((2, 2), dtype=np.complex128),
+        active_channel_mask=np.ones((2, 2), dtype=np.bool_),
+    )
+    beam_azimuth_deg = np.array([45.0], dtype=np.float64)
+    sample_count = int(round(config.duration_s * config.fs_hz))
+    rng = np.random.default_rng(20260715)
+    mixed = rng.standard_normal((2, sample_count))
+    initial_design = design_initial_fixed_weights(
+        mixed,
+        coefficients,
+        beam_azimuth_deg,
+        config,
+        method_ids=("t2a_mvdr",),
+    )
+    online_branches, _ = t2a_streaming._make_branches(
+        initial_design.weights,
+        initial_design.causal_delays_samples,
+        config.residual_fir_tap_count,
+    )
+    updater = OnlineT2aWeightUpdater(
+        coefficients,
+        beam_azimuth_deg,
+        config,
+        method_ids=("t2a_mvdr",),
+    )
+    online = run_streaming_beam_branches(
+        mixed,
+        online_branches,
+        config.runtime_block_size,
+        coefficient_updater=updater,
+    )["t2a_mvdr"]
+
+    assert [update.effective_start_sample for update in updater.completed_updates] == [
+        16,
+        32,
+        48,
+        64,
+        80,
+    ]
+    assert [update.cycle_stop_sample for update in updater.completed_updates] == [
+        32,
+        48,
+        64,
+        80,
+        96,
+    ]
+    assert [update.version for update in updater.completed_updates] == [1, 2, 3, 4, 5]
+
+    replay_branches, _ = t2a_streaming._make_branches(
+        initial_design.weights,
+        initial_design.causal_delays_samples,
+        config.residual_fir_tap_count,
+    )
+    replay = run_streaming_beam_branches(
+        mixed,
+        replay_branches,
+        config.runtime_block_size,
+        coefficient_updates=updater.completed_updates,
+    )["t2a_mvdr"]
+    np.testing.assert_allclose(replay[0], online[0], atol=0.0)
+    np.testing.assert_array_equal(replay[1], online[1])
 
 
 def test_run_evaluation_completes_before_review_pack_serialization(tmp_path: Path) -> None:
