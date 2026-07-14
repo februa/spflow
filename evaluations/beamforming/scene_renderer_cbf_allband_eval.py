@@ -11,10 +11,10 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / 'src'))
-sys.path.insert(0, str(ROOT / 'vendor' / 'scene_renderer'))
+sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "vendor" / "scene_renderer"))
 
-from scene_renderer import (
+from scene_renderer import (  # noqa: E402
     AcousticSource,
     ConstantEnvelope,
     FreeField,
@@ -27,7 +27,13 @@ from scene_renderer import (
     ToneSpectrum,
 )
 
-from spflow import FrameBuffer, FullDFTFilterBank, apply_beamformer_bands, design_cbf_coefficients
+from spflow import (  # noqa: E402
+    Flow,
+    FrameBuffer,
+    FullDFTFilterBank,
+    apply_beamformer_bands,
+    design_cbf_coefficients,
+)
 
 
 def signal_peak_amplitude(level_db20: float) -> float:
@@ -35,7 +41,9 @@ def signal_peak_amplitude(level_db20: float) -> float:
     return float(np.sqrt(2.0) * (10.0 ** (level_db20 / 20.0)))
 
 
-def render_target_scene(fs, freq, n_samples, n_ch, spacing_m, bearing_deg, sound_speed, signal_level_db20):
+def render_target_scene(
+    fs, freq, n_samples, n_ch, spacing_m, bearing_deg, sound_speed, signal_level_db20
+):
     """単一 target シーンをレンダリングし、観測信号と参照信号を返す。"""
     receiver = Receiver(
         trajectory=StaticPose(position_world=[0.0, 0.0, 0.0], heading_deg=0.0),
@@ -76,12 +84,16 @@ def make_steering(receiver, source, environment, fft_size, fs):
 def apply_fixed(x, weights, fb, chunk_size):
     """固定重みビームフォーマを subband 信号へ適用して時間波形へ戻す。"""
     buffer = FrameBuffer(frame_size=fb.fft_size, hop_size=fb.hop_size, axis=-1)
-    frames = []
-    for start in range(0, x.shape[-1], chunk_size):
-        for frame in buffer.process(x[:, start : start + chunk_size]):
-            spec = np.fft.fft(frame * fb.prototype, axis=-1)
-            yb = apply_beamformer_bands(spec, weights)[0]
-            frames.append(yb)
+
+    def process_frame(frame):
+        # frame shape: [n_ch, fft_size]。全周波数binをaxis=-1のFFTへ写す。
+        spec = np.fft.fft(frame * fb.prototype, axis=-1)
+        # spec shape: [n_ch, n_band]、出力shape: [n_band]。
+        return apply_beamformer_bands(spec, weights)[0]
+
+    chunks = (x[:, start : start + chunk_size] for start in range(0, x.shape[-1], chunk_size))
+    # FrameBufferが返す0・1・複数frameをFlowで平坦化し、完成frameだけを後段へ渡す。
+    frames = Flow.many(chunks).map(buffer.process).map(process_frame).to_list()
     Y = np.stack(frames, axis=-1)
     y = fb.synthesis(Y, length=x.shape[-1])
     return y, Y
@@ -119,12 +131,12 @@ def main() -> None:
     resp = weights[:, :, target_bin].T @ steering[:, :, target_bin]
 
     err = np.real(y) - reference
-    print(f'target_response_db={20 * np.log10(np.abs(resp[0, 0])):.12f}')
-    print(f'max_subband_reanalysis_error={np.max(np.abs(rean - Y)):.12e}')
-    print(f'rms_subband_reanalysis_error={np.sqrt(np.mean(np.abs(rean - Y)**2)):.12e}')
-    print(f'rms_time_error_to_reference={np.sqrt(np.mean(err**2)):.12e}')
-    print(f'max_time_error_to_reference={np.max(np.abs(err)):.12e}')
+    print(f"target_response_db={20 * np.log10(np.abs(resp[0, 0])):.12f}")
+    print(f"max_subband_reanalysis_error={np.max(np.abs(rean - Y)):.12e}")
+    print(f"rms_subband_reanalysis_error={np.sqrt(np.mean(np.abs(rean - Y) ** 2)):.12e}")
+    print(f"rms_time_error_to_reference={np.sqrt(np.mean(err**2)):.12e}")
+    print(f"max_time_error_to_reference={np.max(np.abs(err)):.12e}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

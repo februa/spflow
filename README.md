@@ -67,7 +67,7 @@ Beamforming関連の責務境界は次のとおりである。
 
 ## Beamforming Evaluation Environment
 
-Beamforming examples that render figures or use the vendored scene renderer need the optional development tools and vendor package.
+Beamforming evaluations that render figures or use the vendored scene renderer need the optional development tools and vendor package.
 
 For a full local checkout with the vendored `scene_renderer` submodule:
 
@@ -158,6 +158,15 @@ It demonstrates:
 - `Option` for nested configuration
 - `FrameBuffer` for overlapped framing
 - `Flow` for propagating zero, one, or many outputs
+
+`None`を入力のない周期として現在段へ通知し、完成出力がない周期では後段を呼ばない例もある。
+
+```bash
+python -m examples.streaming.none_cycle
+```
+
+この例では、状態を持つ処理を4周期すべてで更新しつつ、2周期ごとの完成値だけを
+後段へ渡す。`Flow`は周期を決めず、各段の0個・1個・複数個の出力だけを接続する。
 
 A deterministic delay-and-sum example without an external scene renderer is also available:
 

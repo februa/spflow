@@ -29,6 +29,7 @@ from scene_renderer import (  # noqa: E402
 
 from spflow import (  # noqa: E402
     DFT_FilterBank,
+    Flow,
     FrameBuffer,
     design_cbf_coefficients,
     relative_arrival_delay,
@@ -85,15 +86,20 @@ def make_steering(receiver, source, environment, fft_size, fs):
 def apply_fixed(x, weights, fb, chunk_size, active_band):
     """固定重みビームフォーマを subband 信号へ適用して時間波形へ戻す。"""
     buffer = FrameBuffer(frame_size=fb.fft_size, hop_size=fb.hop_size, axis=-1)
-    frames = []
-    for start in range(0, x.shape[-1], chunk_size):
-        for frame in buffer.process(x[:, start : start + chunk_size]):
-            spec = np.fft.rfft(frame * fb.prototype, axis=-1)
-            yb = np.zeros((spec.shape[1],), dtype=np.complex64)
-            yb[active_band] = apply_beamformer(
-                spec[:, active_band][:, None], weights[:, :, active_band]
-            )[0, 0]
-            frames.append(yb)
+
+    def process_frame(frame):
+        # frame shape: [n_ch, fft_size]。axis=-1を時間軸として窓掛け後にrFFTする。
+        spec = np.fft.rfft(frame * fb.prototype, axis=-1)
+        yb = np.zeros((spec.shape[1],), dtype=np.complex64)
+        # active帯域だけをchannel軸で転置内積し、他帯域は評価条件として零に保つ。
+        yb[active_band] = apply_beamformer(
+            spec[:, active_band][:, None], weights[:, :, active_band]
+        )[0, 0]
+        return yb
+
+    chunks = (x[:, start : start + chunk_size] for start in range(0, x.shape[-1], chunk_size))
+    # FrameBufferが返す0・1・複数frameをFlowで平坦化し、完成frameだけを後段へ渡す。
+    frames = Flow.many(chunks).map(buffer.process).map(process_frame).to_list()
     Y = np.stack(frames, axis=-1)
     y = fb.synthesis(Y, length=x.shape[-1])
     return y, Y

@@ -464,7 +464,7 @@ DC〜Nyquist 全帯域の sample RMS:
 
 `sqrt(fs/2)/sqrt(M)` は、one-sided 全帯域を `M` 個の等帯域へ分けた 1 帯域分を表す。`M Hz resolution` を意味しない。分解能が 256 Hz なら `B=256 Hz` として `sqrt(256)` を掛ける。
 
-既存の `scene_renderer_cbf_eval.py` についても、tone level 変換、位置から方向への変換、相対遅延、steering 位相を共通部品へ置き換えた。個別 example には scene の条件、実行順序、表示する診断だけを残す方向で段階的に移行する。
+既存の `evaluations/beamforming/scene_renderer_cbf_eval.py` についても、tone level 変換、位置から方向への変換、相対遅延、steering 位相を共通部品へ置き換えた。個別 evaluation には scene の条件、実行順序、表示する診断だけを残す方向で段階的に移行する。
 
 ### 11.2 次の部品化対象
 
