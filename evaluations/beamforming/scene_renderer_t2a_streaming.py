@@ -299,13 +299,21 @@ class StreamingBeamBranch:
         Raises:
             ValueError: beam/channel shapeが一致しない場合。
         """
+        # delays[beam,ch]は候補方位ごとに各channelへ与える因果整数遅延[sample]、
+        # taps[beam,ch,tap]はその整数遅延後に適用する複素残差FIR係数である。
         delays = np.asarray(causal_delays_samples, dtype=np.int64)
         taps = np.asarray(coefficients, dtype=np.complex128)
         if delays.ndim != 2 or taps.ndim != 3 or taps.shape[:2] != delays.shape:
             raise ValueError("delays and coefficients must share [n_beam, n_ch].")
+
+        # method_idはfixed/MVDR/EBAEの出力収集先を識別する。各branchは方式ごとに
+        # 独立した遅延・FIR履歴を持ち、別方式の途中状態を共有しない。
         self.method_id = method_id
         self._n_beam, self._n_ch = delays.shape
-        # Stateful部品はseries軸だけを認識するため、[beam,ch]を一つのseries軸へ平坦化する。
+
+        # 状態部品は先頭軸を独立seriesとして扱うため、[beam,ch]をbeam-major順の
+        # [beam*ch]へ平坦化する。delaysとtapsへ同じ変換を行い、series indexごとの
+        # 「整数遅延後に対応する残差FIRを適用する」という組合せを維持する。
         self._delay = StatefulIntegerDelay(delays.reshape(-1))
         self._fir = VersionedCausalFIR(taps.reshape(self._n_beam * self._n_ch, taps.shape[2]))
 
