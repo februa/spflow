@@ -371,12 +371,40 @@ flow.map(func, *args, **kwargs)
 flow.to_list()
 ```
 
+| API | 使用する境界 | 契約 |
+|---|---|---|
+| `Flow.empty()` | 出力が0個であることを型付きで表す | 項目を持たない |
+| `Flow.from_value(x)` | `x`全体が1個の意味的な値 | `None`、`list`、`tuple`、配列も1項目として保持する |
+| `Flow.many(items)` | iterableの各要素を別々に流す | generatorを含め、生成時に全要素を保持する |
+| `flow.map(func)` | 各項目を同じ部品へ渡す | 即時に全項目へ順番に適用し、新しいFlowを返す |
+| `flow.to_list()` | Flowを途中離脱して通常のPythonへ戻る | 保持項目のlistを返す |
+
+`from_value`と`many`は入力がlistの場合も意味が異なる。
+
+```python
+Flow.from_value([1, 2]).to_list()  # [[1, 2]]: list全体が1項目
+Flow.many([1, 2]).to_list()       # [1, 2]: list内の2項目
+```
+
 `Flow`は継承用の基底クラスではなく、完成した軽量コンテナとして提供する。
 継承による拡張は公開契約に含めず、`from_value`と`many`は常に`Flow`を返す。
 処理の追加はsubclass methodではなく、`map`へ渡す通常の関数、または状態を持つ独立クラスで行う。
 これによりFlowの型引数を項目型だけに限定し、独自Processor階層を導入しない。
 
-### 7.4 map の戻り値規約
+### 7.4 map の評価規約
+
+`Flow.map()`はPython標準の`map()`とは異なり、遅延iteratorを返さない。呼び出し中に
+保持する全項目へcallbackを順番に適用し、結果を保持した新しいFlowを返す。元のFlowは
+変更しないため、同じFlowへ複数回`map()`すると、それぞれが独立した全項目走査になる。
+
+```text
+source_flow.map(branch_a)  # 全項目へbranch_aを適用して完了
+source_flow.map(branch_b)  # その後、全項目へbranch_bを適用して完了
+```
+
+これは項目ごとの`branch_a → branch_b`、並列実行、遅延DAG構築を意味しない。
+
+### 7.5 map の戻り値規約
 
 `Flow.map()` に渡す関数は、以下の戻り値を返せる。
 
@@ -403,7 +431,7 @@ Flow:
 callbackが返す`None`は「完成出力なし」を表し、次段を呼ばない。Generic化はこの実行時規約を
 変更せず、各段が受け取る項目型だけを型検査器へ伝える。
 
-### 7.5 利用例
+### 7.6 利用例
 
 ```python
 def process_frame(x, env):
@@ -433,7 +461,46 @@ def process_frame(x, env):
 
 `Flow` は、この `for` を隠蔽するための補助である。
 
-### 7.6 Flow から通常の Python に戻る
+### 7.7 期待どおりにならない分岐と正しい状態依存処理
+
+次のコードは、同じFlowから状態更新経路と状態利用経路を分岐したように見えるが、
+項目ごとの分岐にはならない。
+
+```python
+state = {"active": 0}
+source_flow = Flow.many([1, 2])
+
+source_flow.map(lambda item: state.update(active=item))
+outputs = source_flow.map(
+    lambda item: (item, state["active"]),
+).to_list()
+```
+
+実行順序と結果は次のとおりである。
+
+```text
+update(1) → update(2) → observe(1) → observe(2)
+outputs == [(1, 2), (2, 2)]
+```
+
+`[(1, 1), (2, 2)]`を期待していた場合、この書き方は誤りである。状態更新結果を同じ項目の
+後段へ使う場合は、通常のPythonループで依存関係を明示する。
+
+```python
+state = {"active": 0}
+outputs = []
+
+for item in source_flow.to_list():
+    state["active"] = item
+    outputs.append((item, state["active"]))
+```
+
+一部のFlowを関数へカプセル化してよいのは、分岐間に共有状態、完成時刻、実行順序の依存がなく、
+かつフロー自体が巨大で、独立した安定概念として切り出す方が見通しを改善する場合に限る。
+一方の分岐で完成した値が他方の分岐の同じ項目へ使われる場合はカプセル化せず、通常のPythonの
+変数、条件分岐、ループにより関係を利用箇所へ残す。
+
+### 7.8 Flow から通常の Python に戻る
 
 `Flow` は強制的な書き方ではない。途中で `to_list()` すれば、通常の Python 処理に戻せる。
 
@@ -873,36 +940,55 @@ H = StepScheduler.map(
 
 ### 11.3 複数周期分割処理の例
 
-帯域ごとのMVDR数式を利用者側へ複製せず、FFT後の`Flow`を2経路へ分ける。
-関数名は、係数設計経路の状態遷移を外側から読めるようにする。
+帯域ごとのMVDR数式を利用者側へ複製せず、FFTまでは`Flow`で0個・1個・複数個の
+完成frameを運ぶ。完成frame以降は通常のPythonループへ戻し、係数設計経路の完成状態が
+同じframeの信号適用経路を決める依存関係を利用箇所へ残す。
+
+次のように同じ`frame_fft_flow`へ係数更新と信号適用を別々に`map`してはいけない。
+
+```python
+# 誤り: 全frameの係数更新が完了した後、全frameへ最後のactive係数を適用してしまう。
+frame_fft_flow.map(update_active_coefficients, env)
+beam_output_flow = frame_fft_flow.map(apply_active_beamformer, env)
+```
+
+1 chunkから複数frameが完成した場合に、後のframeで更新した係数が先のframeへ遡って適用され、
+共分散generationと信号frameの対応が破綻する。正しくは、次のようにframeごとの依存を明示する。
 
 ```python
 def process_cycle(signal_chunk, env):
-    return (
+    frame_fft_flow = (
         Flow.from_value(signal_chunk)
         .map(env.frame_buffer.process)
         .map(apply_analysis_window, env.analysis_window)
         .map(calculate_frame_fft, env.analysis_window.size)
-        .map(process_completed_frame_fft, env)
     )
 
+    beam_outputs = []
+    for frame_fft in frame_fft_flow.to_list():
+        # 係数設計経路:
+        # 共分散計算 → 設計用snapshot保持 → 適応係数算出 → 完成時だけ現在係数を置換。
+        covariance_snapshot = calculate_covariance_snapshot(frame_fft, env)
+        design_snapshot = hold_covariance_snapshot_for_adaptive_design(
+            covariance_snapshot,
+            env,
+        )
+        completed_coefficients = calculate_adaptive_beamformer_coefficients(
+            design_snapshot,
+            env,
+        )
 
-def process_completed_frame_fft(frame_fft, env):
-    # 分岐単位を1個の完成frameに限定し、複数frameでも更新と適用の時系列を保つ。
-    frame_fft_flow = Flow.from_value(frame_fft)
+        if completed_coefficients is not None:
+            replace_active_beamformer_coefficients(
+                completed_coefficients,
+                env,
+            )
 
-    # 係数設計経路:
-    # 共分散計算 → 設計用snapshotの一時保持 → 適応係数算出 → 現在係数の一括置換。
-    (
-        frame_fft_flow
-        .map(calculate_covariance_snapshot, env)
-        .map(hold_covariance_snapshot_for_adaptive_design, env)
-        .map(calculate_adaptive_beamformer_coefficients, env)
-        .map(replace_active_beamformer_coefficients, env)
-    )
+        # 信号適用経路:
+        # 完成したframeから新係数、未完成なら以前の完成係数をh^T xへ使う。
+        beam_outputs.append(apply_active_beamformer(frame_fft, env))
 
-    # 信号適用経路は同じFFT信号と現在の完成係数をh^T xで合流させる。
-    return frame_fft_flow.map(apply_active_beamformer, env)
+    return beam_outputs
 ```
 
 各関数の責務は以下である。
@@ -926,13 +1012,17 @@ apply_active_beamformer:
 
 1回の設計更新で完成する場合は`replace_active_beamformer_coefficients()`が同じframeの処理中に
 実行されるため、同じFFT frameへ新係数を適用する。複数frameにまたがる設計では
-`calculate_adaptive_beamformer_coefficients()`が完成まで`None`を返し、`Flow`が後段の置換処理を
+`calculate_adaptive_beamformer_coefficients()`が完成まで`None`を返し、明示した`if`が置換処理を
 呼ばない。したがって信号経路は、全帯域が完成するまで固定CBFまたは前回完成係数を使い続ける。
 
-`FrameBuffer.process()`は0個・1個・複数個の完成frameを返してよい。外側の`Flow.map()`が各frameへ
-`process_completed_frame_fft()`を時系列順に適用するため、1 chunkに複数frameが含まれても、後の
-frameから設計した係数を先のframeへ遡って適用しない。これはFrameBufferの出力レート差を制限せず、
-分岐後の状態更新順序を利用者コード側で明示する構造である。
+`FrameBuffer.process()`は0個・1個・複数個の完成frameを返してよい。通常のPythonループが各frameを
+時系列順に処理するため、1 chunkに複数frameが含まれても、後のframeから設計した係数を先のframeへ
+遡って適用しない。これはFrameBufferの出力レート差を制限せず、分岐間の依存関係と状態更新順序を
+利用者コード側へ明示する構造である。
+
+このABF処理では、係数設計経路の完成状態が信号適用経路の係数を直接決めるため、両経路をまとめた
+`process_completed_frame_fft()`のようなFlow部品へカプセル化しない。一部のFlowのカプセル化は、
+分岐間に依存関係がなく、かつ独立部分のフローが巨大である場合だけ検討する。
 
 ---
 

@@ -169,8 +169,14 @@ python -m examples.streaming.none_cycle
 この例では、状態を持つ処理を4周期すべてで更新しつつ、2周期ごとの完成値だけを
 後段へ渡す。`Flow`は周期を決めず、各段の0個・1個・複数個の出力だけを接続する。
 
-FFT後の`Flow`を、共分散計算・MVDR係数設計経路と信号適用経路へ分岐し、
-完成係数とFFT信号を`h^T x`で合流させる例もある。
+`Flow.map()`は遅延DAGを構築せず、呼び出すたびに保持中の全項目へ即時適用する。
+同じFlowへ複数回`map()`しても項目単位の分岐にはならない。分岐間に状態や実行順序の
+依存関係がある場合は、`to_list()`で通常のPythonへ戻し、項目ごとのループで明示する。
+正しい使用例と期待どおりにならない例は
+[`SpFlow 基本設計書`](doc/SpFlow/SpFlow_基本設計書.md)の「7. Flow の設計」に示す。
+
+FFTまでの0個・1個・複数個のframeを`Flow`で運び、完成frameごとの共分散計算、
+MVDR係数設計、完成係数の置換、`h^T x`を通常のPythonで順序付ける例もある。
 
 ```bash
 python -m examples.beamforming.streaming_mvdr_weights

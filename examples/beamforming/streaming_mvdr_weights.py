@@ -1,4 +1,4 @@
-"""FFT後にFlowを分岐し、MVDR係数設計と信号適用を合流させる例。"""
+"""FFTまでFlowで運び、MVDR係数設計と信号適用の依存をPythonで明示する例。"""
 
 from __future__ import annotations
 
@@ -182,46 +182,10 @@ def apply_active_beamformer(
     return apply_beamformer_bands(frame_fft, env.active_beamformer_coefficients)
 
 
-def process_completed_frame_fft(
-    frame_fft: NDArray[Any], env: AdaptiveBeamformerFlowEnvironment
-) -> Flow[NDArray[np.complex64]]:
-    """1個の完成FFT frameを係数設計経路と信号適用経路へ分ける。
-
-    Args:
-        frame_fft: shape`[n_ch,n_band]`の正規化FFT係数。axis=0がchannel、
-            axis=1が周波数binで、値の単位は入力線形振幅と同じ。
-        env: 共分散推定、時間分割設計、現在完成係数を保持する環境。
-
-    Returns:
-        1個のビーム出力を持つFlow。項目shapeは`[n_beam,n_band]`。
-
-    Raises:
-        ValueError: frame_fftのchannel数またはband数が設計条件と異なる場合。
-
-    境界条件:
-        係数設計経路を先に評価する。今回のframeで全帯域設計が完成すれば、
-        同じframeへ新係数を適用する。未完成なら以前の完成係数を適用する。
-    """
-    # 1個の完成frameを分岐単位にすることで、FrameBufferが1 chunkから複数frameを
-    # 返しても「係数更新→同じframeへの適用」の順序をframeごとに保つ。
-    frame_fft_flow = Flow.from_value(frame_fft)
-
-    # 係数設計経路: 共分散計算 → 一時保持 → 適応係数算出 → 現在係数置換。
-    (
-        frame_fft_flow.map(calculate_covariance_snapshot, env)
-        .map(hold_covariance_snapshot_for_adaptive_design, env)
-        .map(calculate_adaptive_beamformer_coefficients, env)
-        .map(replace_active_beamformer_coefficients, env)
-    )
-
-    # 信号適用経路: 分岐元FFT信号と、その時点の完成係数をh^T xで合流させる。
-    return frame_fft_flow.map(apply_active_beamformer, env)
-
-
 def process_cycle(
     signal_chunk: NDArray[Any], env: AdaptiveBeamformerFlowEnvironment
 ) -> list[NDArray[np.complex64]]:
-    """1処理周期でFFT後のFlowを係数設計経路と信号適用経路へ分ける。
+    """1処理周期で完成FFT frameごとに係数設計後の信号適用を行う。
 
     Args:
         signal_chunk: shape`[n_ch,n_sample]`の時間領域入力。
@@ -234,14 +198,37 @@ def process_cycle(
         frame未完成時は空リストを返す。複数frameが完成した場合は時系列順に処理し、
         各frameで係数設計を先に評価してから完成係数を適用する。
     """
-    return (
+    frame_fft_flow = (
         Flow.from_value(signal_chunk)
         .map(env.frame_buffer.process)
         .map(apply_analysis_window, env.analysis_window)
         .map(calculate_frame_fft, env.fft_length)
-        .map(process_completed_frame_fft, env)
-        .to_list()
     )
+
+    beam_outputs: list[NDArray[np.complex64]] = []
+    for frame_fft in frame_fft_flow.to_list():
+        # 係数設計経路と信号適用経路には、今回の設計完成状態が同じframeへ適用する
+        # 係数を決める依存関係がある。この順序を粗いFlow部品へ隠さずPythonで明示する。
+        covariance_snapshot = calculate_covariance_snapshot(frame_fft, env)
+        design_snapshot = hold_covariance_snapshot_for_adaptive_design(
+            covariance_snapshot,
+            env,
+        )
+        completed_coefficients = calculate_adaptive_beamformer_coefficients(
+            design_snapshot,
+            env,
+        )
+
+        # 全帯域が完成した場合だけactive係数を一括置換する。未完成時は固定CBFまたは
+        # 前回完成係数を維持し、中途状態を信号経路へ公開しない。
+        if completed_coefficients is not None:
+            replace_active_beamformer_coefficients(completed_coefficients, env)
+
+        # Y[beam,band]=Σ_ch H_active[ch,beam,band]X[ch,band]。
+        # 上の置換が完了したframeから新係数を使い、未完了なら以前の完成係数を使う。
+        beam_outputs.append(apply_active_beamformer(frame_fft, env))
+
+    return beam_outputs
 
 
 def main() -> None:

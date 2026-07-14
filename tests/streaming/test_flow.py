@@ -68,3 +68,34 @@ def test_flow_map_returns_new_instance():
 
     assert flow1.to_list() == [1, 2]
     assert flow2.to_list() == [2, 3]
+
+
+def test_reusing_flow_runs_each_map_as_a_separate_eager_full_pass():
+    """同じFlowの再利用が項目単位の分岐実行にならない契約を確認する。"""
+    state = {"active": 0}
+
+    def update_state(item: int) -> None:
+        state["active"] = item
+
+    def observe_state(item: int) -> tuple[int, int]:
+        return item, state["active"]
+
+    source_flow = Flow.many([1, 2])
+    source_flow.map(update_state)
+    reused_outputs = source_flow.map(observe_state).to_list()
+
+    # 1回目のmapが全項目を処理してactive=2にした後、2回目のmapが全項目を処理する。
+    # したがって、この書き方は[(1, 1), (2, 2)]という項目単位の分岐にはならない。
+    assert reused_outputs == [(1, 2), (2, 2)]
+
+
+def test_python_loop_makes_per_item_state_dependency_explicit():
+    """項目ごとの状態更新と利用は通常のPythonループで順序付けることを確認する。"""
+    state = {"active": 0}
+    outputs: list[tuple[int, int]] = []
+
+    for item in Flow.many([1, 2]).to_list():
+        state["active"] = item
+        outputs.append((item, state["active"]))
+
+    assert outputs == [(1, 1), (2, 2)]
