@@ -12,10 +12,49 @@ from evaluations.beamforming.scene_renderer_t2a_streaming import (
     MatlabArrayCoefficients,
     StreamingBeamBranch,
     T2aScenarioConfig,
+    calculate_target_waveform_integrity,
     design_frequency_weights,
     load_matlab_array_coefficients,
     run_streaming_flow,
 )
+
+
+def test_target_waveform_integrity_removes_only_tone_phase_delay() -> None:
+    """既知のtone位相差だけを除去し、RMS・相関・残差を正しく評価する。
+
+    8 Hz toneをfs 128 Hzで生成し、出力へpi/4 rad、すなわち2 sample相当の位相差を
+    与える。training後の評価区間は12周期ちょうどで、端点leakageを指標誤差へ混ぜない。
+    """
+    config = T2aScenarioConfig(
+        fs_hz=128.0,
+        duration_s=2.0,
+        training_duration_s=0.5,
+        target_frequency_hz=8.0,
+        interferer_frequency_hz=16.0,
+        noise_band_hz=(2.0, 40.0),
+        analysis_fft_size=16,
+        analysis_hop_size=16,
+        residual_fir_tap_count=8,
+        runtime_block_size=13,
+    )
+    sample_index = np.arange(int(config.duration_s * config.fs_hz), dtype=np.float64)
+    phase_rad = np.pi / 4.0
+    reference = np.cos(2.0 * np.pi * config.target_frequency_hz * sample_index / config.fs_hz)
+    output = np.cos(
+        2.0 * np.pi * config.target_frequency_hz * sample_index / config.fs_hz + phase_rad
+    ).astype(np.complex128)
+
+    result = calculate_target_waveform_integrity(
+        reference,
+        output,
+        np.ones(reference.shape, dtype=np.bool_),
+        config,
+    )
+
+    assert result.phase_delay_samples_modulo_period == pytest.approx(2.0, abs=1.0e-12)
+    assert result.rms_delta_db == pytest.approx(0.0, abs=1.0e-12)
+    assert result.correlation_after_phase_alignment == pytest.approx(1.0, abs=1.0e-12)
+    assert result.residual_rms_db_re_input_rms < -250.0
 
 
 def test_frequency_weight_design_returns_three_parallel_methods() -> None:
