@@ -13,6 +13,27 @@ def test_flow_from_value_keeps_none_as_value():
     assert Flow.from_value(None).to_list() == [None]
 
 
+def test_flow_none_input_calls_current_stage_and_none_output_stops_next_stage():
+    """None入力は現在段へ通知し、None出力は後段を呼ばない境界契約を確認する。"""
+    current_stage_inputs: list[None] = []
+    downstream_inputs: list[str] = []
+
+    def process_current_stage(value: None) -> None:
+        # 入力値がない周期でも、現在段は状態更新やtimeout判定を実行できなければならない。
+        current_stage_inputs.append(value)
+        return None
+
+    def process_downstream(value: str) -> str:
+        downstream_inputs.append(value)
+        return value
+
+    outputs = Flow.from_value(None).map(process_current_stage).map(process_downstream).to_list()
+
+    assert current_stage_inputs == [None]
+    assert downstream_inputs == []
+    assert outputs == []
+
+
 def test_flow_many_consumes_generator():
     """Flowで generator を最後まで消費することを確認する。"""
     flow = Flow.many(x * 2 for x in range(3))
