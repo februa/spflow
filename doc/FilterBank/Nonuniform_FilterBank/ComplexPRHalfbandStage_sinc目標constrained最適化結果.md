@@ -18,7 +18,7 @@
 追加した主な実装:
 
 - `src/spflow/filterbank/design/sinc_constrained_optimizer.py`
-- `examples/filterbank/complex_halfband_stage_sinc_constrained_optimize.py`
+- `tools/optimize_complex_halfband_stage_sinc.py`
 - `tests/filterbank/test_sinc_constrained_optimizer.py`
 
 今回の optimizer は、
@@ -44,7 +44,7 @@
 実行コマンド:
 
 ```text
-python examples/filterbank/complex_halfband_stage_sinc_constrained_optimize.py ^
+python tools/optimize_complex_halfband_stage_sinc.py ^
   --tap-list 16 24 32 48 ^
   --artifact-name sinc_constrained_optimizer_results
 ```

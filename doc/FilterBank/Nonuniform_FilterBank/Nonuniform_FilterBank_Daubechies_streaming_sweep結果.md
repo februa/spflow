@@ -15,7 +15,7 @@
 
 - `src/spflow/filterbank/daubechies_nonuniform_streaming.py`
 - `src/spflow/filterbank/daubechies_nonuniform_beamformer.py`
-- `examples/nonuniform/nonuniform_daubechies_streaming_sweep.py`
+- `evaluations/nonuniform/daubechies_streaming_sweep.py`
 
 ---
 

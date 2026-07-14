@@ -44,7 +44,7 @@
 今回追加した実装は以下である。
 
 - `src/spflow/filterbank/design/sinc_target.py`
-- `examples/filterbank/complex_halfband_stage_sinc_target_design_eval.py`
+- `evaluations/filterbank/complex_halfband_stage_sinc_target.py`
 - `tests/filterbank/test_sinc_target_design.py`
 
 ### 3.1 `sinc_target.py`

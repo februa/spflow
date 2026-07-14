@@ -49,7 +49,7 @@
 
 再現用として以下を追加した。
 
-- `examples/filterbank/complex_halfband_stage_sinc_qmf_eval.py`
+- `evaluations/filterbank/complex_halfband_stage_sinc_qmf.py`
 
 結果 artifact:
 

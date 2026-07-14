@@ -48,13 +48,13 @@ y_beam = sum(w_ch * y_ch) / sum(w_ch)
 
 ### 3.1 narrowband scan SLC
 
-`examples/beamforming/operational_array_fractional_delay_slc_diagnostics.py` で評価する。小数遅延固定整相後の全 beam output を周波数選択 snapshot に変換し、各 scan beam を順に保護 target として SLC を適用する。
+`evaluations/beamforming/operational_array_fractional_delay_slc_diagnostics.py` で評価する。小数遅延固定整相後の全 beam output を周波数選択 snapshot に変換し、各 scan beam を順に保護 target として SLC を適用する。
 
 この方式は BL/FRAZ/BTR の before / after を作る診断に向いている。一方、全 beam scan では interferer 方位の beam もその beam 自身にとっては desired mainlobe であるため、干渉源ピークそのものを消す評価には使わない。採否 pattern は `slc_scan_multi_source_display` とし、既知 source が別ピークとして残ること、false peak や guard 外 envelope が悪化しないことを確認する。
 
 ### 3.2 target-centric 時間領域 SLC
 
-`examples/beamforming/operational_array_time_domain_slc_diagnostics.py` で評価する。固定整相後の target beam を保護出力 `d[n]`、guard 外 beam を reference `u[n]` とし、時間領域の共分散を block ごとに指数忘却積分する。
+`evaluations/beamforming/operational_array_time_domain_slc_diagnostics.py` で評価する。固定整相後の target beam を保護出力 `d[n]`、guard 外 beam を reference `u[n]` とし、時間領域の共分散を block ごとに指数忘却積分する。
 
 評価では mixed / target-only / interferer-only を同じ固定整相に通し、mixed で得た SLC 係数を各成分へ適用する。これにより、target beam 上の target 保護量と interferer leakage 低減量を分けて測る。
 

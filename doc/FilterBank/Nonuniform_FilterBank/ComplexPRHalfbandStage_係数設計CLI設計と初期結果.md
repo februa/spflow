@@ -12,7 +12,7 @@
 ## 2. 結論
 
 `ComplexPRHalfbandStage` の係数は、
-均一版 `examples/filterbank/prototype_design_eval.py` と同様に
+均一版 `tools/design_prdft_prototype.py` と同様に
 
 - 候補生成
 - 評価
@@ -26,7 +26,7 @@ CLI は別実装とする。
 
 今回の初版実装では、
 
-- `examples/filterbank/complex_halfband_stage_design_eval.py`
+- `tools/design_complex_halfband_stage.py`
 
 を追加し、
 第一候補 family として
@@ -42,7 +42,7 @@ CLI は別実装とする。
 追加した主な実装は以下である。
 
 - `src/spflow/filterbank/design/complex_halfband_stage.py`
-- `examples/filterbank/complex_halfband_stage_design_eval.py`
+- `tools/design_complex_halfband_stage.py`
 - `tests/filterbank/test_complex_halfband_stage_design.py`
 
 ### 3.1 `design/complex_halfband_stage.py`
@@ -133,7 +133,7 @@ stage 単体の係数列と stage metadata を決める。
 実行コマンド:
 
 ```text
-python examples/filterbank/complex_halfband_stage_design_eval.py ^
+python tools/design_complex_halfband_stage.py ^
   --order-list 20 22 24 26 28 30 ^
   --artifact-name db_sweep_formal_candidate
 ```

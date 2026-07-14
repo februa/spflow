@@ -35,6 +35,9 @@ pip install -e .
 
 実装済み機能は、リポジトリ内の
 [`doc/SpFlow/実装済み機能一覧.md`](doc/SpFlow/実装済み機能一覧.md) から責務と import パスを検索できる。
+
+リポジトリ内の実行コードは責務で配置を分けている。`examples/`は短い公開API使用例、
+`evaluations/`は方式評価・sweep・diagnostics、`tools/`は運用係数や入力ファイルを生成するCLIである。
 この一覧は Python の module docstring、公開クラス、公開関数、`__all__` から自動生成する。
 
 型、引数、戻り値、docstring を含む HTML API リファレンスを生成する場合は、
