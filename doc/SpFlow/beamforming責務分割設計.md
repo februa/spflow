@@ -226,3 +226,21 @@ scenario実行、artifact pack一式の生成は含めない。
 
 各段階で既存import互換を必要に応じて薄いファサードとして残す。ファサードは処理を複製せず、
 新配置へ委譲するだけとする。
+
+## 11. 逐次処理部品との接続とimport境界
+
+beamformerは独自PipelineやProcessor基底クラスを要求せず、通常の`process`メソッドとして
+NumPy配列を受け取る。`FrameBuffer.process`が返す0個・1個・複数個の完成frameは、
+`Flow.map`のlist 1段展開規約により、そのまま`CBFBeamformer.process`へ接続できる。
+overlap-save beamformerの`(band_index, valid_block)`はtupleを一つの意味値として保持し、
+帯域metadataを失わず後段へ渡す。
+
+`Flow`は値の運搬だけを担い、入力終端やflush順序を決めない。終端時は通常のPython制御で
+`FrameBuffer.flush(pad=True)`を呼び、返された完成frameを`Flow.many`から同じbeamformerへ
+合流させる。これにより、末尾端数を不完全状態として公開せず、巨大な実行モデルも導入しない。
+決定論的な接続例は`examples/beamforming/streaming_cbf.py`に置く。
+
+トップレベル`spflow`と互換`spflow.beamforming`のflat APIは遅延解決する。これにより、
+`Flow`と`FrameBuffer`だけを使うprocessはbeamforming、filterbank、Matplotlibを読み込まず、
+`CBFBeamformer`を使うprocessもCBFとその数式依存だけを読み込む。互換公開名は維持するが、
+新規コードでは責務を示すpackageまたはmoduleからのimportを優先する。

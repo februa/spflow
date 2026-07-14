@@ -1,264 +1,511 @@
 """src/spflow/beamforming パッケージの公開 API をまとめるモジュール。"""
 
+# TYPE_CHECKING節のimportは、実行時依存を増やさず公開型を型検査器へ伝えるために必要である。
+# ruff: noqa: F401
+
 # 重み・filter設計と信号適用をbeamformingの中心公開APIとする。
 # array設計、評価、SLCの再公開は既存利用者向け互換facadeであり、新規コードは
 # spflow.array_design、spflow.beamforming_evaluation、spflow.sidelobe_cancellationを使う。
-from .abf_like_metrics import (
-    AbfLikeMetricDecision,
-    AbfLikeNonSourceMetrics,
-    SourceSectorMask,
-    build_source_sector_mask,
-    build_source_sector_mask_from_azimuths,
-    calculate_abf_like_non_source_metrics,
-    detect_source_beam_indices_from_level_peaks,
-    judge_abf_like_non_source_metrics,
-)
-from .application import (
-    apply_beamformer,
-    apply_beamformer_bands,
-    apply_beamformer_filter_fft,
-    apply_time_domain_fir_beamformer,
-    build_time_tapped_snapshot_matrix,
-)
-from .array_design import BandwiseArrayDesign
-from .bl_component_metrics import (
-    BlComponentEvaluation,
-    BlLocalPeak,
-    MixedBlConsistency,
-    NoiseOnlyBlMetrics,
-    TargetOnlyBlMetrics,
-    evaluate_mixed_bl_consistency,
-    evaluate_noise_only_bl,
-    evaluate_target_only_bl,
-)
-from .cbf import (
-    CBFBeamformer,
-    CBFOverlapSaveBeamformer,
-    apply_channel_window_to_steering,
-    design_cbf_coefficients,
-    design_cbf_coefficients_with_channel_window,
-    design_cbf_overlap_save_filters,
-    design_cbf_weights,
-    design_cbf_weights_with_channel_window,
-)
-from .covariance import (
-    CovarianceEstimator,
-    estimate_covariance,
-    forgetting_factor_from_integration_time,
-    integrate_band_covariances,
-    integration_blocks_from_integration_time,
-    recommended_integration_time_for_independent_samples,
-)
-from .covariance_snapshot_schedule import (
-    CompletedDirectionSteeringMetrics,
-    CovarianceSnapshotCenterSchedule,
-    DirectionMatchedCovarianceAccumulator,
-    DirectionMatchedCovarianceUpdate,
-    MaximumSpatialCorrelationTable,
-    build_two_second_covariance_snapshot_schedule,
-    calculate_maximum_spatial_correlation_table,
-)
-from .covariance_subspace_metrics import (
-    CovarianceSubspaceMetrics,
-    calculate_covariance_subspace_metrics,
-)
-from .diagnostic_plotting import (
-    BeamDiagnosticPlotUsageNotes,
-    build_beam_diagnostic_plot_usage_notes,
-    centers_to_edges,
-    plot_bl_comparison,
-    plot_bl_response,
-    plot_btr_heatmap,
-    plot_fraz_heatmap,
-    write_beam_diagnostic_plot_usage_notes,
-)
-from .direction_covariance_selector import (
-    CovarianceFallbackReason,
-    CovarianceFallbackSource,
-    DirectionCovarianceSelectionConfig,
-    DirectionCovarianceSelectionResult,
-    DirectionMatchedCovarianceSelector,
-)
-from .directions import make_directions
-from .ebae import (
-    EbaeBandResult,
-    EbaeConfig,
-    EbaeResult,
-    calculate_music_spectrum,
-    design_ebae_weights,
-    design_ebae_weights_band,
-    estimate_signal_count_ne_aic,
-)
-from .evaluation_arrays import (
-    BeamLevelDisplayArrays,
-    BlShapeFeatures,
-    build_beam_level_display_arrays,
-    calculate_bl_shape_features,
-    calculate_btr_relative_level_db,
-)
-from .evaluation_criteria import (
-    BeamformingEvaluationCriterion,
-    BeamformingEvaluationPattern,
-    get_evaluation_criteria_for_pattern,
-    list_beamforming_evaluation_criteria,
-    list_beamforming_evaluation_patterns,
-    write_beamforming_evaluation_criteria_markdown,
-)
-from .fixed_delay_diff_mvdr import (
-    STANDARD_FRACTIONAL_DELAY_PATTERN_COUNT,
-    STANDARD_FRACTIONAL_DELAY_TAP_COUNT,
-    AlignedPathCombiner,
-    CausalBlockFIR,
-    DelayAlignedBeamCovarianceAccumulator,
-    DelayAlignedBeamCovarianceUpdateResult,
-    DifferenceCorrectionDesignResult,
-    DifferenceCorrectionDiagnostics,
-    DifferenceCorrectionFIR,
-    DifferenceCorrectionFIRDesigner,
-    DiffMVDRCorrectionPath,
-    FixedDelayDiffMVDRStreamingProcessor,
-    FractionalDelayMainPath,
-    LoadedMVDRDesignResult,
-    LoadedMVDRWeightDesigner,
-    ProcessedBlock,
-    ShortFFTCovarianceAccumulator,
-    ShortFFTCovarianceUpdateResult,
-    StreamingBlock,
-    design_distortionless_fixed_weights,
-    design_fixed_delay_fractional_weights_from_delay_table,
-    design_standard_fractional_delay_filter_bank,
-    extract_delay_centered_snapshots,
-)
-from .fractional_delay_performance import (
-    FractionalDelayPerformanceConfig,
-    run_fractional_delay_performance_report,
-)
-from .fractional_delay_slc_diagnostics import run_fractional_delay_slc_diagnostics
-from .geometry import (
-    relative_arrival_delay,
-    steering_from_relative_delay,
-    unit_direction_from_positions,
-)
-from .mvdr_filter import (
-    MVDRFilter,
-    MVDROverlapSaveBeamformer,
-    beam_response_rms_db,
-    design_mvdr_overlap_save_filters,
-)
-from .mvdr_weight_designer import (
-    MVDRWeightCallback,
-    MVDRWeightDesigner,
-    design_mvdr_coefficients,
-    design_mvdr_coefficients_bands,
-    design_mvdr_coefficients_with_channel_window,
-    design_mvdr_weights,
-    design_mvdr_weights_with_channel_window,
-)
-from .operational_fractional_delay_performance import (
-    OperationalArrayFractionalDelayPerformanceConfig,
-    run_operational_array_fractional_delay_performance_report,
-)
-from .operational_shading import (
-    OperationalFixedBeamShadingDesignConfig,
-    OperationalShadingDefinition,
-    OperationalShadingDesignConfig,
-    load_operational_shading,
-    run_operational_fixed_beam_shading_design,
-    run_operational_shading_design,
-)
-from .operational_sparse_array import (
-    OperationalSparseArrayDefinition,
-    OperationalSparseArrayDesignConfig,
-    design_operational_sparse_array,
-    load_operational_sparse_array,
-    save_operational_sparse_array,
-)
-from .operational_time_domain_adaptive_comparison import (
-    OperationalTimeDomainAdaptiveComparisonConfig,
-    run_operational_time_domain_adaptive_comparison,
-)
-from .operational_time_domain_frequency_separation_diagnostics import (
-    OperationalSameAzimuthFrequencySeparationConfig,
-    run_operational_same_azimuth_frequency_separation_diagnostics,
-)
-from .operational_time_domain_slc_diagnostics import (
-    OperationalTimeDomainSlcDiagnosticConfig,
-    run_operational_time_domain_slc_leakage_diagnostics,
-)
-from .selected_frequency_direction_covariance import (
-    SelectedFrequencyDirectionCovarianceAccumulator,
-    SelectedFrequencyDirectionCovarianceResult,
-)
-from .slc import (
-    BeamDomainSLC,
-    BeamGuardSelector,
-    BlockLeastSquaresSlcSolver,
-    HeadingAwareForgettingController,
-    SlcConfig,
-    SlcCovarianceEstimator,
-    SlcOutputSafetyDecision,
-    SlcProcessResult,
-    SlcReferenceCapacityChecker,
-    SlcReferenceCapacityDecision,
-    build_reference_blocking_matrix,
-    evaluate_slc_output_safety,
-)
-from .source_mask_slc import (
-    SourceMaskNonSourceLeakageSubtractor,
-    SourceMaskSlcConfig,
-    SourceMaskSlcHealth,
-    SourceMaskSlcResult,
-)
-from .sparse_single_side_array_design import (
-    SparseSingleSideArrayDesignConfig,
-    SparseSingleSideArrayDesignResult,
-    build_sparse_single_side_array_design,
-    run_sparse_single_side_array_design,
-)
-from .spatial_correlation_statistics import (
-    BinnedSpatialCorrelationStatistics,
-    PairCompositionSpatialCorrelationStatistics,
-    SparseArraySpatialCorrelationStatistics,
-    SpatialCorrelationStatistics,
-    calculate_sparse_array_spatial_correlation_statistics,
-    calculate_spatial_correlation_statistics,
-)
-from .steering_power_weighting import (
-    SteeringPowerChannelWeighting,
-    prepare_steering_power_channel_weighting,
-)
-from .synthetic_signal import PlaneWaveTone, synthesize_plane_wave_tone
-from .time_delay import (
-    DelayTable,
-    FractionalDelayAndSumBeamformer,
-    FractionalDelayFilterBank,
-    IntegerDelayAndSumBeamformer,
-    design_fractional_delay_filter_bank,
-    design_windowed_sinc_fractional_delay_filter,
-)
-from .time_delay_diagnostics import (
-    TimeDelayDiagnosticConfig,
-    TimeDelayDiagnosticSource,
-    build_sparse_single_side_array_positions,
-    run_integer_delay_diagnostics,
-)
-from .time_delay_guard_design import TimeDelayGuardDesignConfig, run_integer_delay_guard_design
-from .time_delay_slc_diagnostics import run_integer_delay_slc_diagnostics
-from .time_domain_adaptive import (
-    TimeDomainAdaptiveWeightDiagnostics,
-    build_gsc_blocking_matrix,
-    build_real_tone_constraint_matrix,
-    build_time_domain_tone_constraint_vector,
-    design_time_domain_gsc_coefficients,
-    design_time_domain_gsc_weights,
-    design_time_domain_lcmv_coefficients,
-    design_time_domain_lcmv_weights,
-    design_time_domain_mvdr_coefficients,
-    design_time_domain_mvdr_weights,
-    diagnose_time_domain_adaptive_weights,
-    estimate_time_domain_covariance,
-    evaluate_constraint_response,
-)
+from importlib import import_module
+from typing import TYPE_CHECKING, Any
+
+# 型検査時は公開名の具体型を各責務moduleから取得する。実行時は下の遅延解決を使い、
+# CBFだけを使う処理へ評価・描画moduleを読み込まない。
+if TYPE_CHECKING:
+    from .abf_like_metrics import (
+        AbfLikeMetricDecision,
+        AbfLikeNonSourceMetrics,
+        SourceSectorMask,
+        build_source_sector_mask,
+        build_source_sector_mask_from_azimuths,
+        calculate_abf_like_non_source_metrics,
+        detect_source_beam_indices_from_level_peaks,
+        judge_abf_like_non_source_metrics,
+    )
+    from .application import (
+        apply_beamformer,
+        apply_beamformer_bands,
+        apply_beamformer_filter_fft,
+        apply_time_domain_fir_beamformer,
+        build_time_tapped_snapshot_matrix,
+    )
+    from .array_design import BandwiseArrayDesign
+    from .bl_component_metrics import (
+        BlComponentEvaluation,
+        BlLocalPeak,
+        MixedBlConsistency,
+        NoiseOnlyBlMetrics,
+        TargetOnlyBlMetrics,
+        evaluate_mixed_bl_consistency,
+        evaluate_noise_only_bl,
+        evaluate_target_only_bl,
+    )
+    from .cbf import (
+        CBFBeamformer,
+        CBFOverlapSaveBeamformer,
+        apply_channel_window_to_steering,
+        design_cbf_coefficients,
+        design_cbf_coefficients_with_channel_window,
+        design_cbf_overlap_save_filters,
+        design_cbf_weights,
+        design_cbf_weights_with_channel_window,
+    )
+    from .covariance import (
+        CovarianceEstimator,
+        estimate_covariance,
+        forgetting_factor_from_integration_time,
+        integrate_band_covariances,
+        integration_blocks_from_integration_time,
+        recommended_integration_time_for_independent_samples,
+    )
+    from .covariance_snapshot_schedule import (
+        CompletedDirectionSteeringMetrics,
+        CovarianceSnapshotCenterSchedule,
+        DirectionMatchedCovarianceAccumulator,
+        DirectionMatchedCovarianceUpdate,
+        MaximumSpatialCorrelationTable,
+        build_two_second_covariance_snapshot_schedule,
+        calculate_maximum_spatial_correlation_table,
+    )
+    from .covariance_subspace_metrics import (
+        CovarianceSubspaceMetrics,
+        calculate_covariance_subspace_metrics,
+    )
+    from .diagnostic_plotting import (
+        BeamDiagnosticPlotUsageNotes,
+        build_beam_diagnostic_plot_usage_notes,
+        centers_to_edges,
+        plot_bl_comparison,
+        plot_bl_response,
+        plot_btr_heatmap,
+        plot_fraz_heatmap,
+        write_beam_diagnostic_plot_usage_notes,
+    )
+    from .direction_covariance_selector import (
+        CovarianceFallbackReason,
+        CovarianceFallbackSource,
+        DirectionCovarianceSelectionConfig,
+        DirectionCovarianceSelectionResult,
+        DirectionMatchedCovarianceSelector,
+    )
+    from .directions import make_directions
+    from .ebae import (
+        EbaeBandResult,
+        EbaeConfig,
+        EbaeResult,
+        calculate_music_spectrum,
+        design_ebae_weights,
+        design_ebae_weights_band,
+        estimate_signal_count_ne_aic,
+    )
+    from .evaluation_arrays import (
+        BeamLevelDisplayArrays,
+        BlShapeFeatures,
+        build_beam_level_display_arrays,
+        calculate_bl_shape_features,
+        calculate_btr_relative_level_db,
+    )
+    from .evaluation_criteria import (
+        BeamformingEvaluationCriterion,
+        BeamformingEvaluationPattern,
+        get_evaluation_criteria_for_pattern,
+        list_beamforming_evaluation_criteria,
+        list_beamforming_evaluation_patterns,
+        write_beamforming_evaluation_criteria_markdown,
+    )
+    from .fixed_delay_diff_mvdr import (
+        STANDARD_FRACTIONAL_DELAY_PATTERN_COUNT,
+        STANDARD_FRACTIONAL_DELAY_TAP_COUNT,
+        AlignedPathCombiner,
+        CausalBlockFIR,
+        DelayAlignedBeamCovarianceAccumulator,
+        DelayAlignedBeamCovarianceUpdateResult,
+        DifferenceCorrectionDesignResult,
+        DifferenceCorrectionDiagnostics,
+        DifferenceCorrectionFIR,
+        DifferenceCorrectionFIRDesigner,
+        DiffMVDRCorrectionPath,
+        FixedDelayDiffMVDRStreamingProcessor,
+        FractionalDelayMainPath,
+        LoadedMVDRDesignResult,
+        LoadedMVDRWeightDesigner,
+        ProcessedBlock,
+        ShortFFTCovarianceAccumulator,
+        ShortFFTCovarianceUpdateResult,
+        StreamingBlock,
+        design_distortionless_fixed_weights,
+        design_fixed_delay_fractional_weights_from_delay_table,
+        design_standard_fractional_delay_filter_bank,
+        extract_delay_centered_snapshots,
+    )
+    from .fractional_delay_performance import (
+        FractionalDelayPerformanceConfig,
+        run_fractional_delay_performance_report,
+    )
+    from .fractional_delay_slc_diagnostics import run_fractional_delay_slc_diagnostics
+    from .geometry import (
+        relative_arrival_delay,
+        steering_from_relative_delay,
+        unit_direction_from_positions,
+    )
+    from .mvdr_filter import (
+        MVDRFilter,
+        MVDROverlapSaveBeamformer,
+        beam_response_rms_db,
+        design_mvdr_overlap_save_filters,
+    )
+    from .mvdr_weight_designer import (
+        MVDRWeightCallback,
+        MVDRWeightDesigner,
+        design_mvdr_coefficients,
+        design_mvdr_coefficients_bands,
+        design_mvdr_coefficients_with_channel_window,
+        design_mvdr_weights,
+        design_mvdr_weights_with_channel_window,
+    )
+    from .operational_fractional_delay_performance import (
+        OperationalArrayFractionalDelayPerformanceConfig,
+        run_operational_array_fractional_delay_performance_report,
+    )
+    from .operational_shading import (
+        OperationalFixedBeamShadingDesignConfig,
+        OperationalShadingDefinition,
+        OperationalShadingDesignConfig,
+        load_operational_shading,
+        run_operational_fixed_beam_shading_design,
+        run_operational_shading_design,
+    )
+    from .operational_sparse_array import (
+        OperationalSparseArrayDefinition,
+        OperationalSparseArrayDesignConfig,
+        design_operational_sparse_array,
+        load_operational_sparse_array,
+        save_operational_sparse_array,
+    )
+    from .operational_time_domain_adaptive_comparison import (
+        OperationalTimeDomainAdaptiveComparisonConfig,
+        run_operational_time_domain_adaptive_comparison,
+    )
+    from .operational_time_domain_frequency_separation_diagnostics import (
+        OperationalSameAzimuthFrequencySeparationConfig,
+        run_operational_same_azimuth_frequency_separation_diagnostics,
+    )
+    from .operational_time_domain_slc_diagnostics import (
+        OperationalTimeDomainSlcDiagnosticConfig,
+        run_operational_time_domain_slc_leakage_diagnostics,
+    )
+    from .selected_frequency_direction_covariance import (
+        SelectedFrequencyDirectionCovarianceAccumulator,
+        SelectedFrequencyDirectionCovarianceResult,
+    )
+    from .slc import (
+        BeamDomainSLC,
+        BeamGuardSelector,
+        BlockLeastSquaresSlcSolver,
+        HeadingAwareForgettingController,
+        SlcConfig,
+        SlcCovarianceEstimator,
+        SlcOutputSafetyDecision,
+        SlcProcessResult,
+        SlcReferenceCapacityChecker,
+        SlcReferenceCapacityDecision,
+        build_reference_blocking_matrix,
+        evaluate_slc_output_safety,
+    )
+    from .source_mask_slc import (
+        SourceMaskNonSourceLeakageSubtractor,
+        SourceMaskSlcConfig,
+        SourceMaskSlcHealth,
+        SourceMaskSlcResult,
+    )
+    from .sparse_single_side_array_design import (
+        SparseSingleSideArrayDesignConfig,
+        SparseSingleSideArrayDesignResult,
+        build_sparse_single_side_array_design,
+        run_sparse_single_side_array_design,
+    )
+    from .spatial_correlation_statistics import (
+        BinnedSpatialCorrelationStatistics,
+        PairCompositionSpatialCorrelationStatistics,
+        SparseArraySpatialCorrelationStatistics,
+        SpatialCorrelationStatistics,
+        calculate_sparse_array_spatial_correlation_statistics,
+        calculate_spatial_correlation_statistics,
+    )
+    from .steering_power_weighting import (
+        SteeringPowerChannelWeighting,
+        prepare_steering_power_channel_weighting,
+    )
+    from .synthetic_signal import PlaneWaveTone, synthesize_plane_wave_tone
+    from .time_delay import (
+        DelayTable,
+        FractionalDelayAndSumBeamformer,
+        FractionalDelayFilterBank,
+        IntegerDelayAndSumBeamformer,
+        design_fractional_delay_filter_bank,
+        design_windowed_sinc_fractional_delay_filter,
+    )
+    from .time_delay_diagnostics import (
+        TimeDelayDiagnosticConfig,
+        TimeDelayDiagnosticSource,
+        build_sparse_single_side_array_positions,
+        run_integer_delay_diagnostics,
+    )
+    from .time_delay_guard_design import TimeDelayGuardDesignConfig, run_integer_delay_guard_design
+    from .time_delay_slc_diagnostics import run_integer_delay_slc_diagnostics
+    from .time_domain_adaptive import (
+        TimeDomainAdaptiveWeightDiagnostics,
+        build_gsc_blocking_matrix,
+        build_real_tone_constraint_matrix,
+        build_time_domain_tone_constraint_vector,
+        design_time_domain_gsc_coefficients,
+        design_time_domain_gsc_weights,
+        design_time_domain_lcmv_coefficients,
+        design_time_domain_lcmv_weights,
+        design_time_domain_mvdr_coefficients,
+        design_time_domain_mvdr_weights,
+        diagnose_time_domain_adaptive_weights,
+        estimate_time_domain_covariance,
+        evaluate_constraint_response,
+    )
+
+_EXPORT_MODULES: dict[str, str] = {
+    "AbfLikeMetricDecision": "abf_like_metrics",
+    "AbfLikeNonSourceMetrics": "abf_like_metrics",
+    "SourceSectorMask": "abf_like_metrics",
+    "build_source_sector_mask": "abf_like_metrics",
+    "build_source_sector_mask_from_azimuths": "abf_like_metrics",
+    "calculate_abf_like_non_source_metrics": "abf_like_metrics",
+    "detect_source_beam_indices_from_level_peaks": "abf_like_metrics",
+    "judge_abf_like_non_source_metrics": "abf_like_metrics",
+    "apply_beamformer": "application",
+    "apply_beamformer_bands": "application",
+    "apply_beamformer_filter_fft": "application",
+    "apply_time_domain_fir_beamformer": "application",
+    "build_time_tapped_snapshot_matrix": "application",
+    "BlComponentEvaluation": "bl_component_metrics",
+    "BlLocalPeak": "bl_component_metrics",
+    "MixedBlConsistency": "bl_component_metrics",
+    "NoiseOnlyBlMetrics": "bl_component_metrics",
+    "TargetOnlyBlMetrics": "bl_component_metrics",
+    "evaluate_mixed_bl_consistency": "bl_component_metrics",
+    "evaluate_noise_only_bl": "bl_component_metrics",
+    "evaluate_target_only_bl": "bl_component_metrics",
+    "CBFBeamformer": "cbf",
+    "CBFOverlapSaveBeamformer": "cbf",
+    "apply_channel_window_to_steering": "cbf",
+    "design_cbf_coefficients": "cbf",
+    "design_cbf_coefficients_with_channel_window": "cbf",
+    "design_cbf_overlap_save_filters": "cbf",
+    "design_cbf_weights": "cbf",
+    "design_cbf_weights_with_channel_window": "cbf",
+    "CovarianceEstimator": "covariance",
+    "estimate_covariance": "covariance",
+    "forgetting_factor_from_integration_time": "covariance",
+    "integrate_band_covariances": "covariance",
+    "integration_blocks_from_integration_time": "covariance",
+    "recommended_integration_time_for_independent_samples": "covariance",
+    "CompletedDirectionSteeringMetrics": "covariance_snapshot_schedule",
+    "CovarianceSnapshotCenterSchedule": "covariance_snapshot_schedule",
+    "DirectionMatchedCovarianceAccumulator": "covariance_snapshot_schedule",
+    "DirectionMatchedCovarianceUpdate": "covariance_snapshot_schedule",
+    "MaximumSpatialCorrelationTable": "covariance_snapshot_schedule",
+    "build_two_second_covariance_snapshot_schedule": "covariance_snapshot_schedule",
+    "calculate_maximum_spatial_correlation_table": "covariance_snapshot_schedule",
+    "CovarianceSubspaceMetrics": "covariance_subspace_metrics",
+    "calculate_covariance_subspace_metrics": "covariance_subspace_metrics",
+    "BeamDiagnosticPlotUsageNotes": "diagnostic_plotting",
+    "build_beam_diagnostic_plot_usage_notes": "diagnostic_plotting",
+    "centers_to_edges": "diagnostic_plotting",
+    "plot_bl_comparison": "diagnostic_plotting",
+    "plot_bl_response": "diagnostic_plotting",
+    "plot_btr_heatmap": "diagnostic_plotting",
+    "plot_fraz_heatmap": "diagnostic_plotting",
+    "write_beam_diagnostic_plot_usage_notes": "diagnostic_plotting",
+    "CovarianceFallbackReason": "direction_covariance_selector",
+    "CovarianceFallbackSource": "direction_covariance_selector",
+    "DirectionCovarianceSelectionConfig": "direction_covariance_selector",
+    "DirectionCovarianceSelectionResult": "direction_covariance_selector",
+    "DirectionMatchedCovarianceSelector": "direction_covariance_selector",
+    "EbaeBandResult": "ebae",
+    "EbaeConfig": "ebae",
+    "EbaeResult": "ebae",
+    "calculate_music_spectrum": "ebae",
+    "design_ebae_weights": "ebae",
+    "design_ebae_weights_band": "ebae",
+    "estimate_signal_count_ne_aic": "ebae",
+    "BeamLevelDisplayArrays": "evaluation_arrays",
+    "BlShapeFeatures": "evaluation_arrays",
+    "build_beam_level_display_arrays": "evaluation_arrays",
+    "calculate_bl_shape_features": "evaluation_arrays",
+    "calculate_btr_relative_level_db": "evaluation_arrays",
+    "BeamformingEvaluationCriterion": "evaluation_criteria",
+    "BeamformingEvaluationPattern": "evaluation_criteria",
+    "get_evaluation_criteria_for_pattern": "evaluation_criteria",
+    "list_beamforming_evaluation_criteria": "evaluation_criteria",
+    "list_beamforming_evaluation_patterns": "evaluation_criteria",
+    "write_beamforming_evaluation_criteria_markdown": "evaluation_criteria",
+    "STANDARD_FRACTIONAL_DELAY_PATTERN_COUNT": "fixed_delay_diff_mvdr",
+    "STANDARD_FRACTIONAL_DELAY_TAP_COUNT": "fixed_delay_diff_mvdr",
+    "AlignedPathCombiner": "fixed_delay_diff_mvdr",
+    "CausalBlockFIR": "fixed_delay_diff_mvdr",
+    "DelayAlignedBeamCovarianceAccumulator": "fixed_delay_diff_mvdr",
+    "DelayAlignedBeamCovarianceUpdateResult": "fixed_delay_diff_mvdr",
+    "DifferenceCorrectionDesignResult": "fixed_delay_diff_mvdr",
+    "DifferenceCorrectionDiagnostics": "fixed_delay_diff_mvdr",
+    "DifferenceCorrectionFIR": "fixed_delay_diff_mvdr",
+    "DifferenceCorrectionFIRDesigner": "fixed_delay_diff_mvdr",
+    "DiffMVDRCorrectionPath": "fixed_delay_diff_mvdr",
+    "FixedDelayDiffMVDRStreamingProcessor": "fixed_delay_diff_mvdr",
+    "FractionalDelayMainPath": "fixed_delay_diff_mvdr",
+    "LoadedMVDRDesignResult": "fixed_delay_diff_mvdr",
+    "LoadedMVDRWeightDesigner": "fixed_delay_diff_mvdr",
+    "ProcessedBlock": "fixed_delay_diff_mvdr",
+    "ShortFFTCovarianceAccumulator": "fixed_delay_diff_mvdr",
+    "ShortFFTCovarianceUpdateResult": "fixed_delay_diff_mvdr",
+    "StreamingBlock": "fixed_delay_diff_mvdr",
+    "design_distortionless_fixed_weights": "fixed_delay_diff_mvdr",
+    "design_fixed_delay_fractional_weights_from_delay_table": "fixed_delay_diff_mvdr",
+    "design_standard_fractional_delay_filter_bank": "fixed_delay_diff_mvdr",
+    "extract_delay_centered_snapshots": "fixed_delay_diff_mvdr",
+    "FractionalDelayPerformanceConfig": "fractional_delay_performance",
+    "run_fractional_delay_performance_report": "fractional_delay_performance",
+    "relative_arrival_delay": "geometry",
+    "steering_from_relative_delay": "geometry",
+    "unit_direction_from_positions": "geometry",
+    "MVDRFilter": "mvdr_filter",
+    "MVDROverlapSaveBeamformer": "mvdr_filter",
+    "beam_response_rms_db": "mvdr_filter",
+    "design_mvdr_overlap_save_filters": "mvdr_filter",
+    "MVDRWeightCallback": "mvdr_weight_designer",
+    "MVDRWeightDesigner": "mvdr_weight_designer",
+    "design_mvdr_coefficients": "mvdr_weight_designer",
+    "design_mvdr_coefficients_bands": "mvdr_weight_designer",
+    "design_mvdr_coefficients_with_channel_window": "mvdr_weight_designer",
+    "design_mvdr_weights": "mvdr_weight_designer",
+    "design_mvdr_weights_with_channel_window": "mvdr_weight_designer",
+    "OperationalArrayFractionalDelayPerformanceConfig": "operational_fractional_delay_performance",
+    "run_operational_array_fractional_delay_performance_report": (
+        "operational_fractional_delay_performance"
+    ),
+    "OperationalFixedBeamShadingDesignConfig": "operational_shading",
+    "OperationalShadingDefinition": "operational_shading",
+    "OperationalShadingDesignConfig": "operational_shading",
+    "load_operational_shading": "operational_shading",
+    "run_operational_fixed_beam_shading_design": "operational_shading",
+    "run_operational_shading_design": "operational_shading",
+    "OperationalSparseArrayDefinition": "operational_sparse_array",
+    "OperationalSparseArrayDesignConfig": "operational_sparse_array",
+    "design_operational_sparse_array": "operational_sparse_array",
+    "load_operational_sparse_array": "operational_sparse_array",
+    "save_operational_sparse_array": "operational_sparse_array",
+    "OperationalTimeDomainAdaptiveComparisonConfig": "operational_time_domain_adaptive_comparison",
+    "run_operational_time_domain_adaptive_comparison": (
+        "operational_time_domain_adaptive_comparison"
+    ),
+    "OperationalSameAzimuthFrequencySeparationConfig": (
+        "operational_time_domain_frequency_separation_diagnostics"
+    ),
+    "run_operational_same_azimuth_frequency_separation_diagnostics": (
+        "operational_time_domain_frequency_separation_diagnostics"
+    ),
+    "OperationalTimeDomainSlcDiagnosticConfig": "operational_time_domain_slc_diagnostics",
+    "run_operational_time_domain_slc_leakage_diagnostics": (
+        "operational_time_domain_slc_diagnostics"
+    ),
+    "SelectedFrequencyDirectionCovarianceAccumulator": "selected_frequency_direction_covariance",
+    "SelectedFrequencyDirectionCovarianceResult": "selected_frequency_direction_covariance",
+    "BeamDomainSLC": "slc",
+    "BeamGuardSelector": "slc",
+    "BlockLeastSquaresSlcSolver": "slc",
+    "HeadingAwareForgettingController": "slc",
+    "SlcConfig": "slc",
+    "SlcCovarianceEstimator": "slc",
+    "SlcOutputSafetyDecision": "slc",
+    "SlcProcessResult": "slc",
+    "SlcReferenceCapacityChecker": "slc",
+    "SlcReferenceCapacityDecision": "slc",
+    "build_reference_blocking_matrix": "slc",
+    "evaluate_slc_output_safety": "slc",
+    "SourceMaskNonSourceLeakageSubtractor": "source_mask_slc",
+    "SourceMaskSlcConfig": "source_mask_slc",
+    "SourceMaskSlcHealth": "source_mask_slc",
+    "SourceMaskSlcResult": "source_mask_slc",
+    "SparseSingleSideArrayDesignConfig": "sparse_single_side_array_design",
+    "SparseSingleSideArrayDesignResult": "sparse_single_side_array_design",
+    "build_sparse_single_side_array_design": "sparse_single_side_array_design",
+    "run_sparse_single_side_array_design": "sparse_single_side_array_design",
+    "BinnedSpatialCorrelationStatistics": "spatial_correlation_statistics",
+    "PairCompositionSpatialCorrelationStatistics": "spatial_correlation_statistics",
+    "SparseArraySpatialCorrelationStatistics": "spatial_correlation_statistics",
+    "SpatialCorrelationStatistics": "spatial_correlation_statistics",
+    "calculate_sparse_array_spatial_correlation_statistics": "spatial_correlation_statistics",
+    "calculate_spatial_correlation_statistics": "spatial_correlation_statistics",
+    "SteeringPowerChannelWeighting": "steering_power_weighting",
+    "prepare_steering_power_channel_weighting": "steering_power_weighting",
+    "DelayTable": "time_delay",
+    "FractionalDelayAndSumBeamformer": "time_delay",
+    "FractionalDelayFilterBank": "time_delay",
+    "IntegerDelayAndSumBeamformer": "time_delay",
+    "design_fractional_delay_filter_bank": "time_delay",
+    "design_windowed_sinc_fractional_delay_filter": "time_delay",
+    "TimeDelayDiagnosticConfig": "time_delay_diagnostics",
+    "TimeDelayDiagnosticSource": "time_delay_diagnostics",
+    "build_sparse_single_side_array_positions": "time_delay_diagnostics",
+    "run_integer_delay_diagnostics": "time_delay_diagnostics",
+    "BandwiseArrayDesign": "array_design",
+    "make_directions": "directions",
+    "run_fractional_delay_slc_diagnostics": "fractional_delay_slc_diagnostics",
+    "PlaneWaveTone": "synthetic_signal",
+    "synthesize_plane_wave_tone": "synthetic_signal",
+    "TimeDelayGuardDesignConfig": "time_delay_guard_design",
+    "run_integer_delay_guard_design": "time_delay_guard_design",
+    "run_integer_delay_slc_diagnostics": "time_delay_slc_diagnostics",
+    "TimeDomainAdaptiveWeightDiagnostics": "time_domain_adaptive",
+    "build_gsc_blocking_matrix": "time_domain_adaptive",
+    "build_real_tone_constraint_matrix": "time_domain_adaptive",
+    "build_time_domain_tone_constraint_vector": "time_domain_adaptive",
+    "design_time_domain_gsc_coefficients": "time_domain_adaptive",
+    "design_time_domain_gsc_weights": "time_domain_adaptive",
+    "design_time_domain_lcmv_coefficients": "time_domain_adaptive",
+    "design_time_domain_lcmv_weights": "time_domain_adaptive",
+    "design_time_domain_mvdr_coefficients": "time_domain_adaptive",
+    "design_time_domain_mvdr_weights": "time_domain_adaptive",
+    "diagnose_time_domain_adaptive_weights": "time_domain_adaptive",
+    "estimate_time_domain_covariance": "time_domain_adaptive",
+    "evaluate_constraint_response": "time_domain_adaptive",
+}
+
+
+def __getattr__(name: str) -> Any:
+    """互換flat APIの公開名を、その責務moduleが必要になった時点で解決する。
+
+    Args:
+        name: `spflow.beamforming`から参照された公開名。
+
+    Returns:
+        対応する責務moduleのクラス、関数または定数。
+
+    Raises:
+        AttributeError: 公開APIとして登録されていない名前を参照した場合。
+
+    Notes:
+        解決後の値はmodule globalsへ保持し、2回目以降の参照で再importしない。
+        この遅延はimport境界だけを扱い、信号処理の実行順序には関与しない。
+    """
+    module_name = _EXPORT_MODULES.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module = import_module(f".{module_name}", __name__)
+    value = getattr(module, name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    """通常のmodule属性と公開flat API名を列挙する。"""
+    return sorted(set(globals()) | set(_EXPORT_MODULES))
+
 
 # ここに列挙した識別子だけを公開 API と見なし、探索補助用の内部関数は外部契約に含めない。
 __all__ = [
