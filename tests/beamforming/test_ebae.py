@@ -74,15 +74,19 @@ def test_ebae_processes_fft_bins_independently() -> None:
     assert result.weights.shape == (3, 2, 2)
 
 
-def test_ebae_requires_m_squared_snapshots() -> None:
-    """N/E AIC の運用契約 ``rate*T=M^2`` を満たさない設定を拒否する。"""
-    covariance = np.eye(3, dtype=np.complex128)
-    steering = np.ones((3, 1), dtype=np.complex128)
-    config = EbaeConfig(snapshot_rate_hz=8.0, integration_time_sec=1.0)
+def test_ebae_accepts_observed_snapshot_count_and_projects_to_hermitian() -> None:
+    """``L<M^2``と非Hermitian入力でも観測値を使って診断結果を返す。
 
-    try:
-        design_ebae_weights_band(covariance, steering, snapshot_count=9, config=config)
-    except ValueError as error:
-        assert "snapshot_rate_hz * integration_time_sec" in str(error)
-    else:
-        raise AssertionError("rate*T != M**2 must be rejected")
+    3 channelに対して2 snapshotだけの積分不足条件を与える。また上三角だけへ虚数成分を
+    加え、Hermitian例外で評価を止めず、射影後の有限固有値として観測できることを固定する。
+    """
+    covariance = np.eye(3, dtype=np.complex128)
+    covariance[0, 1] = 0.1j
+    steering = np.ones((3, 1), dtype=np.complex128)
+    config = EbaeConfig(snapshot_rate_hz=2.0, integration_time_sec=1.0)
+
+    result = design_ebae_weights_band(covariance, steering, snapshot_count=2, config=config)
+
+    assert result.aic_values.shape == (2,)
+    assert bool(np.all(np.isfinite(result.eigenvalues)))
+    assert result.weights.shape == (3, 1)

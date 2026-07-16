@@ -61,6 +61,7 @@ from spflow.simulation import SignalBlock, StatefulIntegerDelay, VersionedCausal
 
 FloatArray = NDArray[np.float64]
 ComplexArray = NDArray[np.complex128]
+Complex64Array = NDArray[np.complex64]
 BoolArray = NDArray[np.bool_]
 IntArray = NDArray[np.int64]
 
@@ -234,7 +235,8 @@ class FrequencyWeightDesign:
 
     `weights`の各値はshape `[n_frequency,n_beam,n_ch]`、`causal_delays_samples`は
     `[n_beam,n_ch]`、`active_channel_count`は`[n_frequency]`である。EBAEの
-    `signal_count`、`music_peak_azimuth_deg`、`fallback_mask`は`[n_frequency,n_beam]`。
+    `signal_count`、`music_peak_azimuth_deg`、`fallback_mask`は`[n_frequency,n_beam]`、
+    `covariance_snapshot_count_by_beam`は候補方位ごとの実観測数でshape `[n_beam]`。
 
     本結果型は完成値を運ぶだけで、FIR化、逐次処理、図表作成を担わない。
     """
@@ -245,6 +247,7 @@ class FrequencyWeightDesign:
     ebae_signal_count: IntArray
     ebae_music_peak_azimuth_deg: FloatArray
     ebae_fallback_mask: BoolArray
+    covariance_snapshot_count_by_beam: IntArray
 
 
 @dataclass(frozen=True)
@@ -699,7 +702,7 @@ def design_frequency_weights(
         FIR化時に共役を取る。EBAE未選択時のEBAE診断配列は未使用既定値を保持する。
 
     Raises:
-        ValueError: 方式、入力shape、またはEBAEの`M^2` snapshot条件が不正な場合。
+        ValueError: 方式または入力shapeが不正な場合。
     """
     # 出力方式をここで確定し、不要な共分散推定や適応重み設計を実行しない。
     # selected_method_idsの順序は、戻り値weightsの方式順としても維持する。
@@ -738,6 +741,7 @@ def design_frequency_weights(
     ebae_signal_count = np.zeros((n_frequency, n_beam), dtype=np.int64)
     ebae_music_peak_deg = np.full((n_frequency, n_beam), np.nan, dtype=np.float64)
     ebae_fallback = np.zeros((n_frequency, n_beam), dtype=np.bool_)
+    covariance_snapshot_count_by_beam = np.zeros(n_beam, dtype=np.int64)
 
     # T2aの候補方位別時間切り出しは周波数に依存しないため、各beamで一度だけFFTする。
     # 同じsnapshotを周波数loop内で再生成すると、方式上不要な計算量がn_frequency倍になる。
@@ -746,22 +750,23 @@ def design_frequency_weights(
     training_sample_count = min(
         int(round(config.training_duration_s * config.fs_hz)), training_signal.shape[1]
     )
-    snapshots_by_beam = []
+    snapshots_by_beam: list[Complex64Array | None] = []
     if needs_covariance:
         for beam_index in range(n_beam):
-            snapshots = extract_direction_aligned_rfft_snapshots(
-                training_signal[:, :training_sample_count],
-                causal_delays[beam_index],
-                fft_size=config.analysis_fft_size,
-                hop_size=config.analysis_hop_size,
-            )
-            # 重み設計では時間平均共分散を使うため、単一snapshotしかないtraining区間を
-            # 完成した方位別共分散として扱わない。抽出部品自体はrank-1用途を妨げない。
-            if snapshots.shape[0] < 2:
-                raise ValueError(
-                    "training interval is too short after T2a integer-delay alignment."
+            # 初回積分がFFT長と最大遅延を満たさない場合も評価全体は停止しない。
+            # 完全frameがないbeamだけNoneとし、後段で完成済みfixed重みを公開する。
+            minimum_sample_count = config.analysis_fft_size + int(np.max(causal_delays[beam_index]))
+            if training_sample_count < minimum_sample_count:
+                snapshots_by_beam.append(None)
+            else:
+                snapshots = extract_direction_aligned_rfft_snapshots(
+                    training_signal[:, :training_sample_count],
+                    causal_delays[beam_index],
+                    fft_size=config.analysis_fft_size,
+                    hop_size=config.analysis_hop_size,
                 )
-            snapshots_by_beam.append(snapshots)
+                snapshots_by_beam.append(snapshots)
+                covariance_snapshot_count_by_beam[beam_index] = snapshots.shape[0]
 
     # 外側をfrequency、内側をbeamとし、同じ周波数では全beamへ同一のactive channelと
     # shading表を使う。共分散と制約ベクトルは各frequency・beamの組合せごとに設計する。
@@ -806,22 +811,40 @@ def design_frequency_weights(
                 # snapshots shape: [frame,frequency,ch]。候補beamへ整数整相済みの
                 # 全周波数snapshotを、共分散推定部品へ明示的に渡す。
                 snapshots = snapshots_by_beam[beam_index]
-                ebae_snapshot_count = int(active_indices.size * active_indices.size)
-                if "t2a_ebae" in selected_method_set and snapshots.shape[0] < ebae_snapshot_count:
-                    raise ValueError(
-                        "training interval must provide at least M**2 non-overlap snapshots "
-                        f"for EBAE: frequency={frequency:g} Hz, M={active_indices.size}, "
-                        f"required={ebae_snapshot_count}, observed={snapshots.shape[0]}."
-                    )
-                # EBAE選択時は宣言L=M^2と物理平均数を一致させ、比較するMVDRも同じ共分散を使う。
-                selected_snapshot_count = (
-                    ebae_snapshot_count if "t2a_ebae" in selected_method_set else snapshots.shape[0]
-                )
+                if snapshots is None:
+                    # 完全snapshotが0個では共分散を定義できないため、初回積分中だけ
+                    # fixed重みを安全な完成値として使う。次回更新では観測窓から再設計する。
+                    if "t2a_mvdr" in selected_method_set:
+                        unshaded_by_method["t2a_mvdr"] = np.asarray(
+                            fixed_active, dtype=np.complex128
+                        )
+                    if "t2a_ebae" in selected_method_set:
+                        unshaded_by_method["t2a_ebae"] = np.asarray(
+                            fixed_active, dtype=np.complex128
+                        )
+                        ebae_fallback[frequency_index, beam_index] = True
+                        ebae_music_peak_deg[frequency_index, beam_index] = beam_azimuth_deg[
+                            beam_index
+                        ]
+                    # 通常の方式後処理へ到達できないため、同じshadingと無歪正規化をここで
+                    # 完了してから次のbeamへ進む。0 snapshotでも未完成値は公開しない。
+                    for method_id, unshaded in unshaded_by_method.items():
+                        shaded = channel_shading.conj() * unshaded
+                        denominator = np.vdot(shaded, residual_constraint)
+                        if abs(denominator) <= np.finfo(np.float64).eps:
+                            shaded = fixed_active
+                            denominator = np.vdot(shaded, residual_constraint)
+                        weights[method_id][frequency_index, beam_index, active_indices] = (
+                            shaded / denominator.conjugate()
+                        )
+                    continue
+
+                observed_snapshot_count = int(snapshots.shape[0])
 
                 # active_snapshots shape: [L,n_active_ch]。方式側がL、周波数、active channelを
                 # 通常のNumPy slicingで選び、汎用共分散部品の[ch,snapshot]契約へ転置する。
                 active_snapshots = snapshots[
-                    :selected_snapshot_count,
+                    :observed_snapshot_count,
                     frequency_index,
                     active_indices,
                 ]
@@ -863,11 +886,11 @@ def design_frequency_weights(
                     ebae_result = design_ebae_weights_band(
                         covariance,
                         residual_scan,
-                        snapshot_count=ebae_snapshot_count,
+                        snapshot_count=observed_snapshot_count,
                         config=EbaeConfig(
                             snapshot_rate_hz=config.fs_hz / config.analysis_hop_size,
                             integration_time_sec=(
-                                ebae_snapshot_count * config.analysis_hop_size / config.fs_hz
+                                observed_snapshot_count * config.analysis_hop_size / config.fs_hz
                             ),
                             sigmoid_slope=10.0,
                             sigmoid_midpoint=0.5,
@@ -908,6 +931,7 @@ def design_frequency_weights(
         ebae_signal_count=ebae_signal_count,
         ebae_music_peak_azimuth_deg=ebae_music_peak_deg,
         ebae_fallback_mask=ebae_fallback,
+        covariance_snapshot_count_by_beam=covariance_snapshot_count_by_beam,
     )
 
 
@@ -953,6 +977,7 @@ def design_initial_fixed_weights(
         ebae_signal_count=fixed_design.ebae_signal_count.copy(),
         ebae_music_peak_azimuth_deg=fixed_design.ebae_music_peak_azimuth_deg.copy(),
         ebae_fallback_mask=fixed_design.ebae_fallback_mask.copy(),
+        covariance_snapshot_count_by_beam=(fixed_design.covariance_snapshot_count_by_beam.copy()),
     )
 
 
@@ -1403,9 +1428,10 @@ def run_streaming_beam_branches(
                 else:
                     completed_update = pending_online_cycle.completed_update
                     if completed_update is not None:
-                        for method_id, updated_coefficients in (
-                            completed_update.coefficients.items()
-                        ):
+                        for (
+                            method_id,
+                            updated_coefficients,
+                        ) in completed_update.coefficients.items():
                             branch_by_method[method_id].request_coefficient_update(
                                 updated_coefficients,
                                 version=completed_update.version,
@@ -1580,6 +1606,7 @@ def run_evaluation(
         ebae_signal_count=latest_weight_design.ebae_signal_count,
         ebae_music_peak_azimuth_deg=latest_weight_design.ebae_music_peak_azimuth_deg,
         ebae_fallback_mask=latest_weight_design.ebae_fallback_mask,
+        covariance_snapshot_count_by_beam=(latest_weight_design.covariance_snapshot_count_by_beam),
     )
     write_t2a_review_pack(output_dir, review_context, review_data)
 
@@ -1787,11 +1814,7 @@ def _evaluate_streaming_scenario(
                     else -1
                 ),
                 ebae_music_peak_azimuth_deg_at_target=(
-                    float(
-                        latest_weight_design.ebae_music_peak_azimuth_deg[
-                            target_bin, target_beam
-                        ]
-                    )
+                    float(latest_weight_design.ebae_music_peak_azimuth_deg[target_bin, target_beam])
                     if method_id == "t2a_ebae"
                     else float("nan")
                 ),

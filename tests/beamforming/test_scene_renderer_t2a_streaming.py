@@ -153,6 +153,90 @@ def test_frequency_weight_design_can_run_only_t2a_ebae(
     assert design.weights["t2a_ebae"].shape == (5, 2, 2)
 
 
+def test_frequency_weight_design_keeps_short_initial_integration_observable() -> None:
+    """``L<M^2``の初回積分でも終了せず、観測snapshotから完成重みを返す。
+
+    2 channelのEBAE基準`M^2=4`に対し、完全frameを1個だけ作る。積分不足を例外で
+    隠さず、AICの制約を含む結果を固定shapeの重み・診断量として確認する。
+    """
+    config = T2aScenarioConfig(
+        fs_hz=64.0,
+        sound_speed_m_s=1500.0,
+        duration_s=1.0,
+        training_duration_s=0.125,
+        target_frequency_hz=8.0,
+        interferer_frequency_hz=16.0,
+        noise_band_hz=(2.0, 24.0),
+        analysis_fft_size=8,
+        analysis_hop_size=8,
+        residual_fir_tap_count=4,
+        runtime_block_size=5,
+    )
+    coefficients = MatlabArrayCoefficients(
+        positions_m=np.zeros((2, 3), dtype=np.float64),
+        frequency_hz=np.array([0.0, 32.0]),
+        shading=np.ones((2, 2), dtype=np.complex128),
+        active_channel_mask=np.ones((2, 2), dtype=np.bool_),
+    )
+    rng = np.random.default_rng(20260716)
+    training_signal = rng.standard_normal((2, int(config.duration_s * config.fs_hz)))
+
+    design = design_frequency_weights(
+        training_signal,
+        coefficients,
+        np.array([90.0], dtype=np.float64),
+        config,
+        method_ids=("t2a_ebae",),
+    )
+
+    assert design.weights["t2a_ebae"].shape == (5, 1, 2)
+    assert bool(np.all(np.isfinite(design.weights["t2a_ebae"])))
+    np.testing.assert_array_equal(design.ebae_signal_count, np.zeros((5, 1), dtype=np.int64))
+    np.testing.assert_array_equal(design.covariance_snapshot_count_by_beam, np.array([1]))
+
+
+def test_frequency_weight_design_falls_back_before_first_complete_snapshot() -> None:
+    """完全frameがまだ0個の初回更新はfixed重みで継続する。
+
+    FFT長8 sampleに対してtrainingを4 sampleだけ与える。共分散を捏造せず、非境界binを
+    fallbackとして記録しながら、次回更新可能な完成重みを返す境界条件を固定する。
+    """
+    config = T2aScenarioConfig(
+        fs_hz=64.0,
+        sound_speed_m_s=1500.0,
+        duration_s=1.0,
+        training_duration_s=0.0625,
+        target_frequency_hz=8.0,
+        interferer_frequency_hz=16.0,
+        noise_band_hz=(2.0, 24.0),
+        analysis_fft_size=8,
+        analysis_hop_size=8,
+        residual_fir_tap_count=4,
+        runtime_block_size=5,
+    )
+    coefficients = MatlabArrayCoefficients(
+        positions_m=np.zeros((2, 3), dtype=np.float64),
+        frequency_hz=np.array([0.0, 32.0]),
+        shading=np.ones((2, 2), dtype=np.complex128),
+        active_channel_mask=np.ones((2, 2), dtype=np.bool_),
+    )
+    training_signal = np.ones((2, int(config.duration_s * config.fs_hz)), dtype=np.float64)
+
+    design = design_frequency_weights(
+        training_signal,
+        coefficients,
+        np.array([90.0], dtype=np.float64),
+        config,
+        method_ids=("t2a_ebae",),
+    )
+
+    assert bool(np.all(np.isfinite(design.weights["t2a_ebae"])))
+    np.testing.assert_array_equal(
+        design.ebae_fallback_mask[:, 0], np.array([False, True, True, True, False])
+    )
+    np.testing.assert_array_equal(design.covariance_snapshot_count_by_beam, np.array([0]))
+
+
 def test_load_matlab_coefficients_preserves_frequency_switched_active_channels(
     tmp_path: Path,
 ) -> None:
@@ -243,6 +327,7 @@ def test_completed_weight_update_is_applied_at_exact_sample_boundary() -> None:
         ebae_signal_count=np.zeros((2, 1), dtype=np.int64),
         ebae_music_peak_azimuth_deg=np.full((2, 1), np.nan, dtype=np.float64),
         ebae_fallback_mask=np.zeros((2, 1), dtype=np.bool_),
+        covariance_snapshot_count_by_beam=np.zeros(1, dtype=np.int64),
     )
     update = CompletedWeightUpdate(
         effective_start_sample=3,

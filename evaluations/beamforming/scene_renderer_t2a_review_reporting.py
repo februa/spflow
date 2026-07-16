@@ -154,6 +154,7 @@ class T2aReviewContext:
     ebae_signal_count: IntArray
     ebae_music_peak_azimuth_deg: FloatArray
     ebae_fallback_mask: BoolArray
+    covariance_snapshot_count_by_beam: IntArray
 
 
 def _write_input_spectrum(
@@ -308,6 +309,7 @@ def _build_plot_arrays(
         "t2a_ebae_signal_count": context.ebae_signal_count,
         "t2a_ebae_music_peak_azimuth_deg": context.ebae_music_peak_azimuth_deg,
         "t2a_ebae_fallback_mask": context.ebae_fallback_mask,
+        "covariance_snapshot_count_by_beam": context.covariance_snapshot_count_by_beam,
         "diagnostic_time_s": (
             np.arange(context.rendered_mixed.shape[1], dtype=np.float64) / context.scenario.fs_hz
         ),
@@ -413,6 +415,7 @@ def _write_metadata(
         "n_channel": context.n_channel,
         "active_channel_count_by_frequency": context.active_channel_count.tolist(),
         "t2a_ebae_fallback_count": int(np.count_nonzero(context.ebae_fallback_mask)),
+        "covariance_snapshot_count_by_beam": (context.covariance_snapshot_count_by_beam.tolist()),
         "valid_sample_counts": data.valid_sample_counts,
         "runtime_s": data.runtime_s,
         "runtime_factor": data.runtime_factor,

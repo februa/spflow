@@ -237,7 +237,7 @@ def design_ebae_weights_band(
         固有分解、信号数、MUSIC 対応方位、完成 EBAE 重みを含む結果。
 
     Raises:
-        ValueError: shape、有限性、Hermitian性、``L=M^2``、または設定が不正な場合。
+        ValueError: shape、有限性、snapshot数、または設定が不正な場合。
 
     Notes:
         異常な正規化分母が生じた beam は、未完成の適応重みを公開せず CBF へ戻す。
@@ -260,21 +260,22 @@ def design_ebae_weights_band(
         np.all(np.isfinite(steering_matrix))
     ):
         raise ValueError("covariance and steering must be finite.")
-    if not bool(
-        np.allclose(covariance_matrix, covariance_matrix.conj().T, rtol=1.0e-5, atol=1.0e-8)
-    ):
-        raise ValueError("covariance must be Hermitian.")
-
-    channel_count = covariance_matrix.shape[0]
-    if snapshot_count != channel_count * channel_count:
-        raise ValueError("snapshot_count must equal M**2 for EBAE N/E AIC.")
+    if snapshot_count <= 0:
+        raise ValueError("snapshot_count must be positive.")
     configured_snapshot_count = config.snapshot_rate_hz * config.integration_time_sec
     if not np.isclose(configured_snapshot_count, float(snapshot_count), rtol=1.0e-9, atol=1.0e-9):
         raise ValueError("snapshot_rate_hz * integration_time_sec must equal snapshot_count.")
 
+    # 有限snapshotから構成した共分散には丸め誤差や上流の片側更新による
+    # anti-Hermitian成分が残り得る。評価を例外で止めず、最も近いHermitian行列
+    # (R + R^H) / 2へ射影して、積分不足の影響は固有値・AIC・重みへ残す。
+    covariance_hermitian = np.asarray(
+        0.5 * (covariance_matrix + covariance_matrix.conj().T), dtype=complex_dtype
+    )
+
     # eigh は Hermitian 共分散に対して実固有値と直交固有vectorを返す。
     # 戻り順は昇順なので、信号部分を先頭に置くため両方を降順へ反転する。
-    eigenvalues_ascending, eigenvectors_ascending = np.linalg.eigh(covariance_matrix)
+    eigenvalues_ascending, eigenvectors_ascending = np.linalg.eigh(covariance_hermitian)
     eigenvalues = np.maximum(np.real(eigenvalues_ascending[::-1]), 0.0)
     eigenvectors = eigenvectors_ascending[:, ::-1]
     signal_count, aic_values = estimate_signal_count_ne_aic(eigenvalues, snapshot_count)

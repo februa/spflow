@@ -134,6 +134,7 @@ def test_review_reporting_writes_completed_arrays_without_signal_processing(tmp_
         ebae_signal_count=np.zeros((n_frequency, n_beam), dtype=np.int64),
         ebae_music_peak_azimuth_deg=np.full((n_frequency, n_beam), np.nan),
         ebae_fallback_mask=np.zeros((n_frequency, n_beam), dtype=np.bool_),
+        covariance_snapshot_count_by_beam=np.full(n_beam, 3, dtype=np.int64),
     )
 
     write_t2a_review_pack(tmp_path, context, review_data)
@@ -154,6 +155,9 @@ def test_review_reporting_writes_completed_arrays_without_signal_processing(tmp_
     assert expected_artifacts <= {path.name for path in tmp_path.iterdir()}
     with np.load(tmp_path / "plot_arrays.npz", allow_pickle=False) as plot_arrays:
         np.testing.assert_array_equal(plot_arrays["azimuth_deg"], beam_azimuth_deg)
+        np.testing.assert_array_equal(
+            plot_arrays["covariance_snapshot_count_by_beam"], np.full(n_beam, 3)
+        )
         np.testing.assert_array_equal(
             plot_arrays[f"mixed_{method_id}_fraz_db_re_input_rms"], fraz_level
         )
