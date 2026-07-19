@@ -10,25 +10,82 @@
 - `StepScheduler`: 反復item処理を複数stepへ分割する
 - `DoubleBufferCallback`: 完成した値だけを外部へ公開する
 
-## GitHubからのインストール
+## GitHubリポジトリから外部projectへインストールする
 
-リポジトリをcloneする。
+`spflow`を使用するprojectのdirectoryで、GitHubリポジトリを依存元として
+登録する。Python 3.10以上とGitが必要である。
+
+> [!CAUTION]
+> PyPIの`spflow`は、このリポジトリとは別のSum-Product Flow packageである。
+> `uv add spflow`や`pip install spflow`は使用せず、以下のGitHub URLを明示する。
+
+### uvを使用する
+
+新しいprojectを作成し、GitHub上の`spflow`を依存関係に追加する。
 
 ```bash
-git clone https://github.com/februa/spflow.git
-cd spflow
+mkdir my_project
+cd my_project
+uv init --python ">=3.10"
+uv add "spflow @ git+https://github.com/februa/spflow.git"
 ```
 
-現在のPython環境へインストールする。
+`uv add`は`pyproject.toml`にGitHub依存を追加し、解決したcommitを`uv.lock`に記録する。
+lock fileをversion controlに含め、実行時は`uv run`を使用する。
 
 ```bash
-pip install .
+uv run python -c "from spflow import Flow, FrameBuffer, Option; print('spflow import OK')"
 ```
 
-別のprojectを開発しながら`spflow`も変更する場合は、editable installを使用する。
+### venvとpipを使用する
+
+project専用のvirtual environmentを作成し、GitHub URLからインストールする。
 
 ```bash
-pip install -e .
+mkdir my_project
+cd my_project
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install "spflow @ git+https://github.com/februa/spflow.git"
+python -c "from spflow import Flow, FrameBuffer, Option; print('spflow import OK')"
+```
+
+requirements fileで管理する場合は、次のdirect referenceを記載する。
+
+```text
+spflow @ git+https://github.com/februa/spflow.git
+```
+
+### 参照するversionを固定する
+
+長期間再現する必要がある場合は、default branchの最新状態ではなく、
+release tagまたはfull commit hashをGitHub URLの末尾に指定する。
+
+```bash
+uv add "spflow @ git+https://github.com/februa/spflow.git@FULL_COMMIT_HASH"
+```
+
+pipやrequirements fileでも同じdirect referenceを使用できる。
+
+```text
+spflow @ git+https://github.com/februa/spflow.git@FULL_COMMIT_HASH
+```
+
+### local checkoutをeditable installする
+
+別のprojectを開発しながら`spflow`本体も変更する場合は、先にrepositoryをcloneし、
+外部project側からlocal checkoutをeditable dependencyとして登録する。
+
+```bash
+git clone https://github.com/februa/spflow.git /path/to/spflow
+cd /path/to/my_project
+uv add --editable /path/to/spflow
+```
+
+pipの場合は、有効化したproject専用virtual environmentにeditable installする。
+
+```bash
+python -m pip install --editable /path/to/spflow
 ```
 
 ## APIドキュメント
